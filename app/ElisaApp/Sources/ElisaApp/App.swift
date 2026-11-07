@@ -1,0 +1,161 @@
+// Elisa: the native window for the Elisa agent. Spawns `elisa --serve-jsonl` in the chosen project folder.
+//
+//   ElisaApp [--demo] [--cwd DIR] [--theme dark|light] [--base-url URL] [--model M] [--shots DIR]
+//            [--script FILE [--seed N] [--script-delay S] [--script-cap S]] [--frame X,Y,W,H] [--continue] [--script-from-final]
+//            [--frames DIR [--frames-every S]]
+//
+// --demo: no model; Elisa uses its scripted demo gateway (`--demo-states`) in a fresh demo project.
+// --base-url / --model are passed to Elisa (default: its config, http://127.0.0.1:8898 = streamdense gateway).
+// --shots DIR (debug): plays the demo and writes PNGs of the window (offscreen render, no screen-recording permission).
+// --script FILE: scripted playback of a person typing in this window (Playback.swift); any key or click stops it.
+// --frames DIR (debug): the window as DIR/frame-NNNNN.png every S seconds (default 0.25), for a GIF or video of a run.
+import AppKit
+import SwiftUI
+
+@MainActor
+enum Boot {
+    static let kit = Kit.locate()
+    static let model = AppModel(kit: kit)
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // writing to an Elisa that has already exited must fail the write, not kill the app (SIGPIPE's default)
+        signal(SIGPIPE, SIG_IGN)
+        // before any view asks for a font: the bundled OFL fonts (Silkscreen, Chivo Mono), else the system monospace
+        MainActor.assumeIsolated { Fonts.registerFonts(Boot.kit) }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setvbuf(stdout, nil, _IOLBF, 0)
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        MainActor.assumeIsolated { launch() }
+    }
+
+    @MainActor private func launch() {
+        let m = Boot.model
+        let args = CommandLine.arguments
+        func opt(_ n: String) -> String? { args.firstIndex(of: n).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
+        func optAll(_ n: String) -> [String] { args.indices.filter { args[$0] == n && $0 + 1 < args.count }.map { args[$0 + 1] } }
+        if let kit = Boot.kit {
+            print("kit: \(kit.design.path)")
+            ShadeKit.shared.load(kit)
+            if let p = ShadeKit.shared.problem { print("shade: \(p)") }
+        } else {
+            print("kit: not found (set ELISA_KIT_DIR to elisa/design); Shade is not drawn")
+        }
+        print("fonts: \(Kit.fontReport())")
+        print("elisa: \(ElisaProcess.binary()?.path ?? "not found")")
+        MenuBarItem.shared.install(model: m, kit: Boot.kit)
+        if opt("--theme") == "light" { m.dark = false }
+        for f in ["--base-url", "--model"] { if let v = opt(f) { m.extraArgs += [f, v] } }
+        // --continue: elisa resumes the project's last session
+        if args.contains("--continue") { m.extraArgs.append("--continue") }
+        // --connections-shot FILE [--connections-select NAME] (debug): the Model Connections window as a PNG, then quit
+        if let file = opt("--connections-shot") {
+            ConnectionsWindow.shared.shot(m, to: file, select: opt("--connections-select"))
+            return
+        }
+        // --connections: open the Model Connections window at launch
+        if args.contains("--connections") { DispatchQueue.main.async { ConnectionsWindow.shared.show(m, select: opt("--connections-select")) } }
+        let shots = opt("--shots")
+        m.demo = args.contains("--demo") || shots != nil
+        m.folder = opt("--cwd")
+        if let dir = shots { Shots.shared.run(into: dir, model: m) }
+        if let dir = opt("--selftest") { SelfTest.shared.run(into: dir, images: optAll("--selftest-image"), quit: args.contains("--selftest-quit"), model: m) }
+        if m.demo || m.folder != nil {
+            m.start()
+            // --frame X,Y,W,H: where the window goes (two windows side by side for a two-session run)
+            if let f = opt("--frame")?.split(separator: ",").compactMap({ Double($0) }), f.count == 4 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    NSApp.windows.first { $0.title == "Elisa" || $0.isVisible }?.setFrame(NSRect(x: f[0], y: f[1], width: f[2], height: f[3]), display: true)
+                }
+            }
+            if let dir = opt("--frames") {
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                var n = 0
+                Timer.scheduledTimer(withTimeInterval: max(0.05, Double(opt("--frames-every") ?? "") ?? 0.25), repeats: true) { _ in
+                    MainActor.assumeIsolated { Shots.shared.capture(String(format: "frame-%05d", n), into: dir); n += 1 }
+                }
+            }
+            if let f = opt("--script") {
+                Playback.shared.run(file: f, seed: UInt64(opt("--seed") ?? "") ?? 1, delay: Double(opt("--script-delay") ?? "") ?? 3,
+                                    cap: Double(opt("--script-cap") ?? "") ?? 2700, fromFinal: args.contains("--script-from-final"), model: m)
+            }
+        } else {
+            // the window first, then the folder picker over it
+            DispatchQueue.main.async { openFolderPanel(m) }
+        }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { Boot.model.stop() }
+    }
+}
+
+@MainActor
+func openFolderPanel(_ m: AppModel) {
+    let p = NSOpenPanel()
+    p.canChooseDirectories = true
+    p.canChooseFiles = false
+    p.allowsMultipleSelection = false
+    // a new project starts with a new folder: NSOpenPanel hides "New Folder" unless asked
+    p.canCreateDirectories = true
+    p.prompt = "Open"
+    p.message = "Choose the project folder Elisa works in, or make a new one with New Folder"
+    if let last = UserDefaults.standard.string(forKey: "lastFolder") { p.directoryURL = URL(fileURLWithPath: last) }
+    if p.runModal() == .OK, let u = p.url {
+        m.open(folder: u.path)
+    } else if m.phase == .starting && m.cwd.isEmpty {
+        m.blocks = [Block(kind: .info("[no folder chosen · File > Open Folder… (⌘O), or File > Demo Session]", .plain))]
+        m.phase = .exited
+    }
+}
+
+@main
+struct ElisaMain: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+    @ObservedObject private var m = Boot.model
+
+    var body: some Scene {
+        Window("Elisa", id: "main") {
+            MainWindow()
+                .environmentObject(m)
+                .frame(minWidth: 640, minHeight: 560)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1280, height: 820)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("Open Folder…") { openFolderPanel(m) }.keyboardShortcut("o")
+                Button("Demo Session (no model)") { m.demo = true; m.folder = nil; m.start() }
+            }
+            CommandGroup(after: .pasteboard) {
+                Divider()
+                Button("Copy Transcript for Debugging") { m.copyTranscript() }.keyboardShortcut("c", modifiers: [.command, .option])
+                Button("Attach Images…") { m.pickImages() }.keyboardShortcut("a", modifiers: [.command, .shift]).disabled(m.attachBlocked != nil)
+            }
+            CommandMenu("Elisa") {
+                Button("Model Connections…") { ConnectionsWindow.shared.show(m) }.keyboardShortcut(",")
+                Divider()
+                Button(m.editsShown ? "Hide Edits" : "Show Edits") { m.toggleEdits() }.keyboardShortcut("o", modifiers: .control)
+                Button("Previous Edit") { m.editPrev() }.keyboardShortcut("[", modifiers: .command)
+                Button("Next Edit") { m.editNext() }.keyboardShortcut("]", modifiers: .command)
+                Button("Toggle Theme") { m.toggleTheme() }.keyboardShortcut("l", modifiers: [.command, .shift])
+                Divider()
+                Button("Interrupt") { m.interrupt() }.keyboardShortcut(".", modifiers: .command)
+                Button("Stop Playback") { m.playbackStop?() }.keyboardShortcut(".", modifiers: .control).disabled(m.playbackLine == nil)
+                Divider()
+                Button("Poke Elisa") { m.care("poke") }.keyboardShortcut("g", modifiers: .control)
+                Button("Shade Size: \(Int(m.shadeSize)) px (+10)") { m.stepShadeSize() }.keyboardShortcut("s", modifiers: .control)
+                Button(m.shadeHidden ? "Show Shade" : "Hide Shade") { m.shadeHidden.toggle() }.keyboardShortcut("h", modifiers: .control)
+                Button("Give Water") { m.care("water") }
+                Button("Give a Snack") { m.care("food") }
+                Button("Give a Toy") { m.care("toy") }
+            }
+        }
+    }
+}

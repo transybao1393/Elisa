@@ -1,0 +1,119 @@
+{
+  "grid": "2 px sub-grid; most values are multiples of 4",
+  "window": {
+    "cornerRadius": 12,
+    "titlebarHeight": 38,
+    "titlebarPaddingX": 14
+  },
+  "transcript": {
+    "padding": [
+      20,
+      28,
+      6,
+      28
+    ],
+    "blockGap": 16,
+    "anchor": "bottom"
+  },
+  "rail": {
+    "width": 180,
+    "padding": [
+      18,
+      16
+    ],
+    "gap": 18
+  },
+  "bottom": {
+    "padding": [
+      0,
+      24,
+      12,
+      24
+    ],
+    "statusBarHeight": 22,
+    "statusGap": 10,
+    "separator": " · "
+  },
+  "input": {
+    "marginTop": 8,
+    "padding": [
+      11,
+      14
+    ],
+    "radius": 8,
+    "border": "1px accent",
+    "gap": 10
+  },
+  "permission": {
+    "padding": [
+      14,
+      16,
+      12,
+      16
+    ],
+    "radius": 8,
+    "gap": 10,
+    "border": "1px accent"
+  },
+  "radius": {
+    "base": 6,
+    "controls": 4,
+    "inputs": 8,
+    "window": 12
+  },
+  "companion": {
+    "anchor": "bottom-right of transcript column",
+    "right": 16,
+    "bottom": 0,
+    "sizes": {
+      "Small": 96,
+      "Medium": 128,
+      "Large": 168
+    },
+    "narrowBreakpoint": 1100,
+    "narrowMax": 96,
+    "transcriptPaddingRight": "size + 28",
+    "attentionScale": 1.22,
+    "transformOrigin": "50% 88%",
+    "spring": "cubic-bezier(.34,1.7,.64,1) 350ms",
+    "bubble": {
+      "gap": 2,
+      "padding": [
+        5,
+        10
+      ],
+      "radius": 8,
+      "tailFromRight": "size*0.32",
+      "liftOnAttention": -6
+    },
+    "careTray": {
+      "position": "left of character, bottom-aligned, gap 6",
+      "buttons": [
+        "water",
+        "food",
+        "toy"
+      ],
+      "button": {
+        "size": 30,
+        "radius": 7,
+        "gap": 4,
+        "border": "1px separator",
+        "hover": "accent"
+      },
+      "paddingBottom": 10
+    }
+  },
+  "characterInline": {
+    "replyMarker": 24,
+    "statusBar": {
+      "size": 22,
+      "build": "face",
+      "margin": "-2px -2px -2px -3px"
+    },
+    "menubar": [
+      16,
+      18,
+      22
+    ]
+  }
+}

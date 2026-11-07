@@ -1,0 +1,51 @@
+/* Elisa colour tokens. Dark is default; add .elisa-light to switch. */
+:root {
+  --elisa-bg: #16131C;
+  --elisa-bg2: #201C29;
+  --elisa-bg3: #2A2536;
+  --elisa-fg: #FFFFFF;
+  --elisa-text: #ECE8F2;
+  --elisa-text-muted: #A9A2B6;
+  --elisa-accent: #FF8FB1;
+  --elisa-code: #9FE0F0;
+  --elisa-ok: #78C878;
+  --elisa-error: #FF6B7A;
+  --elisa-warn: #F2CC6B;
+  --elisa-separator: #3F3850;
+  --elisa-gutter: #6A6280;
+  --elisa-diff-add: rgba(120,200,120,.13);
+  --elisa-diff-del: rgba(255,107,122,.13);
+  --elisa-selection: rgba(255,143,177,.15);
+  --elisa-char-body: #141418;
+  --elisa-char-rim: #3A3A46;
+  --elisa-char-mini-body: #3A3A46;
+  --elisa-char-paw: #1C1C22;
+  --elisa-char-ear-inner: #82C8DC;
+  --elisa-char-eye: #EEF0E6;
+  --elisa-char-pupil: #0E0E12;
+  --elisa-char-effect-cyan: #82C8DC;
+  --elisa-char-prop-amber: #E6BE50;
+  --elisa-char-prop-coral: #D77757;
+  --elisa-char-prop-green: #78C878;
+  --elisa-char-prop-pink: #FF8FB1;
+  --elisa-char-paper: #EEF0E6;
+}
+.elisa-light {
+  --elisa-bg: #F8F6FB;
+  --elisa-bg2: #EFEBF4;
+  --elisa-bg3: #E5E0EC;
+  --elisa-fg: #120E18;
+  --elisa-text: #221C2A;
+  --elisa-text-muted: #5E566C;
+  --elisa-accent: #C2386A;
+  --elisa-code: #1D6E84;
+  --elisa-ok: #2C7D35;
+  --elisa-error: #C42B3C;
+  --elisa-warn: #8A6400;
+  --elisa-separator: #DAD3E4;
+  --elisa-gutter: #8C8499;
+  --elisa-diff-add: rgba(44,125,53,.10);
+  --elisa-diff-del: rgba(196,43,60,.09);
+  --elisa-selection: rgba(194,56,106,.12);
+  --elisa-input-bg: #FFFFFF;
+}

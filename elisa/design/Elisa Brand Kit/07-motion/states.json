@@ -1,0 +1,182 @@
+[
+  {
+    "state": "idle",
+    "kind": "core",
+    "label": "Idle",
+    "durationMs": 4000,
+    "loop": true,
+    "use": "Waiting for input. Slow breath, a blink, one ear flick.",
+    "file": "05-character/shade/motion/elisa-shade-idle.json"
+  },
+  {
+    "state": "listening",
+    "kind": "core",
+    "label": "Listening",
+    "durationMs": 2000,
+    "loop": true,
+    "use": "User is typing. Head tilts toward the input, small nods.",
+    "file": "05-character/shade/motion/elisa-shade-listening.json"
+  },
+  {
+    "state": "thinking",
+    "kind": "core",
+    "label": "Thinking",
+    "durationMs": 2400,
+    "loop": true,
+    "use": "Model is reasoning. Looks up, eyes narrow, three cyan beads.",
+    "file": "05-character/shade/motion/elisa-shade-thinking.json"
+  },
+  {
+    "state": "streaming",
+    "kind": "core",
+    "label": "Streaming",
+    "durationMs": 2400,
+    "loop": true,
+    "use": "Writing a reply. Bobs on the beat while lines type out.",
+    "file": "05-character/shade/motion/elisa-shade-streaming.json"
+  },
+  {
+    "state": "running",
+    "kind": "core",
+    "label": "Running tool",
+    "durationMs": 1600,
+    "loop": true,
+    "use": "A tool is executing. Holds a small terminal, watches progress.",
+    "file": "05-character/shade/motion/elisa-shade-running.json"
+  },
+  {
+    "state": "permission",
+    "kind": "core",
+    "label": "Waiting for permission",
+    "durationMs": 2000,
+    "loop": true,
+    "use": "Needs a yes or no. Sits up, paw raised, looks at you.",
+    "file": "05-character/shade/motion/elisa-shade-permission.json"
+  },
+  {
+    "state": "success",
+    "kind": "core",
+    "label": "Success",
+    "durationMs": 1600,
+    "loop": true,
+    "use": "Task done. Squat, hop, happy eyes, green check.",
+    "file": "05-character/shade/motion/elisa-shade-success.json"
+  },
+  {
+    "state": "error",
+    "kind": "core",
+    "label": "Error",
+    "durationMs": 2000,
+    "loop": true,
+    "use": "Something failed. Ears droop, a small head shake, red badge.",
+    "file": "05-character/shade/motion/elisa-shade-error.json"
+  },
+  {
+    "state": "interrupted",
+    "kind": "core",
+    "label": "Interrupted",
+    "durationMs": 1400,
+    "loop": true,
+    "use": "User pressed stop. Startled hop back, freeze, settle.",
+    "file": "05-character/shade/motion/elisa-shade-interrupted.json"
+  },
+  {
+    "state": "memory",
+    "kind": "core",
+    "label": "Memory recalled",
+    "durationMs": 2400,
+    "loop": true,
+    "use": "A stored fact comes back. Cyan bead rises, sinks in, eyes glow.",
+    "file": "05-character/shade/motion/elisa-shade-memory.json"
+  },
+  {
+    "state": "sleeping",
+    "kind": "core",
+    "label": "Unloading / sleeping",
+    "durationMs": 4000,
+    "loop": true,
+    "use": "Weights moved to disk. Curled low, eyes shut, slow z.",
+    "file": "05-character/shade/motion/elisa-shade-sleeping.json"
+  },
+  {
+    "state": "waking",
+    "kind": "core",
+    "label": "Waking / restore",
+    "durationMs": 2400,
+    "loop": true,
+    "use": "Weights back in memory. Stretches up, double blink, ears pop.",
+    "file": "05-character/shade/motion/elisa-shade-waking.json"
+  },
+  {
+    "state": "greeting",
+    "kind": "action",
+    "label": "Greeting",
+    "durationMs": 2000,
+    "loop": true,
+    "use": "Session start, waking, or a click. Hops, waves a paw, happy eyes.",
+    "file": "05-character/shade/motion/elisa-shade-greeting.json"
+  },
+  {
+    "state": "reading",
+    "kind": "action",
+    "label": "Reading",
+    "durationMs": 2400,
+    "loop": true,
+    "use": "Read tool, or summarizing. Holds a page, eyes scan line by line.",
+    "file": "05-character/shade/motion/elisa-shade-reading.json"
+  },
+  {
+    "state": "searching",
+    "kind": "action",
+    "label": "Searching",
+    "durationMs": 2000,
+    "loop": true,
+    "use": "Grep or search. Sweeps a magnifier across, eyes follow it.",
+    "file": "05-character/shade/motion/elisa-shade-searching.json"
+  },
+  {
+    "state": "editing",
+    "kind": "action",
+    "label": "Editing",
+    "durationMs": 1600,
+    "loop": true,
+    "use": "Edit or Write tool. Scribbles on a notepad with a pencil.",
+    "file": "05-character/shade/motion/elisa-shade-editing.json"
+  },
+  {
+    "state": "building",
+    "kind": "action",
+    "label": "Building",
+    "durationMs": 1200,
+    "loop": true,
+    "use": "cargo build or check. Hammers a block, sparks fly on each hit.",
+    "file": "05-character/shade/motion/elisa-shade-building.json"
+  },
+  {
+    "state": "testing",
+    "kind": "action",
+    "label": "Testing",
+    "durationMs": 2000,
+    "loop": true,
+    "use": "Running tests. Watches a bubbling flask, leans in.",
+    "file": "05-character/shade/motion/elisa-shade-testing.json"
+  },
+  {
+    "state": "celebrating",
+    "kind": "action",
+    "label": "Celebrating",
+    "durationMs": 1800,
+    "loop": true,
+    "use": "A task finished after real work. Big jump, both paws up, confetti.",
+    "file": "05-character/shade/motion/elisa-shade-celebrating.json"
+  },
+  {
+    "state": "confused",
+    "kind": "action",
+    "label": "Confused",
+    "durationMs": 2400,
+    "loop": true,
+    "use": "Unknown command or an unclear request. Head tilts side to side, question marks.",
+    "file": "05-character/shade/motion/elisa-shade-confused.json"
+  }
+]

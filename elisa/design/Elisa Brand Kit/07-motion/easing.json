@@ -1,0 +1,27 @@
+{
+  "io": [
+    "Ease in-out",
+    "cubic-bezier(.65,0,.35,1)",
+    "Breathing, looks, weight shifts"
+  ],
+  "out": [
+    "Ease out",
+    "cubic-bezier(.33,1,.68,1)",
+    "Reactions, pops, landing"
+  ],
+  "in": [
+    "Ease in",
+    "cubic-bezier(.32,0,.67,0)",
+    "Anticipation, falling, leaving"
+  ],
+  "back": [
+    "Overshoot",
+    "cubic-bezier(.34,1.7,.64,1)",
+    "Ears and badges settling"
+  ],
+  "lin": [
+    "Linear",
+    "linear",
+    "Progress, orbiting, drifting z"
+  ]
+}

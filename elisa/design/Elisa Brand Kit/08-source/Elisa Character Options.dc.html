@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<script src="elisa-character.js"></script>
+<script src="elisa-character-options.js"></script>
+<script src="elisa-anime.js"></script>
+<script src="elisa-more.js"></script>
+<script src="elisa-extra.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>body{margin:0;background:#1E1E24;-webkit-font-smoothing:antialiased}*{box-sizing:border-box}a{color:#D77757}a:hover{color:#E8E8E8}</style>
+</helmet>
+<sc-for list="{{ turns }}" as="tn" hint-placeholder-count="2">
+<section id="{{ tn.id }}" data-screen-label="{{ tn.label }}" style="background:#1E1E24;color:#E8E8E8;font-family:'IBM Plex Sans',system-ui,sans-serif;border-bottom:1px solid #46465A">
+<div style="max-width:1440px;margin:0 auto;padding:56px 40px 72px;display:flex;flex-direction:column;gap:40px">
+  <header style="display:flex;flex-direction:column;gap:12px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:#9696A0">{{ tn.kicker }}</div>
+    <h1 style="margin:0;font-size:40px;font-weight:500;letter-spacing:-.01em">{{ tn.title }}</h1>
+    <p style="margin:0;max-width:760px;font-size:16px;line-height:1.55;color:#9696A0;text-wrap:pretty">{{ tn.intro }}</p>
+    <sc-if value="{{ tn.hasStates }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-top:4px">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9696A0;margin-right:6px">STATUS</span>
+        <sc-for list="{{ tn.stateBtns }}" as="sb" hint-placeholder-count="12"><button onClick="{{ sb.pick }}" style="{{ sb.style }}">{{ sb.label }}</button></sc-for>
+      </div>
+    </sc-if>
+  </header>
+  <sc-for list="{{ tn.fams }}" as="f" hint-placeholder-count="2">
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;align-items:baseline;gap:14px;border-bottom:1px solid #46465A;padding-bottom:10px">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#D77757">{{ f.key }}</span>
+        <h2 style="margin:0;font-size:22px;font-weight:500">{{ f.title }}</h2>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(184px,1fr));gap:12px">
+        <sc-for list="{{ f.items }}" as="o" hint-placeholder-count="8">
+          <div id="{{ o.id }}" style="display:flex;flex-direction:column;border:1px solid #34343F;border-radius:12px;overflow:hidden;background:#24242B">
+            <div style="position:relative;display:flex;align-items:center;justify-content:center;height:180px;background:#1E1E24">
+              <span style="position:absolute;top:10px;left:10px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;color:#1E1E24;background:#D77757;padding:2px 7px;border-radius:4px">{{ o.id }}</span>
+              <div data-ea="{{ o.id }}" data-size="160" data-st="{{ o.st }}"></div>
+            </div>
+            <sc-if value="{{ showSmall }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex;align-items:center;gap:14px;padding:8px 12px;border-top:1px solid #34343F;background:#1E1E24">
+                <div data-ea="{{ o.id }}" data-size="48" data-st="{{ o.st }}"></div>
+                <div data-ea="{{ o.id }}" data-size="24" data-mini="1" data-st="{{ o.st }}"></div>
+                <div style="margin-left:auto;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;background:#F5F5F7"><div data-ea="{{ o.id }}" data-size="24" data-mini="1" data-st="{{ o.st }}"></div></div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ o.hasStatus }}" hint-placeholder-val="{{ false }}">
+              <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:8px 6px 6px;border-top:1px solid #34343F;background:#1E1E24">
+                <sc-for list="{{ o.status }}" as="s" hint-placeholder-count="4">
+                  <div style="display:flex;flex-direction:column;align-items:center;gap:2px"><div data-ea="{{ o.id }}" data-size="40" data-st="{{ s.k }}"></div><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#9696A0">{{ s.l }}</span></div>
+                </sc-for>
+              </div>
+            </sc-if>
+            <div style="display:flex;flex-direction:column;gap:3px;padding:10px 12px 12px">
+              <span style="font-size:14px;font-weight:500">{{ o.name }}</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.45;color:#9696A0;overflow-wrap:anywhere">{{ o.parts }}</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-for>
+</div>
+</section>
+</sc-for>
+<section id="turn-1" data-screen-label="Character options" style="min-height:100vh;background:#1E1E24;color:#E8E8E8;font-family:'IBM Plex Sans',system-ui,sans-serif">
+<div style="max-width:1440px;margin:0 auto;padding:56px 40px 96px;display:flex;flex-direction:column;gap:48px">
+  <header style="display:flex;flex-direction:column;gap:14px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:#9696A0">ELISA / CHARACTER / OPTIONS · TURN 1</div>
+    <h1 style="margin:0;font-size:44px;font-weight:500;letter-spacing:-.01em">56 character options</h1>
+    <p style="margin:0;max-width:720px;font-size:16px;line-height:1.55;color:#9696A0;text-wrap:pretty">Eight families, seven each, all in the Elisa palette: graphite bodies, off-white eyes, coral accent, cyan for model activity. Each idles live at hero size, 48 px, and as the 24 px mini build on dark and light. Reply with ids (e.g. A2, E1, G1) to take one or more into the full twelve-state set.</p>
+  </header>
+
+  <div id="00" style="display:flex;gap:20px;align-items:center;flex-wrap:wrap;padding:18px 20px;border:1px solid #46465A;border-radius:12px;background:#24242B">
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#1E1E24;background:#9696A0;padding:3px 8px;border-radius:4px">00</span>
+    <div data-ec-ref="1" data-size="96"></div>
+    <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:15px;font-weight:500">Current: v1 cat</span><span style="font-size:13px;color:#9696A0">The character in <a href="Elisa Character.dc.html">Elisa Character</a>, for comparison.</span></div>
+  </div>
+
+  <sc-for list="{{ fams }}" as="f" hint-placeholder-count="8">
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div style="display:flex;align-items:baseline;gap:14px;border-bottom:1px solid #46465A;padding-bottom:10px">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#D77757">{{ f.key }}</span>
+        <h2 style="margin:0;font-size:22px;font-weight:500">{{ f.title }}</h2>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(184px,1fr));gap:12px">
+        <sc-for list="{{ f.items }}" as="o" hint-placeholder-count="7">
+          <div id="{{ o.id }}" style="display:flex;flex-direction:column;border:1px solid #34343F;border-radius:12px;overflow:hidden;background:#24242B">
+            <div style="position:relative;display:flex;align-items:center;justify-content:center;height:180px;background:#1E1E24">
+              <span style="position:absolute;top:10px;left:10px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;color:#1E1E24;background:#D77757;padding:2px 7px;border-radius:4px">{{ o.id }}</span>
+              <div data-eo="{{ o.id }}" data-size="160"></div>
+            </div>
+            <sc-if value="{{ showSmall }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex;align-items:center;gap:14px;padding:8px 12px;border-top:1px solid #34343F;background:#1E1E24">
+                <div data-eo="{{ o.id }}" data-size="48"></div>
+                <div data-eo="{{ o.id }}" data-size="24" data-mini="1"></div>
+                <div style="margin-left:auto;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;background:#F5F5F7"><div data-eo="{{ o.id }}" data-size="24" data-mini="1"></div></div>
+              </div>
+            </sc-if>
+            <div style="display:flex;flex-direction:column;gap:3px;padding:10px 12px 12px">
+              <span style="font-size:14px;font-weight:500">{{ o.name }}</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.45;color:#9696A0;overflow-wrap:anywhere">{{ o.parts }}</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-for>
+</div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;pixelStyle&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;pixelDensity&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Chunky&quot;,&quot;Fine&quot;],&quot;default&quot;:&quot;Chunky&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;animate&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;showSmall&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;}}">
+class Component extends DCLogic {
+  componentDidMount() {
+    this.start();
+    this._w = setInterval(() => { if (window.ElisaOptions && window.ElisaAnime && window.ElisaMore && window.ElisaExtra) { clearInterval(this._w); this.forceUpdate(); } }, 60);
+  }
+  start() {
+    window.__eoLoop = this;
+    this.t0 = this.t0 || window.__eoT0 || (window.__eoT0 = performance.now()); this.last = this.last || 0;
+    window.__eoFrame = now => this.frame(now);
+    if (!window.__eoDrv) {
+      window.__eoDrv = 1;
+      setInterval(() => { try { window.__eoFrame && window.__eoFrame(performance.now()); } catch (e) { if (!window.__eoErr) { window.__eoErr = 1; console.error('char loop', e); } } }, 60);
+    }
+  }
+  frame(now) {
+    {
+      const EO = window.ElisaOptions, EA = window.ElisaAnime; if (!EO || !EA || !window.ElisaMore || now - this.last < 50) return;
+      const anim = this.props.animate ?? true;
+      this.last = now; const t = anim ? (now - this.t0) / 1000 : 1.2;
+      if (!this.map || !this.map.aS1 || (window.ElisaExtra && !this.map.aKE1)) { this.map = {}; EO.OPTIONS.forEach(o => this.map['o' + o.id] = [EO, o.cfg]); EA.OPTIONS.forEach(o => this.map['a' + o.id] = [EA, o.cfg]); if (window.ElisaMore) window.ElisaMore.OPTIONS.forEach(o => this.map['a' + o.id] = [window.ElisaMore, o.cfg]); if (window.ElisaExtra) window.ElisaExtra.OPTIONS.forEach(o => this.map['a' + o.id] = [window.ElisaExtra, o.cfg]); }
+      if (!this.vis) this.vis = new Set();
+      const sy = window.scrollY;
+      if (!this.lastScan || now - this.lastScan > 700 || (sy !== this.lastY && now - this.lastScan > 150)) {
+        this.lastScan = now; this.lastY = sy;
+        const H = window.innerHeight, vis = new Set();
+        document.querySelectorAll('[data-eo],[data-ea]').forEach(el => { const r = el.getBoundingClientRect(); if (r.bottom > -200 && r.top < H + 200) vis.add(el); });
+        this.vis = vis;
+      }
+      const px = this.props.pixelStyle ?? true;
+      if (px && now - (this.lastPx || 0) < 200) return;
+      this.lastPx = now;
+      const tq = px ? Math.floor(t * 8) / 8 : t;
+      if (document.hidden) return;
+      const want = px ? 2 : 1, all = [...this.vis], undrawn = all.filter(el => el.__drawn !== want), drawn = all.filter(el => el.__drawn === want);
+      this.rot = ((this.rot || 0) + 6) % Math.max(1, drawn.length);
+      const order = undrawn.concat(drawn.slice(this.rot), drawn.slice(0, this.rot));
+      const cap = undrawn.length ? 12 : 6;
+      order.forEach(el => {
+        const small = +el.getAttribute('data-size') < 100;
+        if ((!anim || (px && small)) && el.__drawn === (px ? 2 : 1)) return;
+        if (px && (window.__eoInflight || 0) >= cap) return;
+        const k = el.hasAttribute('data-ea') ? 'a' + el.getAttribute('data-ea') : 'o' + el.getAttribute('data-eo');
+        const m = this.map[k]; if (!m) return;
+        const size = +el.getAttribute('data-size');
+        const svg = m[0].render(m[1], tq, { size, mini: el.hasAttribute('data-mini'), state: el.getAttribute('data-st') || undefined });
+        if (px) this.pixelate(el, svg, size); else { el.__cv = null; el.innerHTML = svg; }
+        el.__drawn = px ? 2 : 1;
+      });
+      const ref = document.querySelector('[data-ec-ref]');
+      if (ref && window.ElisaChar) { const svg = window.ElisaChar.svg('idle', anim ? ((now - this.t0) / 4000) : .5, { size: 96, noProps: true }); if (px) this.pixelate(ref, svg, 96); else { ref.__cv = null; ref.innerHTML = svg; } }
+      this.drawn = true;
+    }
+  }
+  pixelate(el, svg, size) {
+    const fine = this.props.pixelDensity === 'Fine';
+    const G = size >= 90 ? (fine ? 56 : 40) : size >= 40 ? (fine ? 32 : 24) : size;
+    let cv = el.__cv;
+    if (!cv || !cv.isConnected || cv.width !== G) {
+      el.innerHTML = ''; cv = document.createElement('canvas'); cv.width = cv.height = G;
+      cv.style.cssText = `width:${size}px;height:${size}px;image-rendering:pixelated;image-rendering:crisp-edges;display:block`;
+      el.appendChild(cv); el.__cv = cv;
+    }
+    if (el.__busy) return; el.__busy = 1; window.__eoInflight = (window.__eoInflight || 0) + 1;
+    const done = () => { el.__busy = 0; window.__eoInflight = Math.max(0, (window.__eoInflight || 1) - 1); };
+    const src = svg.replace(/width="\d+(\.\d+)?" height="\d+(\.\d+)?"/, `width="${G}" height="${G}"`).replace('overflow:visible', 'overflow:hidden');
+    const pal = [...new Set((src.match(/#[0-9a-fA-F]{6}/g) || []).map(h => h.toUpperCase()))].filter(h => h !== '#000000').map(h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]);
+    pal.push([255, 255, 255]);
+    const img = new Image();
+    img.onload = () => {
+      done();
+      const sc = this._sc || (this._sc = document.createElement('canvas'));
+      sc.width = sc.height = G; const x = sc.getContext('2d', { willReadFrequently: true });
+      x.clearRect(0, 0, G, G); x.drawImage(img, 0, 0, G, G);
+      const d = x.getImageData(0, 0, G, G), p = d.data, out = new Uint8ClampedArray(p.length);
+      for (let i = 0; i < p.length; i += 4) {
+        if (p[i + 3] < 120) continue;
+        let best = 0, bd = 1e9;
+        for (let j = 0; j < pal.length; j++) { const c = pal[j], dd = (c[0] - p[i]) ** 2 + (c[1] - p[i + 1]) ** 2 + (c[2] - p[i + 2]) ** 2; if (dd < bd) { bd = dd; best = j; } }
+        out[i] = pal[best][0]; out[i + 1] = pal[best][1]; out[i + 2] = pal[best][2]; out[i + 3] = 255;
+      }
+      if (G >= 24) {
+        const o2 = new Uint8ClampedArray(out);
+        for (let yy = 0; yy < G; yy++) for (let xx = 0; xx < G; xx++) {
+          const i = (yy * G + xx) * 4; if (out[i + 3]) continue;
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = xx + dx, ny = yy + dy; if (nx < 0 || ny < 0 || nx >= G || ny >= G) continue;
+            const j = (ny * G + nx) * 4; if (!out[j + 3]) continue;
+            o2[i] = out[j] * .42; o2[i + 1] = out[j + 1] * .42; o2[i + 2] = out[j + 2] * .42 + 6; o2[i + 3] = 255; break;
+          }
+        }
+        out.set(o2);
+      }
+      const ctx = cv.getContext('2d'); ctx.putImageData(new ImageData(out, G, G), 0, 0);
+    };
+    img.onerror = done;
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(src);
+  }
+  componentDidUpdate() { document.querySelectorAll('[data-eo],[data-ea]').forEach(el => el.__drawn = 0); this.lastScan = 0; }
+  componentWillUnmount() { clearInterval(this._w); if (this.io) this.io.disconnect(); if (window.__eoLoop === this) window.__eoFrame = null; }
+  renderVals() {
+    if (window.__eoLoop !== this) this.start();
+    const EO = window.ElisaOptions;
+    const keep = () => true;
+    const fams = EO ? Object.entries(EO.FAMILIES).map(([key, title]) => ({ key, title, items: EO.OPTIONS.filter(o => o.id[0] === key && keep(o)).map(o => {
+      const c = o.cfg; const parts = [c.body, c.ears || c.top, c.eyes + ' eyes', c.acc, c.pal && c.pal !== 'graphite' ? c.pal : null].filter(Boolean).join(' · ');
+      return { id: o.id, name: o.name, parts };
+    }) })) : [];
+    const EA = window.ElisaAnime;
+    const afam = keys => EA ? keys.filter(k => EA.FAMILIES[k]).map(key => ({ key, title: EA.FAMILIES[key], items: EA.OPTIONS.filter(o => o.id[0] === key && keep(o)).map(o => {
+      const c = o.cfg; const parts = c.kind === 'h' ? [c.style + ' hair', c.eyes + ' eyes', c.outfit, ...(c.acc || [])].join(' · ') : [c.body, c.ears || c.top, c.eyes + ' eyes'].filter(Boolean).join(' · ');
+      return { id: o.id, name: o.name, parts };
+    }) })) : [];
+    const EM = window.ElisaMore;
+    const mfam = EM ? Object.entries(EM.FAMILIES).filter(([k]) => k !== 'AC').map(([key, title]) => ({ key, title, items: EM.OPTIONS.filter(o => o.fk === key).map(o => ({ id: o.id, name: o.name, parts: [o.family.toLowerCase(), ...(o.cfg.fx || [])].join(' · ') })) })) : [];
+    const bfam = EM ? [{ key: 'AC', title: EM.FAMILIES.AC, items: EM.OPTIONS.filter(o => o.fk === 'AC').map(o => ({ id: o.id, name: o.name, parts: ['beluga', ...(o.cfg.fx || [])].join(' · ') })) }] : [];
+    const EX = window.ElisaExtra, xs = this.state.xs || 'idle';
+    const xfam = EX ? Object.entries(EX.FAMILIES).map(([key, title]) => ({ key, title, items: EX.OPTIONS.filter(o => o.fk === key).map(o => ({ id: o.id, name: o.name, parts: o.cfg.desc, st: xs, hasStatus: true, status: EX.STATE_ROW.map(([k, l]) => ({ k, l })) })) })) : [];
+    const stateBtns = EX ? EX.ORDER.map(k => ({ label: EX.STATES[k].label.replace('Waiting for permission', 'Permission').replace('Unloading / sleeping', 'Sleeping').replace('Waking / restore', 'Waking').replace('Memory recalled', 'Memory'), pick: () => this.setState({ xs: k }), style: { font: "12px 'IBM Plex Mono',monospace", padding: '4px 9px', borderRadius: 5, cursor: 'pointer', border: '1px solid ' + (k === xs ? '#D77757' : '#46465A'), background: k === xs ? '#D77757' : 'transparent', color: k === xs ? '#1E1E24' : '#E8E8E8' } })) : [];
+    const turns = [
+      { id: 'turn-8', label: 'Turn 8 kitten eye, mind, solar', kicker: 'ELISA / CHARACTER / OPTIONS · TURN 8', title: '30 more: kitten eye, mind and solar', intro: 'Ten per family. Kitten eye: big glossy kitten eyes on ten coats. Mind: thinking creatures (brain, bulb, neuron, crystal ball, prism, sage owl). Solar: sun, sunflower, panel bot, eclipse, comet, ringed planet. All thirty run on the same twelve-state keyframes as the app: the status row under each card shows thinking, done, error and sleeping, and the buttons below switch every large preview to one state.', hasStates: true, stateBtns, fams: xfam },
+      { id: 'turn-7', label: 'Turn 7 beluga', kicker: 'ELISA / CHARACTER / OPTIONS · TURN 7', title: '8 line belugas', intro: 'Simplified to one continuous outline: rounded head, tail fluke, one flipper, a dot eye and a small smile. No fills, blush or shading, except AC4 as a flat silhouette for comparison. Variants: coral collar, sleepy, front view, water spout, all-coral line, and a coral cursor blowhole.', fams: bfam },
+      { id: 'turn-6', label: 'Turn 6 food and more', kicker: 'ELISA / CHARACTER / OPTIONS · TURN 6', title: '100 more: cooking, food and nature', intro: 'Ten families of ten: bakery, sweets, savoury, fruit, vegetables, drinks, kitchen tools, sea creatures, forest and farm animals, and sky and garden. Same simple kawaii faces and pixel treatment. Some carry small loops: steam from mugs and pots, toast popping from the toaster, bubbles from the soda can, a wobbling pudding.', fams: mfam },
+      { id: 'turn-5', label: 'Turn 5 elements', kicker: 'ELISA / CHARACTER / OPTIONS · TURN 5', title: '10 elemental characters', intro: 'Fire, water, stream, air, ice, stone and weather, in the same simple pixel style. R2 “Pilot light” is a small cyan flame: a quiet fit for a model that stays lit on your Mac.', fams: afam(['R']) },
+      { id: 'turn-4', label: 'Turn 4 kawaii pixel', kicker: 'ELISA / CHARACTER / OPTIONS · TURN 4', title: '12 kawaii originals, pixel style', intro: 'Originals in the spirit of your three references: a napping shiba with a battery (a natural fit for the unloading state), a chibi fox with an autumn leaf, and chubby seated animals with paw pads. The whole page now renders as pixel art by default: shapes are snapped to the character’s own palette with a one-pixel darker outline, and motion steps at 8 fps. Switch “Pixel style” off in Tweaks to compare with the vector versions.', fams: afam(['Q']) },
+      { id: 'turn-3', label: 'Turn 3 inspired', kicker: 'ELISA / CHARACTER / OPTIONS · TURN 3', title: '8 originals from your references', intro: 'Original characters that take the qualities of your two references (a near-black silhouette spirit with huge pale eyes, and a glossy translucent slime with simple line expressions) without copying either. Elisa touches: cyan inner ears and a coral collar on the shades, a blinking coral cursor on the slimes.', fams: afam(['P']) },
+      { id: 'turn-2', label: 'Turn 2 anime', kicker: 'ELISA / CHARACTER / OPTIONS · TURN 2', title: 'Anime-style animals', intro: 'Anime-style creatures, all original and kept to the Elisa palette: mascots, animal spirits and a mecha cat. Human characters have been removed.', fams: afam(['M', 'N', 'O']) }
+    ];
+    turns.forEach(tn => tn.fams = tn.fams.filter(f => f.items.length));
+    return { fams: fams.filter(f => f.items.length), turns, showSmall: this.props.showSmall ?? true };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<script src="elisa-character.js"></script>
+<script src="elisa-tanuki.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;600&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+<style>body{margin:0;background:#16131C;-webkit-font-smoothing:antialiased}*{box-sizing:border-box}a{color:#FF8FB1}a:hover{color:#ECE8F2}button{font:inherit}input[type=range]{accent-color:#FF8FB1}</style>
+</helmet>
+<div style="min-height:100vh;background:#16131C;color:#ECE8F2;font-family:'Chivo Mono',ui-monospace,monospace">
+<div style="max-width:1240px;margin:0 auto;padding:56px 40px 96px;display:flex;flex-direction:column;gap:72px">
+
+  <header style="display:flex;flex-direction:column;gap:14px">
+    <div style="font-family:'Silkscreen',monospace;font-size:12px;letter-spacing:.06em;color:#A9A2B6">ELISA / CHARACTER / V2 · M7 TANUKI · 2H</div>
+    <h1 style="margin:0;font-size:44px;font-weight:500;letter-spacing:-.01em">Tanuki: character and motion</h1>
+    <p style="margin:0;max-width:660px;font-size:16px;line-height:1.55;color:#A9A2B6;text-wrap:pretty">A round graphite tanuki that lives on your Mac. Amber eyes sit inside the dark mask, coral shows in the ears and cheeks, and the ringed tail carries the secondary motion. Twelve states, one renderer: every animation on this page is driven by the same keyframe tracks that ship as JSON.</p>
+  </header>
+
+  <section data-screen-label="01 Character" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #3F3850;padding-bottom:12px">
+      <span style="font-family:'Silkscreen',monospace;font-size:13px;color:#FF8FB1">01</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">Character</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:20px">
+      <div style="display:flex;align-items:center;justify-content:center;min-height:400px;background:radial-gradient(120% 90% at 50% 100%,#2A2536 0%,#16131C 70%);border:1px solid #2E2939;border-radius:14px">
+        <div data-ec="idle" data-ec-size="300" style="width:300px;height:300px"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:0;border-top:1px solid #3F3850;font-size:14px;align-self:start">
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Body</span><span>Round, 108 on a 200 grid, sitting on (100, 172). Graphite #6A6A78 with a #484852 rim so it holds on both dark and light windows.</span></div>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Mask</span><span>The tanuki read. Dark #3A3A42 band behind the eyes. Never animated; it stays put while the eyes move inside it.</span></div>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Eyes</span><span>Amber sparkle eyes with two highlights. All expression lives here: open, wide, happy arc, closed, sad. Irises shift toward cyan on memory recall.</span></div>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Ears</span><span>Round, coral inside, pivoting at the base. Perk, flick, fold outward, droop.</span></div>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Belly, tail, paws</span><span>Cream belly patch. Ringed tail and paws are secondary motion and drop out below 32 px.</span></div>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Mouth</span><span>Cat mouth at rest, open when happy, small o when startled, talks while streaming.</span></div>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Effects</span><span>Cyan for model activity (thinking, tools, memory). Green, red, amber only for outcome badges.</span></div>
+        <div style="display:flex;gap:8px;padding-top:16px;flex-wrap:wrap">
+          <span style="width:28px;height:28px;border-radius:6px;background:#6A6A78;box-shadow:inset 0 0 0 1px #3F3850"></span>
+          <span style="width:28px;height:28px;border-radius:6px;background:#3A3A42;box-shadow:inset 0 0 0 1px #3F3850"></span>
+          <span style="width:28px;height:28px;border-radius:6px;background:#ECE6DA;box-shadow:inset 0 0 0 1px #3F3850"></span>
+          <span style="width:28px;height:28px;border-radius:6px;background:#E6BE50;box-shadow:inset 0 0 0 1px #3F3850"></span>
+          <span style="width:28px;height:28px;border-radius:6px;background:#D77757;box-shadow:inset 0 0 0 1px #3F3850"></span>
+          <span style="width:28px;height:28px;border-radius:6px;background:#82C8DC;box-shadow:inset 0 0 0 1px #3F3850"></span>
+          <span style="width:28px;height:28px;border-radius:6px;background:#78C878;box-shadow:inset 0 0 0 1px #3F3850"></span>
+          <span style="width:28px;height:28px;border-radius:6px;background:#F06464;box-shadow:inset 0 0 0 1px #3F3850"></span>
+        </div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:20px">
+      <div style="display:flex;align-items:flex-end;gap:28px;flex-wrap:wrap;padding:28px;background:#16131C;border:1px solid #3F3850;border-radius:14px">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="128" data-ec-noprops="1"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#A9A2B6">128</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="64"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#A9A2B6">64</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="48"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#A9A2B6">48</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="24"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#A9A2B6">24 mini</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="16"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#A9A2B6">16 mini</span></div>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:28px;flex-wrap:wrap;padding:28px;background:#F8F6FB;border-radius:14px">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="128" data-ec-noprops="1"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#5E566C">128</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="64"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#5E566C">64</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="48"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#5E566C">48</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="24"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#5E566C">24 mini</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><div data-ec="idle" data-ec-size="16"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#5E566C">16 mini</span></div>
+      </div>
+    </div>
+    <p style="margin:0;font-size:13px;color:#A9A2B6;line-height:1.5;max-width:720px">At 24 px and below the mini build takes over: cropped tighter, lighter body, simpler eyes with one highlight, no tail, paws, mouth or effects. The mask stays, so it still reads as a tanuki. Vertical motion is scaled to 45 % so it stays inside the frame.</p>
+  </section>
+
+  <section data-screen-label="02 States" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #3F3850;padding-bottom:12px;flex-wrap:wrap">
+      <span style="font-family:'Silkscreen',monospace;font-size:13px;color:#FF8FB1">02</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">States</h2>
+      <span style="margin-left:auto;font-size:13px;color:#A9A2B6">Click a state to inspect it on the stage</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:20px">
+      <div style="display:flex;flex-direction:column;background:radial-gradient(120% 90% at 50% 100%,#2A2536 0%,#16131C 70%);border:1px solid #2E2939;border-radius:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:center;height:340px"><div data-ec="{{ sel }}" data-ec-size="280" data-ec-stage="1"></div></div>
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-top:1px solid #2E2939;background:#1B1722">
+          <button onClick="{{ togglePlay }}" style="flex:none;height:30px;min-width:72px;padding:0 12px;border-radius:6px;border:1px solid #3F3850;background:#201C29;color:#ECE8F2;font-size:13px;cursor:pointer" style-hover="border-color:#FF8FB1">{{ playLabel }}</button>
+          <input type="range" min="0" max="1000" data-ec-scrubber="1" onInput="{{ onScrub }}" style="flex:1;min-width:0">
+          <span data-ec-time="1" style="flex:none;width:128px;white-space:nowrap;text-align:right;font-family:'Chivo Mono',monospace;font-size:12px;color:#A9A2B6">0 ms</span>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div style="font-size:22px;font-weight:500">{{ selInfo.label }}</div>
+          <div style="font-size:14px;color:#A9A2B6;line-height:1.5">{{ selInfo.use }}</div>
+          <div style="display:flex;gap:16px;font-family:'Chivo Mono',monospace;font-size:12px;color:#9FE0F0"><span>{{ selInfo.dur }}</span><span>{{ selInfo.loop }}</span><span>{{ selInfo.file }}</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;border-top:1px solid #3F3850;font-family:'Chivo Mono',monospace;font-size:12px">
+          <sc-for list="{{ selInfo.tracks }}" as="tr" hint-placeholder-count="6">
+            <div style="display:grid;grid-template-columns:76px minmax(0,1fr);gap:12px;padding:8px 0;border-bottom:1px solid #2E2939">
+              <span style="color:#ECE8F2">{{ tr.k }}</span>
+              <span style="color:#A9A2B6;overflow-wrap:anywhere;line-height:1.5">{{ tr.v }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+      <sc-for list="{{ cards }}" as="c" hint-placeholder-count="12">
+        <button onClick="{{ c.pick }}" style="display:flex;flex-direction:column;text-align:left;padding:0;border:1px solid #2E2939;border-radius:12px;overflow:hidden;background:#201C29;color:#ECE8F2;cursor:pointer" style-hover="border-color:#A9A2B6">
+          <div style="position:relative;display:flex;align-items:center;justify-content:center;height:170px;width:100%;background:#16131C"><sc-if value="{{ c.isSel }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:10px;left:10px;font-family:'Chivo Mono',monospace;font-size:10px;letter-spacing:.06em;color:#16131C;background:#FF8FB1;padding:2px 6px;border-radius:2px;font-family:'Silkscreen',monospace">ON STAGE</span></sc-if><div data-ec="{{ c.key }}" data-ec-size="150"></div></div>
+          <div style="display:flex;align-items:center;gap:14px;padding:10px 14px;width:100%;border-top:1px solid #2E2939;background:#16131C">
+            <div data-ec="{{ c.key }}" data-ec-size="48" data-ec-noprops="1"></div>
+            <div data-ec="{{ c.key }}" data-ec-size="24"></div>
+            <div data-ec="{{ c.key }}" data-ec-size="16"></div>
+            <div style="margin-left:auto;display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:8px;background:#F8F6FB"><div data-ec="{{ c.key }}" data-ec-size="24"></div></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;padding:12px 14px 14px;width:100%">
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><span style="font-size:15px;font-weight:500">{{ c.label }}</span><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#A9A2B6">{{ c.dur }}</span></div>
+            <span style="font-size:13px;line-height:1.45;color:#A9A2B6;text-wrap:pretty">{{ c.use }}</span>
+          </div>
+        </button>
+      </sc-for>
+    </div>
+  </section>
+
+  <section data-screen-label="03 In context" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #3F3850;padding-bottom:12px">
+      <span style="font-family:'Silkscreen',monospace;font-size:13px;color:#FF8FB1">03</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">In context</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:20px">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <span style="font-size:13px;color:#A9A2B6">Transcript · 24 px beside replies and tool rows</span>
+        <div style="display:flex;flex-direction:column;border:1px solid #3F3850;border-radius:12px;overflow:hidden;background:#16131C">
+          <div style="display:flex;flex-direction:column;gap:16px;padding:20px">
+            <div style="align-self:flex-end;max-width:78%;padding:10px 14px;border-radius:10px;background:#2A2536;font-size:14px;line-height:1.5">Why does the session store drop the last message?</div>
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div data-ec="running" data-ec-size="24" style="flex:none;margin-top:1px"></div>
+              <div style="display:flex;align-items:center;gap:10px;font-family:'Chivo Mono',monospace;font-size:13px"><span>Read</span><span style="color:#9FE0F0">src/session/store.ts</span><span style="color:#A9A2B6">running</span></div>
+            </div>
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div data-ec="streaming" data-ec-size="24" style="flex:none;margin-top:1px"></div>
+              <div style="font-size:14px;line-height:1.6;max-width:560px;text-wrap:pretty"><span style="font-family:'Chivo Mono',monospace;color:#9FE0F0">flush()</span> runs before the final write resolves, so the last message is still in the buffer when the file closes. Awaiting the write inside <span style="font-family:'Chivo Mono',monospace;color:#9FE0F0">flush()</span> fixes it<span style="display:inline-block;width:7px;height:14px;margin-left:2px;vertical-align:-2px;background:#FF8FB1"></span></div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;padding:12px 14px;border-top:1px solid #3F3850;background:#201C29">
+            <div style="display:flex;align-items:center;gap:10px;height:40px;padding:0 12px;border:1px solid #3F3850;border-radius:8px;background:#16131C">
+              <div data-ec="listening" data-ec-size="20"></div>
+              <span style="font-size:14px;color:#ECE8F2">and add a test for it</span><span style="width:1.5px;height:16px;background:#ECE8F2"></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:16px;font-family:'Chivo Mono',monospace;font-size:12px;color:#A9A2B6">
+              <span style="display:flex;align-items:center;gap:6px"><span data-ec="thinking" data-ec-size="16"></span>thinking</span>
+              <span>41 % context</span><span>38 tok/s</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <span style="font-size:13px;color:#A9A2B6">Menu bar · template glyph, 16 / 18 / 22 pt</span>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;flex-direction:column;border-radius:12px;overflow:hidden;border:1px solid #DAD3E4">
+            <div style="display:flex;align-items:center;justify-content:flex-end;gap:16px;height:24px;padding:0 14px;background:#EFEBF4;font-size:13px;color:#16131C"><div data-ec="idle" data-ec-size="16" data-ec-detail="template" data-ec-color="#000000"></div><span>Sun 1 Nov  09:41</span></div>
+            <div style="display:flex;align-items:flex-end;gap:28px;padding:20px 24px;background:#F8F6FB;flex-wrap:wrap">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div data-ec="idle" data-ec-size="16" data-ec-detail="template" data-ec-color="#000000"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#5E566C">idle 16</span></div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div data-ec="thinking" data-ec-size="18" data-ec-detail="template" data-ec-color="#000000"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#5E566C">thinking 18</span></div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div data-ec="sleeping" data-ec-size="22" data-ec-detail="template" data-ec-color="#000000"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#5E566C">unloaded 22</span></div>
+              <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div data-ec="thinking" data-ec-size="66" data-ec-detail="template" data-ec-color="#000000"></div><span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#5E566C">3×</span></div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;border-radius:12px;overflow:hidden;border:1px solid #3F3850">
+            <div style="display:flex;align-items:center;justify-content:flex-end;gap:16px;height:24px;padding:0 14px;background:#201C29;font-size:13px;color:#ECE8F2"><div data-ec="thinking" data-ec-size="16" data-ec-detail="template" data-ec-color="#FFFFFF"></div><span>Sun 1 Nov  09:41</span></div>
+            <div style="padding:14px 24px;background:#16131C;font-size:13px;line-height:1.5;color:#A9A2B6">The template glyph cuts the mask out of the silhouette and keeps the eyes inside it. Only idle, thinking and unloaded animate in the menu bar: eyes move, the silhouette never does.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:20px">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <span style="font-size:13px;color:#A9A2B6">Empty state · 128 px</span>
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;min-height:340px;padding:32px;border:1px solid #3F3850;border-radius:12px;background:#16131C;text-align:center">
+          <div data-ec="idle" data-ec-size="128"></div>
+          <div style="font-size:18px;font-weight:500">Ready when you are</div>
+          <div style="font-family:'Chivo Mono',monospace;font-size:12px;color:#A9A2B6">Running locally · nothing leaves this Mac</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <span style="font-size:13px;color:#A9A2B6">Onboarding · 112 px</span>
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:340px;padding:32px;border:1px solid #3F3850;border-radius:12px;background:#201C29;text-align:center">
+          <div data-ec="waking" data-ec-size="112"></div>
+          <div style="font-size:18px;font-weight:500">Loading the model into memory</div>
+          <div style="width:220px;height:4px;border-radius:2px;background:#3F3850;overflow:hidden"><div style="width:64%;height:100%;background:#9FE0F0"></div></div>
+          <div style="font-family:'Chivo Mono',monospace;font-size:12px;color:#A9A2B6">Step 2 of 3</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <span style="font-size:13px;color:#A9A2B6">Marketing · hero</span>
+        <div style="display:flex;flex-direction:column;justify-content:space-between;gap:20px;min-height:340px;padding:32px;border-radius:12px;background:#F8F6FB;color:#16131C;overflow:hidden">
+          <div style="display:flex;flex-direction:column;gap:10px"><div style="font-size:26px;font-weight:500;line-height:1.2;letter-spacing:-.01em;text-wrap:balance">A private assistant that lives on your Mac.</div><div style="font-size:14px;color:#5E566C">Local model. No cloud. Conversation and code.</div></div>
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px"><span style="display:flex;align-items:center;height:36px;padding:0 16px;border-radius:8px;background:#16131C;color:#ECE8F2;font-size:14px">Download for macOS</span><div data-ec="success" data-ec-size="150" style="margin:-20px -12px -24px 0"></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section data-screen-label="04 Motion spec" style="display:flex;flex-direction:column;gap:28px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #3F3850;padding-bottom:12px">
+      <span style="font-family:'Silkscreen',monospace;font-size:13px;color:#FF8FB1">04</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">Motion spec</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:20px">
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <h3 style="margin:0;font-size:17px;font-weight:500">Rules</h3>
+        <div style="display:flex;flex-direction:column;border-top:1px solid #3F3850;font-size:14px">
+          <div style="display:grid;grid-template-columns:130px 1fr;gap:14px;padding:11px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Frame rate</span><span>60 fps authored; 30 fps is fine at 24 px and below.</span></div>
+          <div style="display:grid;grid-template-columns:130px 1fr;gap:14px;padding:11px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Pivot</span><span>Body scales and tilts from the bottom centre (100, 172), so it stays planted.</span></div>
+          <div style="display:grid;grid-template-columns:130px 1fr;gap:14px;padding:11px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Squash</span><span>0.86 – 1.12 on y, with x counter-scaled. Volume roughly preserved.</span></div>
+          <div style="display:grid;grid-template-columns:130px 1fr;gap:14px;padding:11px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Blink</span><span>3 frames close, 2 hold, 3 open (≈ 120 ms). Once per idle loop.</span></div>
+          <div style="display:grid;grid-template-columns:130px 1fr;gap:14px;padding:11px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Transitions</span><span>Blend any two poses over 200 ms ease in-out. Sleeping → waking uses its own clip.</span></div>
+          <div style="display:grid;grid-template-columns:130px 1fr;gap:14px;padding:11px 0;border-bottom:1px solid #2E2939"><span style="color:#A9A2B6">Reduced motion</span><span>Show the key pose for each state; crossfade 150 ms between them.</span></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <h3 style="margin:0;font-size:17px;font-weight:500">Easing</h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px">
+          <sc-for list="{{ curves }}" as="cv" hint-placeholder-count="5">
+            <div style="display:flex;flex-direction:column;gap:8px;padding:14px;border:1px solid #2E2939;border-radius:10px;background:#201C29">
+              <svg viewBox="-6 -20 112 140" width="100%" height="96" style="display:block" fill="none">
+                <path d="M0 100H100M0 0V100" stroke="#3F3850" stroke-width="1"></path>
+                <path d="M0 0H100" stroke="#3F3850" stroke-width="1" stroke-dasharray="3 3"></path>
+                <path d="{{ cv.d }}" stroke="#FF8FB1" stroke-width="2.5" stroke-linecap="round"></path>
+              </svg>
+              <span style="font-size:13px">{{ cv.name }}</span>
+              <span style="font-family:'Chivo Mono',monospace;font-size:11px;color:#9FE0F0;overflow-wrap:anywhere">{{ cv.css }}</span>
+              <span style="font-size:12px;color:#A9A2B6;line-height:1.4">{{ cv.use }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <h3 style="margin:0;font-size:17px;font-weight:500">States</h3>
+      <div style="display:flex;flex-direction:column;border-top:1px solid #3F3850;font-size:13px;overflow-x:auto">
+        <div style="display:grid;grid-template-columns:40px 170px 80px 90px minmax(200px,1fr) minmax(180px,1fr);gap:14px;padding:9px 0;border-bottom:1px solid #3F3850;color:#A9A2B6;font-size:12px;min-width:820px"><span></span><span>State</span><span>Duration</span><span>Eyes</span><span>Animated tracks</span><span>Key pose (reduced motion)</span></div>
+        <sc-for list="{{ rows }}" as="r" hint-placeholder-count="12">
+          <div style="display:grid;grid-template-columns:40px 170px 80px 90px minmax(200px,1fr) minmax(180px,1fr);gap:14px;align-items:center;padding:8px 0;border-bottom:1px solid #2E2939;min-width:820px">
+            <div data-ec="{{ r.key }}" data-ec-size="32"></div>
+            <span>{{ r.label }}</span>
+            <span style="font-family:'Chivo Mono',monospace;color:#9FE0F0">{{ r.dur }}</span>
+            <span style="font-family:'Chivo Mono',monospace;color:#A9A2B6">{{ r.eye }}</span>
+            <span style="font-family:'Chivo Mono',monospace;font-size:12px;color:#A9A2B6;overflow-wrap:anywhere">{{ r.tracks }}</span>
+            <span style="font-family:'Chivo Mono',monospace;font-size:12px;color:#A9A2B6">{{ r.key_t }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </section>
+
+  <section data-screen-label="05 Files" style="display:flex;flex-direction:column;gap:16px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #3F3850;padding-bottom:12px">
+      <span style="font-family:'Silkscreen',monospace;font-size:13px;color:#FF8FB1">05</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">Files</h2>
+    </div>
+    <div style="display:flex;flex-direction:column;font-family:'Chivo Mono',monospace;font-size:13px;border-top:1px solid #2E2939">
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:16px;padding:10px 0;border-bottom:1px solid #2E2939"><span style="overflow-wrap:anywhere">elisa-tanuki.js</span><span style="color:#A9A2B6;font-family:'Chivo Mono',monospace">Tanuki renderer. ElisaTanuki.svg(state, t, {size, detail}). Keyframe tracks come from elisa-character.js</span></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:16px;padding:10px 0;border-bottom:1px solid #2E2939"><span style="overflow-wrap:anywhere">motion/tanuki/elisa-tanuki-&lt;state&gt;.json</span><span style="color:#A9A2B6;font-family:'Chivo Mono',monospace">Per-state tracks, pivots, parts, palette, duration, easing. 12 files</span></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:16px;padding:10px 0;border-bottom:1px solid #2E2939"><span style="overflow-wrap:anywhere">svg/tanuki/elisa-tanuki-&lt;state&gt;-&lt;size&gt;.svg</span><span style="color:#A9A2B6;font-family:'Chivo Mono',monospace">Key pose per state at 200 and 24 (mini). 24 files</span></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:16px;padding:10px 0;border-bottom:1px solid #2E2939"><span style="overflow-wrap:anywhere">svg/tanuki/elisa-tanuki-menubar-{light,dark}-{16,18,22}.svg</span><span style="color:#A9A2B6;font-family:'Chivo Mono',monospace">Template glyph, idle pose. 6 files</span></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:16px;padding:10px 0;border-bottom:1px solid #2E2939"><span style="overflow-wrap:anywhere"><a href="Elisa Tanuki Reel.dc.html">Elisa Tanuki Reel.dc.html</a></span><span style="color:#A9A2B6;font-family:'Chivo Mono',monospace">Timeline video of all twelve states, exportable to MP4</span></div>
+    </div>
+  </section>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;speed&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;0.5×&quot;,&quot;1×&quot;,&quot;2×&quot;],&quot;default&quot;:&quot;1×&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Playback&quot;},&quot;reducedMotion&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Playback&quot;},&quot;showEffects&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Playback&quot;}}">
+const KEY_T = { idle: .5, listening: .5, thinking: .6, streaming: .62, running: .6, permission: .5, success: .45, error: .5, interrupted: .3, memory: .4, sleeping: .35, waking: .85 };
+class Component extends DCLogic {
+  state = { sel: 'idle', playing: true, scrub: 0 };
+  componentDidMount() {
+    this.t0 = performance.now(); this.last = 0; this.stageT0 = performance.now(); this.stageOff = 0;
+    const tick = now => {
+      this.raf = requestAnimationFrame(tick);
+      const EC = window.ElisaTanuki; if (!EC || now - this.last < 40) return; this.last = now; this.frame = (this.frame || 0) + 1; const vh = window.innerHeight;
+      const sp = { '0.5×': .5, '1×': 1, '2×': 2 }[this.props.speed] ?? 1;
+      const reduced = this.props.reducedMotion ?? false, showProps = this.props.showEffects ?? true;
+      document.querySelectorAll('[data-ec]').forEach(el => {
+        const st = el.getAttribute('data-ec'), S = EC.STATES[st]; if (!S) return;
+        const size = +el.getAttribute('data-ec-size') || 160; const rc = el.getBoundingClientRect(); if (rc.bottom < -50 || rc.top > vh + 50) return; if (size <= 24 && this.frame % 3 && el.firstChild) return;
+        let t;
+        if (el.hasAttribute('data-ec-stage')) {
+          t = this.state.playing ? this.stageOff + (now - this.stageT0) * sp / S.dur : this.state.scrub;
+          const u = ((t % 1) + 1) % 1; this.stageU = u;
+          const sc = document.querySelector('[data-ec-scrubber]'); if (sc && this.state.playing) sc.value = Math.round(u * 1000);
+          const tm = document.querySelector('[data-ec-time]'); if (tm) tm.textContent = `${Math.round(u * S.dur)} / ${S.dur} ms`;
+        } else t = reduced ? KEY_T[st] : (now - this.t0) * sp / S.dur;
+        const detail = el.getAttribute('data-ec-detail') || (size <= 24 ? 'mini' : 'full');
+        el.innerHTML = EC.svg(st, t, { size, detail, color: el.getAttribute('data-ec-color'), noProps: !showProps || el.hasAttribute('data-ec-noprops') });
+      });
+    };
+    this.raf = requestAnimationFrame(tick);
+    this._w = setInterval(() => { if (window.ElisaTanuki) { clearInterval(this._w); this.forceUpdate(); } }, 60);
+  }
+  componentWillUnmount() { cancelAnimationFrame(this.raf); clearInterval(this._w); }
+  renderVals() {
+    const EC = window.ElisaTanuki;
+    const sel = this.state.sel;
+    const fmt = v => v.map(([t, val]) => `${Math.round(t * 100)}%:${typeof val === 'number' ? Math.round(val * 100) / 100 : val}`).join('  ');
+    const S = EC ? EC.STATES : {};
+    const order = EC ? EC.ORDER : [];
+    const cur = S[sel] || { label: '', use: '', dur: 0, tracks: {} };
+    const selInfo = { label: cur.label, use: cur.use, dur: `${cur.dur} ms`, loop: 'loop', file: `elisa-tanuki-${sel}.json`, tracks: Object.entries(cur.tracks).map(([k, v]) => ({ k, v: fmt(v) })) };
+    const cards = order.map(key => ({ key, label: S[key].label, use: S[key].use, dur: `${S[key].dur} ms`, isSel: key === sel,
+      pick: () => { this.stageT0 = performance.now(); this.stageOff = 0; this.setState({ sel: key, playing: true }); } }));
+    const rows = order.map(key => { const tr = S[key].tracks; const eye = tr.eye ? [...new Set(tr.eye.map(k => k[1]))].join(' → ') : 'block';
+      return { key, label: S[key].label, dur: `${S[key].dur}`, eye, tracks: Object.keys(tr).filter(k => tr[k].length > 1 && k !== 'eye').join(', ') || '—', key_t: `t = ${KEY_T[key]} (${Math.round(KEY_T[key] * S[key].dur)} ms)` }; });
+    const curves = EC ? ['io', 'out', 'in', 'back', 'lin'].map(k => { let d = ''; for (let i = 0; i <= 40; i++) { const x = i / 40; d += (i ? 'L' : 'M') + (x * 100).toFixed(1) + ' ' + (100 - EC.EASE[k](x) * 100).toFixed(1); } const [name, css, use] = EC.EASE_INFO[k]; return { d, name, css, use }; }) : [];
+    return {
+      sel, selInfo, cards, rows, curves,
+      playLabel: this.state.playing ? 'Pause' : 'Play',
+      togglePlay: () => {
+        if (this.state.playing) this.setState({ playing: false, scrub: this.stageU || 0 });
+        else { this.stageT0 = performance.now(); this.stageOff = this.state.scrub; this.setState({ playing: true }); }
+      },
+      onScrub: e => this.setState({ playing: false, scrub: (+e.target.value) / 1000 })
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+[package]
+name = "elisa"
+version = "0.1.0"
+edition = "2021"
+description = "Elisa: a small terminal coding agent for local models (Anthropic Messages API)"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "0.9"
+ureq = "3"
+regex = "1"
+walkdir = "2"
+libc = "0.2"
+ratatui = "0.29"
+crossterm = "0.28"
+elisa-mem = { path = "mem" }
+# syntax trees (src/ast.rs): MIT core + MIT grammars, pinned; licences in ../THIRD_PARTY_NOTICES.md
+tree-sitter = "=0.27.1"
+tree-sitter-rust = { version = "=0.24.2", optional = true }
+tree-sitter-python = { version = "=0.25.0", optional = true }
+tree-sitter-swift = { version = "=0.7.4", optional = true }
+tree-sitter-typescript = { version = "=0.23.2", optional = true }
+tree-sitter-javascript = { version = "=0.25.0", optional = true }
+tree-sitter-bash = { version = "=0.25.1", optional = true }
+tree-sitter-sequel = { version = "=0.3.11", optional = true }
+
+# One feature per grammar (all on by default). The parse tables are most of the binary growth (release, arm64):
+# swift ~4.1 MB, typescript+tsx ~2.8 MB, sql ~2.4 MB, bash ~1.4 MB, rust ~1.1 MB, python ~0.5 MB, javascript ~0.4 MB.
+# A smaller build: `cargo build --release --no-default-features --features lang-rust,lang-python`. A language that is
+# not built in is treated like any other unsupported file (no outline, no guard).
+[features]
+default = ["lang-rust", "lang-python", "lang-swift", "lang-typescript", "lang-javascript", "lang-sql", "lang-bash"]
+lang-rust = ["dep:tree-sitter-rust"]
+lang-python = ["dep:tree-sitter-python"]
+lang-swift = ["dep:tree-sitter-swift"]
+lang-typescript = ["dep:tree-sitter-typescript"]
+lang-javascript = ["dep:tree-sitter-javascript"]
+lang-sql = ["dep:tree-sitter-sequel"]
+lang-bash = ["dep:tree-sitter-bash"]
+
+[profile.release]
+opt-level = 3
+
+# CI runs `cargo clippy --all-targets --locked -- -D warnings`. Two lints allowed, both on public API owned elsewhere:
+# derivable_impls: `impl Default for Role` in src/types.rs (types are owned by the coordinator, changed via DESIGN.md);
+# ptr_arg: `context::trim_old(&mut Vec<Message>, ..)` keeps its public signature.
+[lints.clippy]
+derivable_impls = "allow"
+ptr_arg = "allow"

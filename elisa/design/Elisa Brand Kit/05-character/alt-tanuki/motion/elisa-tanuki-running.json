@@ -1,0 +1,154 @@
+{
+  "name": "running",
+  "label": "Running tool",
+  "durationMs": 1600,
+  "loop": true,
+  "fps": 60,
+  "viewBox": [
+    0,
+    0,
+    200,
+    200
+  ],
+  "pivot": {
+    "body": [
+      100,
+      172
+    ],
+    "earL": [
+      74,
+      90
+    ],
+    "earR": [
+      126,
+      90
+    ],
+    "tail": [
+      146,
+      156
+    ],
+    "pawR": [
+      118,
+      170
+    ]
+  },
+  "tracks": {
+    "lookX": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 6,
+        "ease": "io"
+      }
+    ],
+    "lookY": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 3,
+        "ease": "io"
+      }
+    ],
+    "eyeOpen": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0.9,
+        "ease": "io"
+      }
+    ],
+    "rot": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 2,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 800,
+        "value": 4,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 1600,
+        "value": 2,
+        "ease": "io"
+      }
+    ],
+    "pawR": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0.45,
+        "ease": "io"
+      }
+    ],
+    "earR": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 800,
+        "value": -6,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 1600,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "p1": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "lin"
+      },
+      {
+        "t": 1,
+        "ms": 1600,
+        "value": 1,
+        "ease": "io"
+      }
+    ]
+  },
+  "character": "tanuki",
+  "parts": [
+    "shadow",
+    "tail",
+    "earL",
+    "earR",
+    "body",
+    "belly",
+    "mask",
+    "eyeL",
+    "eyeR",
+    "blush",
+    "nose",
+    "mouth",
+    "pawL",
+    "pawR",
+    "props"
+  ],
+  "palette": {
+    "body": "#6A6A78",
+    "rim": "#484852",
+    "mask": "#3A3A42",
+    "belly": "#ECE6DA",
+    "iris": "#E6BE50",
+    "earInner": "#D77757",
+    "effect": "#82C8DC"
+  },
+  "keyPose": {
+    "t": 0.6,
+    "ms": 960
+  }
+}

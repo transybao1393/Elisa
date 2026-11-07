@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<script src="elisa-icons.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>body{margin:0;background:#1E1E24;-webkit-font-smoothing:antialiased}*{box-sizing:border-box}a{color:#D77757}a:hover{color:#E8E8E8}</style>
+</helmet>
+<div style="min-height:100vh;background:#1E1E24;color:#E8E8E8;font-family:'IBM Plex Sans',system-ui,sans-serif">
+<div style="max-width:1240px;margin:0 auto;padding:56px 40px 96px;display:flex;flex-direction:column;gap:72px">
+
+  <header style="display:flex;flex-direction:column;gap:14px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;color:#9696A0">ELISA / ICONOGRAPHY / V1</div>
+    <h1 style="margin:0;font-size:44px;font-weight:500;letter-spacing:-.01em">Iconography</h1>
+    <p style="margin:0;max-width:640px;font-size:16px;line-height:1.55;color:#9696A0;text-wrap:pretty">App icon, menu bar glyph, UI icon set and spec sheet for Elisa. Every asset on this page is an SVG file in the project, named <span style="font-family:'IBM Plex Mono',monospace;color:#82C8DC">elisa-icon-&lt;name&gt;-&lt;size&gt;.svg</span>.</p>
+  </header>
+
+  <section data-screen-label="01 App icon concepts" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #46465A;padding-bottom:12px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#D77757">01</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">App icon — concepts</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px">
+      <div style="display:flex;flex-direction:column;gap:18px;padding:24px;background:#24242B;border:1px solid #D77757;border-radius:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center"><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9696A0">A</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#1E1E24;background:#D77757;padding:3px 8px;border-radius:4px">SELECTED → REFINED</span></div>
+        <img src="svg/app/elisa-icon-app-concept-a-1024.svg" alt="Concept A" style="width:200px;height:200px;align-self:center">
+        <div style="display:flex;align-items:flex-end;justify-content:center;gap:20px"><img src="svg/app/elisa-icon-app-concept-a-1024.svg" alt="" style="width:64px;height:64px"><img src="svg/app/elisa-icon-app-concept-a-1024.svg" alt="" style="width:32px;height:32px"><img src="svg/app/elisa-icon-app-concept-a-1024.svg" alt="" style="width:16px;height:16px"></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:16px;font-weight:500">Continuous “e” + cursor</div><div style="font-size:14px;line-height:1.5;color:#9696A0;text-wrap:pretty">One line draws the letter; a coral block cursor follows it. Ownable as a letterform and reads at every size. Refined below: the cursor moves into the crossbar.</div></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:18px;padding:24px;background:#24242B;border:1px solid #34343F;border-radius:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center"><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9696A0">B</span></div>
+        <img src="svg/app/elisa-icon-app-concept-b-1024.svg" alt="Concept B" style="width:200px;height:200px;align-self:center">
+        <div style="display:flex;align-items:flex-end;justify-content:center;gap:20px"><img src="svg/app/elisa-icon-app-concept-b-1024.svg" alt="" style="width:64px;height:64px"><img src="svg/app/elisa-icon-app-concept-b-1024.svg" alt="" style="width:32px;height:32px"><img src="svg/app/elisa-icon-app-concept-b-1024.svg" alt="" style="width:16px;height:16px"></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:16px;font-weight:500">Node inside a soft enclosure</div><div style="font-size:14px;line-height:1.5;color:#9696A0;text-wrap:pretty">A coral node held inside a soft square: local, contained, private. Drawn as a node rather than a spark, since a coral spark on a dark tile sits too close to existing AI-assistant marks. Generic at 16 px.</div></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:18px;padding:24px;background:#24242B;border:1px solid #34343F;border-radius:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center"><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9696A0">C</span></div>
+        <img src="svg/app/elisa-icon-app-concept-c-1024.svg" alt="Concept C" style="width:200px;height:200px;align-self:center">
+        <div style="display:flex;align-items:flex-end;justify-content:center;gap:20px"><img src="svg/app/elisa-icon-app-concept-c-1024.svg" alt="" style="width:64px;height:64px"><img src="svg/app/elisa-icon-app-concept-c-1024.svg" alt="" style="width:32px;height:32px"><img src="svg/app/elisa-icon-app-concept-c-1024.svg" alt="" style="width:16px;height:16px"></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:16px;font-weight:500">Prompt chevron + dot</div><div style="font-size:14px;line-height:1.5;color:#9696A0;text-wrap:pretty">A “›” prompt with a coral dot: command line and conversation in one mark. Strongest at 16 px, but the chevron is shared by most terminal apps.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section data-screen-label="02 Refined app icon" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #46465A;padding-bottom:12px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#D77757">02</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">App icon — refined</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:20px;align-items:stretch">
+      <div style="display:flex;align-items:center;justify-content:center;padding:32px;background:linear-gradient(160deg,#3A3A46,#1E1E24);border-radius:14px;min-height:380px">
+        <img src="svg/app/elisa-icon-app-1024.svg" alt="Elisa app icon" style="width:300px;height:300px;max-width:100%">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;padding:4px 0">
+        <div style="font-size:15px;line-height:1.55;color:#9696A0;text-wrap:pretty">An off-white bowl drawn as one stroke; the crossbar is the coral cursor. A small gap on the left keeps the bar reading as a cursor, not just a letter part.</div>
+        <div style="display:flex;flex-direction:column;border-top:1px solid #46465A;font-size:13px">
+          <div style="display:grid;grid-template-columns:72px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid #34343F"><span style="font-family:'IBM Plex Mono',monospace;color:#82C8DC">1024–256</span><span style="color:#E8E8E8">Master. 64 u stroke, top sheen, hairline inner edge, drop shadow.</span></div>
+          <div style="display:grid;grid-template-columns:72px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid #34343F"><span style="font-family:'IBM Plex Mono',monospace;color:#82C8DC">128</span><span style="color:#E8E8E8">Stroke 70 u so the bowl holds 9 px.</span></div>
+          <div style="display:grid;grid-template-columns:72px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid #34343F"><span style="font-family:'IBM Plex Mono',monospace;color:#82C8DC">64</span><span style="color:#E8E8E8">Stroke 78 u, crossbar gap widened to 1.5 px, no hairline.</span></div>
+          <div style="display:grid;grid-template-columns:72px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid #34343F"><span style="font-family:'IBM Plex Mono',monospace;color:#82C8DC">32</span><span style="color:#E8E8E8">Redrawn on a 32 grid. 2.4 px stroke, no sheen, 0.4 px shadow.</span></div>
+          <div style="display:grid;grid-template-columns:72px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid #34343F"><span style="font-family:'IBM Plex Mono',monospace;color:#82C8DC">16</span><span style="color:#E8E8E8">Redrawn on a 16 grid. 1.5 px stroke, crossbar joins the bowl, flat tile.</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:20px">
+      <div style="display:flex;align-items:flex-end;gap:28px;flex-wrap:wrap;padding:28px;background:#1E1E24;border:1px solid #46465A;border-radius:14px">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-256.svg" alt="" style="width:128px;height:128px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">512 · 1024 (shown 128)</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-128.svg" alt="" style="width:128px;height:128px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">128</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-64.svg" alt="" style="width:64px;height:64px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">64</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-32.svg" alt="" style="width:32px;height:32px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">32</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-16.svg" alt="" style="width:16px;height:16px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">16</span></div>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:28px;flex-wrap:wrap;padding:28px;background:#F5F5F7;border-radius:14px">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-256.svg" alt="" style="width:128px;height:128px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#55555F">512 · 1024 (shown 128)</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-128.svg" alt="" style="width:128px;height:128px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#55555F">128</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-64.svg" alt="" style="width:64px;height:64px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#55555F">64</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-32.svg" alt="" style="width:32px;height:32px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#55555F">32</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px"><img src="svg/app/elisa-icon-app-16.svg" alt="" style="width:16px;height:16px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#55555F">16</span></div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
+      <h3 style="margin:0;font-size:17px;font-weight:500">Menu bar template</h3>
+      <p style="margin:0;font-size:14px;color:#9696A0;max-width:620px;line-height:1.5">The bowl and crossbar only, monochrome. Ship the black file as a template image; macOS tints it. The white file is for previews and non-template contexts.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:20px">
+        <div style="display:flex;flex-direction:column;border-radius:12px;overflow:hidden;border:1px solid #D9D9DE">
+          <div style="display:flex;align-items:center;justify-content:flex-end;gap:16px;height:24px;padding:0 14px;background:rgba(246,246,248,.94);font-size:13px;color:#1E1E24;border-bottom:1px solid #D9D9DE"><img src="svg/menubar/elisa-icon-menubar-light-16.svg" alt="" style="width:16px;height:16px"><span>Sun 1 Nov  09:41</span></div>
+          <div style="display:flex;align-items:flex-end;gap:36px;padding:24px;background:#F5F5F7">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><img src="svg/menubar/elisa-icon-menubar-light-16.svg" alt="" style="width:16px;height:16px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#55555F">16</span></div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><img src="svg/menubar/elisa-icon-menubar-light-18.svg" alt="" style="width:18px;height:18px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#55555F">18</span></div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><img src="svg/menubar/elisa-icon-menubar-light-22.svg" alt="" style="width:22px;height:22px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#55555F">22</span></div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><img src="svg/menubar/elisa-icon-menubar-light-22.svg" alt="" style="width:66px;height:66px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#55555F">22 at 3×</span></div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;border-radius:12px;overflow:hidden;border:1px solid #46465A">
+          <div style="display:flex;align-items:center;justify-content:flex-end;gap:16px;height:24px;padding:0 14px;background:#2C2C34;font-size:13px;color:#E8E8E8;border-bottom:1px solid #46465A"><img src="svg/menubar/elisa-icon-menubar-dark-16.svg" alt="" style="width:16px;height:16px"><span>Sun 1 Nov  09:41</span></div>
+          <div style="display:flex;align-items:flex-end;gap:36px;padding:24px;background:#1E1E24">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><img src="svg/menubar/elisa-icon-menubar-dark-16.svg" alt="" style="width:16px;height:16px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">16</span></div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><img src="svg/menubar/elisa-icon-menubar-dark-18.svg" alt="" style="width:18px;height:18px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">18</span></div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><img src="svg/menubar/elisa-icon-menubar-dark-22.svg" alt="" style="width:22px;height:22px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">22</span></div>
+            <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><img src="svg/menubar/elisa-icon-menubar-dark-22.svg" alt="" style="width:66px;height:66px"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">22 at 3×</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section data-screen-label="03 UI icon set" style="display:flex;flex-direction:column;gap:24px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #46465A;padding-bottom:12px;flex-wrap:wrap">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#D77757">03</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">UI icon set</h2>
+      <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9696A0">34 icons · 16 + 20 px · 1.5 px stroke · round caps and joins</span>
+    </div>
+    <sc-for list="{{ cats }}" as="cat" hint-placeholder-count="5">
+      <div style="display:flex;flex-direction:column;gap:14px;margin-bottom:12px">
+        <div style="display:flex;align-items:baseline;gap:12px"><h3 style="margin:0;font-size:17px;font-weight:500">{{ cat.title }}</h3><span style="font-size:13px;color:#9696A0">{{ cat.note }}</span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:12px">
+          <sc-for list="{{ cat.icons }}" as="ic" hint-placeholder-count="6">
+            <div style="display:flex;flex-direction:column;border:1px solid #46465A;border-radius:10px;overflow:hidden;background:#24242B">
+              <div style="display:grid;grid-template-columns:1fr 1fr">
+                <div style="display:flex;align-items:center;justify-content:center;gap:14px;padding:18px 8px;background:#1E1E24;min-height:76px"><span style="{{ ic.b16 }}">{{ ic.d16 }}</span><span style="{{ ic.b20 }}">{{ ic.d20 }}</span></div>
+                <div style="display:flex;align-items:center;justify-content:center;gap:14px;padding:18px 8px;background:#F5F5F7;min-height:76px"><span style="{{ ic.b16l }}">{{ ic.l16 }}</span><span style="{{ ic.b20l }}">{{ ic.l20 }}</span></div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-top:1px solid #34343F">
+                <span style="font-size:13px;color:#E8E8E8">{{ ic.label }}</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0;overflow-wrap:anywhere">{{ ic.name }}</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-for>
+  </section>
+
+  <section data-screen-label="04 Spec sheet" style="display:flex;flex-direction:column;gap:32px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #46465A;padding-bottom:12px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#D77757">04</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">Spec sheet</h2>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <h3 style="margin:0;font-size:17px;font-weight:500">Construction</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:20px">
+        <div style="display:flex;gap:24px;flex-wrap:wrap;padding:24px;background:#24242B;border:1px solid #34343F;border-radius:14px">
+          <div style="position:relative;width:280px;height:280px;flex:none">
+            <img src="svg/app/elisa-icon-app-1024.svg" alt="" style="position:absolute;inset:0;width:280px;height:280px;opacity:.55">
+            <svg viewBox="0 0 1024 1024" width="280" height="280" style="position:absolute;inset:0" fill="none">
+              <g stroke="#9696A0" stroke-opacity=".22" stroke-width="2">
+                <path d="M64 0V1024M128 0V1024M192 0V1024M256 0V1024M320 0V1024M384 0V1024M448 0V1024M512 0V1024M576 0V1024M640 0V1024M704 0V1024M768 0V1024M832 0V1024M896 0V1024M960 0V1024"></path>
+                <path d="M0 64H1024M0 128H1024M0 192H1024M0 256H1024M0 320H1024M0 384H1024M0 448H1024M0 512H1024M0 576H1024M0 640H1024M0 704H1024M0 768H1024M0 832H1024M0 896H1024M0 960H1024"></path>
+              </g>
+              <rect x="100" y="100" width="824" height="824" stroke="#E8E8E8" stroke-width="3" stroke-dasharray="14 10"></rect>
+              <circle cx="512" cy="516" r="196" stroke="#82C8DC" stroke-width="3"></circle>
+              <circle cx="512" cy="516" r="228" stroke="#82C8DC" stroke-width="2" stroke-dasharray="10 8"></circle>
+              <circle cx="512" cy="516" r="164" stroke="#82C8DC" stroke-width="2" stroke-dasharray="10 8"></circle>
+              <path d="M100 500H924" stroke="#D77757" stroke-width="3" stroke-dasharray="14 10"></path>
+              <path d="M512 516L705 690" stroke="#E6BE50" stroke-width="3"></path>
+              <path d="M512 100V924M100 516H924" stroke="#E8E8E8" stroke-opacity=".5" stroke-width="2"></path>
+            </svg>
+          </div>
+          <div style="flex:1;min-width:200px;display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.45">
+            <div style="display:flex;gap:10px"><span style="width:12px;height:2px;margin-top:8px;background:#E8E8E8;flex:none"></span><span>Tile 824 × 824 on 1024 canvas, 100 u inset, superellipse n = 5</span></div>
+            <div style="display:flex;gap:10px"><span style="width:12px;height:2px;margin-top:8px;background:#9696A0;flex:none"></span><span>64 u grid (16 × 16 modules)</span></div>
+            <div style="display:flex;gap:10px"><span style="width:12px;height:2px;margin-top:8px;background:#82C8DC;flex:none"></span><span>Bowl centre 512, 516 · radius 196 · stroke 64</span></div>
+            <div style="display:flex;gap:10px"><span style="width:12px;height:2px;margin-top:8px;background:#D77757;flex:none"></span><span>Crossbar at y 500, 16 u gap to the bowl</span></div>
+            <div style="display:flex;gap:10px"><span style="width:12px;height:2px;margin-top:8px;background:#E6BE50;flex:none"></span><span>Terminal cut at 42° below horizontal</span></div>
+            <div style="color:#9696A0">Shadow y 12, blur 14, 35 % black. Gradient #2A2A33 → #1E1E24, top to bottom.</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:18px;padding:24px;background:#24242B;border:1px solid #34343F;border-radius:14px">
+          <div style="display:flex;gap:16px;flex-wrap:wrap">
+            <sc-for list="{{ gridIcons }}" as="g" hint-placeholder-count="3">
+              <div style="display:flex;flex-direction:column;gap:8px;align-items:center">
+                <div style="position:relative;width:160px;height:160px;background:#1E1E24">
+                  {{ g.style }}
+                  <svg viewBox="0 0 16 16" width="160" height="160" style="position:absolute;inset:0" fill="none">
+                    <rect x="1" y="1" width="14" height="14" fill="#D77757" fill-opacity=".06"></rect>
+                    <g stroke="#9696A0" stroke-opacity=".25" stroke-width=".04">
+                      <path d="M1 0V16M2 0V16M3 0V16M4 0V16M5 0V16M6 0V16M7 0V16M8 0V16M9 0V16M10 0V16M11 0V16M12 0V16M13 0V16M14 0V16M15 0V16"></path>
+                      <path d="M0 1H16M0 2H16M0 3H16M0 4H16M0 5H16M0 6H16M0 7H16M0 8H16M0 9H16M0 10H16M0 11H16M0 12H16M0 13H16M0 14H16M0 15H16"></path>
+                    </g>
+                    <g stroke="#82C8DC" stroke-opacity=".7" stroke-width=".06" stroke-dasharray=".3 .2">
+                      <circle cx="8" cy="8" r="6.25"></circle>
+                      <rect x="2" y="2" width="12" height="12"></rect>
+                      <rect x="3.25" y="1.75" width="9.5" height="12.5"></rect>
+                      <rect x="1.75" y="2.75" width="12.5" height="10.5"></rect>
+                    </g>
+                  </svg>
+                </div>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9696A0">{{ g.name }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:6px 20px;font-size:13px;line-height:1.45">
+            <span>16 px grid, 1 px padding, 14 px live area</span>
+            <span>Stroke 1.5 px, round caps and joins</span>
+            <span>Keyshapes: circle ⌀12.5, square 12, portrait 9.5 × 12.5, landscape 12.5 × 10.5</span>
+            <span>Corner radius 1–1.5 px; small fills (dots, cursor) allowed</span>
+            <span>20 px: same drawing at 1.25×, stroke held at 1.5 px</span>
+            <span style="color:#9696A0">Two-tone only for gauges (context track at 35 %)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:20px">
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <h3 style="margin:0;font-size:17px;font-weight:500">Clear space</h3>
+        <div style="display:flex;gap:28px;align-items:center;flex-wrap:wrap;padding:24px;background:#24242B;border:1px solid #34343F;border-radius:14px">
+          <div style="padding:32px;border:1px dashed #D77757;background:rgba(215,119,87,.06)"><img src="svg/app/elisa-icon-app-128.svg" alt="" style="width:128px;height:128px;display:block;outline:1px dashed #9696A0"></div>
+          <div style="padding:8px;border:1px dashed #D77757;background:rgba(215,119,87,.06)"><img src="svg/menubar/elisa-icon-menubar-dark-22.svg" alt="" style="width:44px;height:44px;display:block;outline:1px dashed #9696A0"></div>
+          <div style="flex:1;min-width:180px;font-size:13px;line-height:1.5;display:flex;flex-direction:column;gap:6px"><span>App icon: 25 % of icon width on every side.</span><span>Glyph: one bowl-stroke width (≈ 18 %) on every side.</span><span style="color:#9696A0">Never place text or other marks inside the dashed area.</span></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <h3 style="margin:0;font-size:17px;font-weight:500">Minimum sizes</h3>
+        <div style="display:flex;flex-direction:column;border-top:1px solid #46465A;font-size:13px">
+          <div style="display:grid;grid-template-columns:120px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid #34343F"><span style="color:#9696A0">App icon</span><span>16 px. Below 48 px use the dedicated 32 and 16 masters, never a scaled 1024.</span></div>
+          <div style="display:grid;grid-template-columns:120px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid #34343F"><span style="color:#9696A0">Menu bar</span><span>16 pt. Template image only; never coloured.</span></div>
+          <div style="display:grid;grid-template-columns:120px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid #34343F"><span style="color:#9696A0">UI icons</span><span>16 px minimum. 20 px in toolbars and permission buttons. Above 20 px, redraw on a 24 grid.</span></div>
+          <div style="display:grid;grid-template-columns:120px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid #34343F"><span style="color:#9696A0">Hit area</span><span>28 × 28 px minimum around any clickable icon.</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <h3 style="margin:0;font-size:17px;font-weight:500">Colour tokens</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">
+        <sc-for list="{{ tokens }}" as="t" hint-placeholder-count="8">
+          <div style="display:flex;flex-direction:column;border:1px solid #34343F;border-radius:10px;overflow:hidden;background:#24242B">
+            <div style="display:flex;align-items:center;gap:12px;padding:14px;background:#1E1E24"><span style="{{ t.chip }}"></span>{{ t.icon }}</div>
+            <div style="display:flex;flex-direction:column;gap:3px;padding:10px 12px">
+              <div style="display:flex;justify-content:space-between;gap:8px"><span style="font-size:13px">{{ t.name }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9696A0">{{ t.hex }}</span></div>
+              <span style="font-size:12px;color:#9696A0;line-height:1.4">{{ t.use }}</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <h3 style="margin:0;font-size:17px;font-weight:500">In use</h3>
+      <div style="display:flex;flex-direction:column;border:1px solid #46465A;border-radius:12px;overflow:hidden;background:#1E1E24;font-family:'IBM Plex Mono',monospace;font-size:13px">
+        <div style="display:flex;flex-direction:column;gap:2px;padding:18px 20px">
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 0">{{ m.memory }}<span style="color:#9696A0">Recalled</span><span style="color:#E8E8E8">prefers pnpm over npm</span></div>
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 0">{{ m.read }}<span style="color:#E8E8E8">Read</span><span style="color:#82C8DC">src/session/store.ts</span><span style="color:#9696A0">214 lines</span><span style="margin-left:auto;display:flex">{{ m.successS }}</span></div>
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 0">{{ m.edit }}<span style="color:#E8E8E8">Edit</span><span style="color:#82C8DC">src/session/store.ts</span><span style="color:#78C878">+12</span><span style="color:#F06464">−3</span><span style="margin-left:auto;display:flex">{{ m.successS }}</span></div>
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 0">{{ m.run }}<span style="color:#E8E8E8">Run</span><span style="color:#82C8DC">pnpm test</span><span style="margin-left:auto;display:flex;align-items:center;gap:6px;color:#82C8DC">{{ m.running }}running</span></div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:8px;padding:12px 14px;border:1px solid #E6BE50;border-radius:8px;background:rgba(230,190,80,.06)">
+            {{ m.warning }}<span style="color:#E8E8E8">Run</span><span style="color:#82C8DC">rm -rf dist</span><span style="color:#9696A0">?</span>
+            <span style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;font-family:'IBM Plex Sans',sans-serif;font-size:13px">
+              <span style="display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid #46465A;border-radius:6px">{{ m.allowOnce }}Allow once</span>
+              <span style="display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid #46465A;border-radius:6px">{{ m.always }}Always allow</span>
+              <span style="display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid #46465A;border-radius:6px">{{ m.deny }}Deny</span>
+            </span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;padding:7px 16px;border-top:1px solid #46465A;background:#19191E;font-size:12px;color:#9696A0">
+          <span style="display:flex;align-items:center;gap:6px">{{ m.watch }}watching 3</span>
+          <span style="display:flex;align-items:center;gap:6px">{{ m.context }}41 % context</span>
+          <span style="display:flex;align-items:center;gap:6px">{{ m.speed }}38 tok/s</span>
+          <span style="display:flex;align-items:center;gap:6px">{{ m.bolt }}ask before running</span>
+          <span style="margin-left:auto;display:flex;align-items:center;gap:6px">{{ m.streaming }}streaming</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section data-screen-label="05 Files" style="display:flex;flex-direction:column;gap:16px">
+    <div style="display:flex;align-items:baseline;gap:16px;border-bottom:1px solid #46465A;padding-bottom:12px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#D77757">05</span>
+      <h2 style="margin:0;font-size:24px;font-weight:500">Files</h2>
+    </div>
+    <div style="display:flex;flex-direction:column;font-family:'IBM Plex Mono',monospace;font-size:13px;border-top:1px solid #34343F">
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;padding:10px 0;border-bottom:1px solid #34343F"><span style="overflow-wrap:anywhere">svg/app/elisa-icon-app-{1024,512,256,128,64,32,16}.svg</span><span style="color:#9696A0">7</span></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;padding:10px 0;border-bottom:1px solid #34343F"><span style="overflow-wrap:anywhere">svg/app/elisa-icon-app-concept-{a,b,c}-1024.svg</span><span style="color:#9696A0">3</span></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;padding:10px 0;border-bottom:1px solid #34343F"><span style="overflow-wrap:anywhere">svg/menubar/elisa-icon-menubar-{light,dark}-{16,18,22}.svg</span><span style="color:#9696A0">6</span></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;padding:10px 0;border-bottom:1px solid #34343F"><span style="overflow-wrap:anywhere">svg/ui/elisa-icon-&lt;name&gt;-{16,20}.svg</span><span style="color:#9696A0">68</span></div>
+    </div>
+    <p style="margin:0;font-size:13px;color:#9696A0;line-height:1.5">UI icons use <span style="font-family:'IBM Plex Mono',monospace">stroke="currentColor"</span>, so they take the text colour of their container. Light / dark menu bar files differ only in fill: black for the template image, white for previews.</p>
+  </section>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;stateColors&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Icon set&quot;},&quot;zoom&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;1×&quot;,&quot;2×&quot;],&quot;default&quot;:&quot;1×&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Icon set&quot;},&quot;pixelGrid&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Icon set&quot;}}">
+class Component extends DCLogic {
+  componentDidMount() {
+    if (window.ElisaIcons) return;
+    this._t = setInterval(() => { if (window.ElisaIcons) { clearInterval(this._t); this.forceUpdate(); } }, 50);
+  }
+  componentWillUnmount() { clearInterval(this._t); }
+  renderVals() {
+    const zoom = this.props.zoom === '2×' ? 2 : 1;
+    const grid = this.props.pixelGrid ?? false;
+    const sem = this.props.stateColors ?? true;
+    const lib = window.ElisaIcons || {};
+    const mask = (n, s, color, px, extra) => React.createElement('svg', { width: px, height: px, viewBox: '0 0 16 16', fill: 'none', stroke: color, color, strokeWidth: s === 20 ? 1.2 : 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block', flex: 'none', ...extra }, dangerouslySetInnerHTML: { __html: lib[n] || '' } });
+    const box = (px, light) => ({ display: 'block', flex: 'none', width: px, height: px, backgroundImage: grid ? `linear-gradient(${light ? 'rgba(0,0,0,.08)' : 'rgba(255,255,255,.08)'} 1px,transparent 1px),linear-gradient(90deg,${light ? 'rgba(0,0,0,.08)' : 'rgba(255,255,255,.08)'} 1px,transparent 1px)` : 'none', backgroundSize: `${zoom}px ${zoom}px` });
+    const S = { 'streaming': '#D77757', 'running-tool': '#82C8DC', 'success': '#78C878', 'error': '#F06464', 'warning': '#E6BE50', 'interrupted': '#E6BE50', 'paused': '#9696A0', 'thinking': '#9696A0', 'approve-all': '#D77757', 'allow-once': '#78C878', 'always-allow': '#78C878', 'deny': '#F06464', 'domain-watcher': '#82C8DC' };
+    const C = [
+      ['Tools', 'Tool-call rows in the transcript', [['read-file','Read file'],['write-file','Write file'],['edit-diff','Edit (diff)'],['run-command','Run command'],['search-files','Search files (glob)'],['search-text','Search text (grep)']]],
+      ['States', 'Status at row end and in the status bar', [['thinking','Thinking'],['streaming','Streaming'],['running-tool','Running tool'],['success','Success'],['error','Error'],['warning','Warning'],['paused','Paused'],['interrupted','Interrupted']]],
+      ['Assistant', 'Memory, session and meters', [['memory-recalled','Memory recalled'],['state-card','State card'],['pinned-fact','Pinned fact'],['notes','Notes'],['compact','Summarize / compact'],['session-resume','Session resume'],['copy','Copy'],['context-usage','Context usage'],['speed','Speed (tok/s)'],['approve-all','Approve all (yolo)']]],
+      ['Watcher', 'Local model housekeeping', [['domain-watcher','Domain watcher'],['heat-map','Heat map'],['unload','Unload to disk'],['restore','Restore'],['audit-check','Audit check'],['full-model','Full-model answer'],['dry-run','Dry run']]],
+      ['Permission', 'Prompt buttons, 20 px', [['allow-once','Allow once'],['always-allow','Always allow'],['deny','Deny']]]
+    ];
+    const cats = C.map(([title, note, list]) => ({ title, note, icons: list.map(([name, label]) => {
+      const dc = sem && S[name] ? S[name] : '#E8E8E8';
+      return { name, label, d16: mask(name, 16, dc, 16 * zoom), d20: mask(name, 20, dc, 20 * zoom), l16: mask(name, 16, '#1E1E24', 16 * zoom), l20: mask(name, 20, '#1E1E24', 20 * zoom), b16: box(16 * zoom), b20: box(20 * zoom), b16l: box(16 * zoom, 1), b20l: box(20 * zoom, 1) };
+    }) }));
+    const gridIcons = ['run-command', 'success', 'read-file'].map(n => ({ name: n, style: mask(n, 16, '#E8E8E8', 160, { position: 'absolute', inset: 0 }) }));
+    const T = [['Text','#E8E8E8','Primary text, default icon','copy'],['Secondary','#9696A0','Labels, idle tool icons','read-file'],['Accent','#D77757','Brand, streaming, approve-all','streaming'],['Code','#82C8DC','Paths, code, running tool','run-command'],['Success','#78C878','Done, allow','success'],['Error','#F06464','Failed, deny','error'],['Warning','#E6BE50','Permission prompt, interrupted','warning'],['Separator','#46465A','Dividers, gauge tracks','context-usage']];
+    const tokens = T.map(([name, hex, use, ic]) => ({ name, hex, use, chip: { width: 36, height: 36, borderRadius: 8, background: hex, flex: 'none', boxShadow: hex === '#46465A' ? 'inset 0 0 0 1px #5A5A70' : 'none' }, icon: mask(ic, 20, hex === '#46465A' ? '#9696A0' : hex, 20) }));
+    const m = { memory: mask('memory-recalled', 16, '#9696A0', 16), read: mask('read-file', 16, '#9696A0', 16), edit: mask('edit-diff', 16, '#9696A0', 16), run: mask('run-command', 16, '#9696A0', 16), successS: mask('success', 16, '#78C878', 16), running: mask('running-tool', 16, '#82C8DC', 16), warning: mask('warning', 16, '#E6BE50', 16), allowOnce: mask('allow-once', 16, '#78C878', 16), always: mask('always-allow', 16, '#78C878', 16), deny: mask('deny', 16, '#F06464', 16), watch: mask('domain-watcher', 16, '#82C8DC', 16), context: mask('context-usage', 16, '#9696A0', 16), speed: mask('speed', 16, '#9696A0', 16), bolt: mask('approve-all', 16, '#9696A0', 16), streaming: mask('streaming', 16, '#D77757', 16) };
+    return { cats, gridIcons, tokens, m };
+  }
+}
+</script>
+</body>
+</html>

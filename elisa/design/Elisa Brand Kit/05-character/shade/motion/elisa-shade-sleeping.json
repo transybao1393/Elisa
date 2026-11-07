@@ -1,0 +1,154 @@
+{
+  "name": "sleeping",
+  "label": "Unloading / sleeping",
+  "durationMs": 4000,
+  "loop": true,
+  "fps": 60,
+  "viewBox": [
+    0,
+    0,
+    200,
+    200
+  ],
+  "pivot": {
+    "body": [
+      100,
+      172
+    ],
+    "earL": [
+      74,
+      80
+    ],
+    "earR": [
+      126,
+      80
+    ],
+    "pawR": [
+      118,
+      170
+    ]
+  },
+  "tracks": {
+    "eye": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": "closed",
+        "ease": "io"
+      }
+    ],
+    "sy": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0.86,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 2000,
+        "value": 0.9,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 4000,
+        "value": 0.86,
+        "ease": "io"
+      }
+    ],
+    "sx": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 1.06,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 2000,
+        "value": 1.04,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 4000,
+        "value": 1.06,
+        "ease": "io"
+      }
+    ],
+    "earL": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 20,
+        "ease": "io"
+      }
+    ],
+    "earR": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 20,
+        "ease": "io"
+      }
+    ],
+    "dim": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0.45,
+        "ease": "io"
+      }
+    ],
+    "tail": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 38,
+        "ease": "io"
+      }
+    ],
+    "p1": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "lin"
+      },
+      {
+        "t": 1,
+        "ms": 4000,
+        "value": 1,
+        "ease": "io"
+      }
+    ]
+  },
+  "character": "shade",
+  "parts": [
+    "shadow",
+    "earL",
+    "earR",
+    "body",
+    "eyeL",
+    "eyeR",
+    "pupilL",
+    "pupilR",
+    "pawL",
+    "pawR",
+    "props"
+  ],
+  "palette": {
+    "body": "#141418",
+    "rim": "#3A3A46",
+    "earInner": "#82C8DC",
+    "eye": "#EEF0E6",
+    "pupil": "#0E0E12",
+    "effect": "#82C8DC"
+  },
+  "notes": "No mouth. Expression is eyes and ears only. Pupils follow lookX/lookY with a constant upward bias of 3.",
+  "keyPose": {
+    "t": 0.35,
+    "ms": 1400
+  }
+}

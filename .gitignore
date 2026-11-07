@@ -1,0 +1,27 @@
+# build output
+target/
+target-dev/
+.build/
+.swiftpm/
+xcuserdata/
+DerivedData/
+*.profraw
+
+# live run logs (protocol logs hold chat content) and self-test output
+run-logs/
+selftest-note.txt
+*.log
+
+# per-project Elisa state (sessions, index, memory)
+.elisa/
+
+# local secrets: model connections live in ~/.config/elisa/providers.toml, never in the repo
+providers.toml
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

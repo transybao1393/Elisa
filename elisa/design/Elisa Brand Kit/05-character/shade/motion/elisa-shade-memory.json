@@ -1,0 +1,242 @@
+{
+  "name": "memory",
+  "label": "Memory recalled",
+  "durationMs": 2400,
+  "loop": true,
+  "fps": 60,
+  "viewBox": [
+    0,
+    0,
+    200,
+    200
+  ],
+  "pivot": {
+    "body": [
+      100,
+      172
+    ],
+    "earL": [
+      74,
+      80
+    ],
+    "earR": [
+      126,
+      80
+    ],
+    "pawR": [
+      118,
+      170
+    ]
+  },
+  "tracks": {
+    "p1": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.55,
+        "ms": 1320,
+        "value": 1,
+        "ease": "in"
+      },
+      {
+        "t": 0.7,
+        "ms": 1680,
+        "value": 1.2,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2400,
+        "value": 1.2,
+        "ease": "io"
+      }
+    ],
+    "p2": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.08,
+        "ms": 192,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 0.65,
+        "ms": 1560,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 0.72,
+        "ms": 1728,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2400,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "p3": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.68,
+        "ms": 1632,
+        "value": 0,
+        "ease": "out"
+      },
+      {
+        "t": 1,
+        "ms": 2400,
+        "value": 1,
+        "ease": "io"
+      }
+    ],
+    "glow": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.68,
+        "ms": 1632,
+        "value": 0,
+        "ease": "out"
+      },
+      {
+        "t": 0.76,
+        "ms": 1824,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2400,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "lookY": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 4,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 1200,
+        "value": -7,
+        "ease": "io"
+      },
+      {
+        "t": 0.7,
+        "ms": 1680,
+        "value": -7,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2400,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "earL": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.68,
+        "ms": 1632,
+        "value": 0,
+        "ease": "back"
+      },
+      {
+        "t": 0.78,
+        "ms": 1872,
+        "value": -12,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2400,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "earR": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.68,
+        "ms": 1632,
+        "value": 0,
+        "ease": "back"
+      },
+      {
+        "t": 0.78,
+        "ms": 1872,
+        "value": -12,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2400,
+        "value": 0,
+        "ease": "io"
+      }
+    ]
+  },
+  "character": "shade",
+  "parts": [
+    "shadow",
+    "earL",
+    "earR",
+    "body",
+    "eyeL",
+    "eyeR",
+    "pupilL",
+    "pupilR",
+    "pawL",
+    "pawR",
+    "props"
+  ],
+  "palette": {
+    "body": "#141418",
+    "rim": "#3A3A46",
+    "earInner": "#82C8DC",
+    "eye": "#EEF0E6",
+    "pupil": "#0E0E12",
+    "effect": "#82C8DC"
+  },
+  "notes": "No mouth. Expression is eyes and ears only. Pupils follow lookX/lookY with a constant upward bias of 3.",
+  "keyPose": {
+    "t": 0.4,
+    "ms": 960
+  }
+}

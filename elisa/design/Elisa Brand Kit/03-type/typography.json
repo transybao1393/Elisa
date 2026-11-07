@@ -1,0 +1,72 @@
+{
+  "families": {
+    "label": {
+      "family": "Silkscreen",
+      "weights": [
+        400,
+        700
+      ],
+      "use": "Pixel labels: kickers, bubble verbs, title-bar app name. Uppercase, +.06em."
+    },
+    "text": {
+      "family": "Chivo Mono",
+      "weights": [
+        400,
+        500,
+        600
+      ],
+      "use": "Prose, code, user turns, status bar, inputs."
+    }
+  },
+  "scale": {
+    "body": {
+      "size": 13,
+      "lineHeight": 21
+    },
+    "user": {
+      "size": 13,
+      "lineHeight": 21,
+      "weight": 600
+    },
+    "code": {
+      "size": 12.5,
+      "lineHeight": 21
+    },
+    "status": {
+      "size": 12,
+      "lineHeight": 22
+    },
+    "meta": {
+      "size": 11.5,
+      "lineHeight": 17
+    },
+    "small": {
+      "size": 11,
+      "lineHeight": 16
+    },
+    "titleApp": {
+      "size": 11,
+      "family": "Silkscreen"
+    },
+    "bubbleVerb": {
+      "size": 10,
+      "letterSpacing": ".06em",
+      "family": "Silkscreen"
+    },
+    "railLabel": {
+      "size": 10,
+      "letterSpacing": ".1em",
+      "weight": 600
+    },
+    "permTitle": {
+      "size": 15,
+      "lineHeight": 22,
+      "weight": 600
+    },
+    "prompt": {
+      "size": 14,
+      "lineHeight": 22
+    }
+  },
+  "embed": "https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;600&family=Silkscreen:wght@400;700&display=swap"
+}

@@ -1,0 +1,35 @@
+#!/bin/zsh
+# Open Elisa in its own Terminal window with no shell history behind it.
+# usage: elisa-window [--companion] [project dir]   (default: current directory)
+# --companion: also start the companion window (app/ElisaCompanion, if built: app/ElisaCompanion/run.sh builds it) and
+# run Elisa with --companion, so Shade shows in that window instead of the terminal dock.
+# The window's shell is replaced by Elisa (exec) and its scrollback is cleared first, so scrolling never shows
+# the shell prompt; the window closes when Elisa quits (Terminal setting permitting).
+flags=""
+if [[ $1 == --companion ]]; then
+    shift
+    flags=" --companion"
+    comp=${0:A:h:h}/app/ElisaCompanion
+    if [[ -x $comp/.build/release/ElisaCompanion ]]; then $comp/run.sh --background
+    else print -u2 "companion not built ($comp/run.sh builds it); Elisa uses its terminal dock until it runs"; fi
+fi
+dir=${1:-$PWD}
+dir=${dir:A}
+bin=${0:A:h}/target/release/elisa
+[[ -x $bin ]] || { print -u2 "elisa not built: cd ${0:A:h} && cargo build --release"; exit 1; }
+[[ -d $dir ]] || { print -u2 "no such directory: $dir"; exit 1; }
+osascript - "$dir" "$bin" "$flags" <<'EOF'
+on run argv
+    set d to quoted form of item 1 of argv
+    set b to quoted form of item 2 of argv
+    set f to item 3 of argv
+    tell application "Terminal"
+        set t to do script "cd " & d & " && clear && printf '\\e[3J' && exec " & b & f
+        set custom title of t to "Elisa"
+        set title displays custom title of t to true
+        set title displays shell path of t to false
+        set title displays window size of t to false
+        activate
+    end tell
+end run
+EOF

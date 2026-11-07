@@ -1,0 +1,230 @@
+{
+  "name": "idle",
+  "label": "Idle",
+  "durationMs": 4000,
+  "loop": true,
+  "fps": 60,
+  "viewBox": [
+    0,
+    0,
+    200,
+    200
+  ],
+  "pivot": {
+    "body": [
+      100,
+      172
+    ],
+    "earL": [
+      74,
+      90
+    ],
+    "earR": [
+      126,
+      90
+    ],
+    "tail": [
+      146,
+      156
+    ],
+    "pawR": [
+      118,
+      170
+    ]
+  },
+  "tracks": {
+    "sy": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 2000,
+        "value": 1.035,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 4000,
+        "value": 1,
+        "ease": "io"
+      }
+    ],
+    "sx": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 2000,
+        "value": 0.985,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 4000,
+        "value": 1,
+        "ease": "io"
+      }
+    ],
+    "eyeOpen": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 0.78,
+        "ms": 3120,
+        "value": 1,
+        "ease": "in"
+      },
+      {
+        "t": 0.8,
+        "ms": 3200,
+        "value": 0.05,
+        "ease": "out"
+      },
+      {
+        "t": 0.83,
+        "ms": 3320,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 4000,
+        "value": 1,
+        "ease": "io"
+      }
+    ],
+    "earR": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.45,
+        "ms": 1800,
+        "value": 0,
+        "ease": "out"
+      },
+      {
+        "t": 0.5,
+        "ms": 2000,
+        "value": -16,
+        "ease": "back"
+      },
+      {
+        "t": 0.6,
+        "ms": 2400,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 4000,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "tail": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 2000,
+        "value": 10,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 4000,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "lookX": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.25,
+        "ms": 1000,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.32,
+        "ms": 1280,
+        "value": -3,
+        "ease": "io"
+      },
+      {
+        "t": 0.6,
+        "ms": 2400,
+        "value": -3,
+        "ease": "io"
+      },
+      {
+        "t": 0.68,
+        "ms": 2720,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 4000,
+        "value": 0,
+        "ease": "io"
+      }
+    ]
+  },
+  "character": "tanuki",
+  "parts": [
+    "shadow",
+    "tail",
+    "earL",
+    "earR",
+    "body",
+    "belly",
+    "mask",
+    "eyeL",
+    "eyeR",
+    "blush",
+    "nose",
+    "mouth",
+    "pawL",
+    "pawR",
+    "props"
+  ],
+  "palette": {
+    "body": "#6A6A78",
+    "rim": "#484852",
+    "mask": "#3A3A42",
+    "belly": "#ECE6DA",
+    "iris": "#E6BE50",
+    "earInner": "#D77757",
+    "effect": "#82C8DC"
+  },
+  "keyPose": {
+    "t": 0.5,
+    "ms": 2000
+  }
+}

@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;600&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+<script src="elisa-character.js"></script>
+<script src="elisa-tanuki.js"></script>
+<script src="elisa-shade.js"></script>
+<style>body{margin:0;background:#E9E6EE;-webkit-font-smoothing:antialiased}a{color:#C2386A;text-decoration:none}a:hover{color:#FF8FB1}</style>
+</helmet>
+
+<section id="spec" data-screen-label="00 Spec" style="padding:56px 56px 48px;border-bottom:1px solid rgba(0,0,0,.1);font-family:'Chivo Mono',ui-monospace,monospace;color:#16131C">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:6px"><span style="font:400 11px 'Silkscreen',monospace;padding:3px 8px;background:#16131C;color:#fff;border-radius:4px">00</span><span style="font-size:22px;font-weight:600">Elisa · main window · 2h</span></div>
+  <p style="margin:0 0 32px;max-width:820px;font-size:13px;line-height:21px;color:#4E4759;text-wrap:pretty">macOS desktop window for an on-device assistant (local 27B model behind a local gateway). Style <strong style="color:#16131C">2h · Pixel labels</strong>: one face, Chivo Mono, for everything; Silkscreen caps for speaker labels, panel labels and result badges. Dark first, light variant under <a href="#d1l">1L</a>. The character (P2 Shade; M7 Tanuki under Tweaks) sits beside each reply at 24 px and leads the status bar at 16 px, playing the live state.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start">
+
+    <div style="width:540px;background:#16131C;border-radius:10px;padding:20px 22px;color:#ECE8F2">
+      <div style="font:400 10px/14px 'Silkscreen',monospace;letter-spacing:.06em;color:#A9A2B6;margin-bottom:14px">COLOUR TOKENS · DARK / LIGHT</div>
+      <div style="display:grid;grid-template-columns:48px 1fr 88px 88px;gap:8px 12px;align-items:center;font:12px/16px 'Chivo Mono',monospace">
+        <span style="color:#A9A2B6">token</span><span style="color:#A9A2B6">use</span><span style="color:#A9A2B6">dark</span><span style="color:#A9A2B6">light</span>
+        <span style="color:#fff">fg</span><span style="color:#ECE8F2">titles, user text, emphasis</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#FFFFFF;box-shadow:0 0 0 1px #3F3850"></span>#FFFFFF</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#120E18;box-shadow:0 0 0 1px #3F3850"></span>#120E18</span>
+        <span style="color:#fff">tx</span><span style="color:#ECE8F2">prose, code text</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#ECE8F2;box-shadow:0 0 0 1px #3F3850"></span>#ECE8F2</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#221C2A;box-shadow:0 0 0 1px #3F3850"></span>#221C2A</span>
+        <span style="color:#fff">fg2</span><span style="color:#ECE8F2">secondary, meta, YOU label</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#A9A2B6;box-shadow:0 0 0 1px #3F3850"></span>#A9A2B6</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#5E566C;box-shadow:0 0 0 1px #3F3850"></span>#5E566C</span>
+        <span style="color:#fff">acc</span><span style="color:#ECE8F2">ELISA label, prompt, focus, heat</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#FF8FB1;box-shadow:0 0 0 1px #3F3850"></span>#FF8FB1</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#C2386A;box-shadow:0 0 0 1px #3F3850"></span>#C2386A</span>
+        <span style="color:#fff">code</span><span style="color:#ECE8F2">inline code, paths, targets</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#9FE0F0;box-shadow:0 0 0 1px #3F3850"></span>#9FE0F0</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#1D6E84;box-shadow:0 0 0 1px #3F3850"></span>#1D6E84</span>
+        <span style="color:#fff">ok</span><span style="color:#ECE8F2">OK badge, additions, ctx &lt; 70%</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#78C878;box-shadow:0 0 0 1px #3F3850"></span>#78C878</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#2C7D35;box-shadow:0 0 0 1px #3F3850"></span>#2C7D35</span>
+        <span style="color:#fff">warn</span><span style="color:#ECE8F2">ASK badge, dry run, ctx 70–85%</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#F2CC6B;box-shadow:0 0 0 1px #3F3850"></span>#F2CC6B</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#8A6400;box-shadow:0 0 0 1px #3F3850"></span>#8A6400</span>
+        <span style="color:#fff">err</span><span style="color:#ECE8F2">ERR badge, deletions, ctx &gt; 85%</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#FF6B7A;box-shadow:0 0 0 1px #3F3850"></span>#FF6B7A</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#C42B3C;box-shadow:0 0 0 1px #3F3850"></span>#C42B3C</span>
+        <span style="color:#fff">sep</span><span style="color:#ECE8F2">borders, dividers, rules</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#3F3850;box-shadow:0 0 0 1px #3F3850"></span>#3F3850</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#DAD3E4;box-shadow:0 0 0 1px #3F3850"></span>#DAD3E4</span>
+        <span style="color:#fff">gut</span><span style="color:#ECE8F2">line numbers, bar tracks only</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#6A6280;box-shadow:0 0 0 1px #3F3850"></span>#6A6280</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#8C8499;box-shadow:0 0 0 1px #3F3850"></span>#8C8499</span>
+        <span style="color:#fff">bg</span><span style="color:#ECE8F2">window, transcript</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#16131C;box-shadow:0 0 0 1px #3F3850"></span>#16131C</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#F8F6FB;box-shadow:0 0 0 1px #3F3850"></span>#F8F6FB</span>
+        <span style="color:#fff">bg2</span><span style="color:#ECE8F2">input, code, panels</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#201C29;box-shadow:0 0 0 1px #3F3850"></span>#201C29</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#EFEBF4;box-shadow:0 0 0 1px #3F3850"></span>#EFEBF4</span>
+        <span style="color:#fff">sel</span><span style="color:#ECE8F2">selected row (acc tint)</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#3A2433;box-shadow:0 0 0 1px #3F3850"></span>acc 15%</span><span style="display:flex;gap:6px;align-items:center"><span style="width:14px;height:14px;border-radius:3px;background:#F1DDE6;box-shadow:0 0 0 1px #3F3850"></span>acc 12%</span>
+      </div>
+    </div>
+
+    <div style="width:480px;background:#16131C;border-radius:10px;padding:20px 22px;color:#ECE8F2">
+      <div style="font:400 10px/14px 'Silkscreen',monospace;letter-spacing:.06em;color:#A9A2B6;margin-bottom:14px">TYPE · CHIVO MONO + SILKSCREEN</div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:400 10px/14px 'Silkscreen',monospace;letter-spacing:.06em;color:#FF8FB1">ELISA · YOU</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">pixel 10/14 speaker</span></div>
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:600 14px/21px 'Chivo Mono';color:#fff">Markdown heading</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">600 14/21 fg</span></div>
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:600 13px/21px 'Chivo Mono';color:#fff">User message</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">600 13/21 fg</span></div>
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:400 13px/21px 'Chivo Mono';color:#ECE8F2">Assistant prose</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">400 13/21 tx</span></div>
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:400 11px/16px 'Silkscreen',monospace;color:#fff">ELISA</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">pixel 11 window title</span></div>
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:12.5px/20px 'Chivo Mono';color:#9FE0F0">Bash cargo test</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">12.5/20 code, tools</span></div>
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:12px/19px 'Chivo Mono';color:#ECE8F2">43 + for (i, c) …</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">12/19 diff</span></div>
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:12px/22px 'Chivo Mono';color:#ECE8F2">thinking… 12s</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">12/22 status</span></div>
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:11.5px/17px 'Chivo Mono';color:#A9A2B6">21.8 tok/s · ttft 0.5s</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">11.5/17 meta</span></div>
+        <div style="display:grid;grid-template-columns:1fr 150px;gap:12px;align-items:baseline"><span style="font:400 10px/14px 'Silkscreen',monospace;letter-spacing:.06em;color:#A9A2B6">EDITS · HISTORY</span><span style="font:11.5px 'Chivo Mono';color:#A9A2B6">pixel 10 panel label</span></div>
+      </div>
+      <div style="margin-top:18px;padding-top:14px;border-top:1px solid #3F3850;display:flex;flex-direction:column;gap:10px;font:12px/20px 'Chivo Mono';color:#A9A2B6">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="min-width:30px;padding:0 5px;border-radius:2px;background:#78C878;color:#16131C;font:400 10px/18px 'Silkscreen',monospace;text-align:center">OK</span><span style="min-width:30px;padding:0 5px;border-radius:2px;background:#FF6B7A;color:#16131C;font:400 10px/18px 'Silkscreen',monospace;text-align:center">ERR</span><span style="min-width:30px;padding:0 5px;border-radius:2px;background:#FF8FB1;color:#16131C;font:400 10px/18px 'Silkscreen',monospace;text-align:center">RUN</span><span style="min-width:30px;padding:0 5px;border-radius:2px;background:#F2CC6B;color:#16131C;font:400 10px/18px 'Silkscreen',monospace;text-align:center">ASK</span><span style="min-width:30px;padding:0 5px;border-radius:2px;background:#FF6B7A;color:#16131C;font:400 10px/18px 'Silkscreen',monospace;text-align:center">NO</span><span style="margin-left:6px">result badges, pixel 10/18</span></div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div data-ec="idle" data-ec-size="24" style="width:24px;height:24px"></div><span>reply 24</span><div data-ec="running" data-ec-size="16" style="width:16px;height:16px;margin-left:8px"></div><span>status 16</span><span style="margin-left:8px">· <span style="color:#fff">›</span> input · <span style="color:#9FE0F0">↺</span> recall · <span style="color:#FF8FB1">▁▃▅▇█</span> heat · <span style="color:#78C878">▓▓</span>░ bars</span></div>
+      </div>
+    </div>
+
+    <div style="width:380px;background:#16131C;border-radius:10px;padding:20px 22px;color:#ECE8F2;font-family:'Chivo Mono',monospace">
+      <div style="font:400 10px/14px 'Silkscreen',monospace;letter-spacing:.06em;color:#A9A2B6;margin-bottom:14px">SPACING · 4PT GRID · BOTTOM STACK</div>
+      <div style="display:grid;grid-template-columns:1fr 92px;font-size:11.5px;line-height:15px">
+        <div style="height:30px;border:1px solid #3F3850;border-radius:4px 4px 0 0;display:flex;align-items:center;padding:0 10px;color:#fff">title bar</div><div style="display:flex;align-items:center;padding-left:10px;color:#A9A2B6">38</div>
+        <div style="height:76px;border:1px solid #3F3850;border-top:0;display:flex;flex-direction:column;justify-content:center;padding:0 10px;gap:3px"><span style="color:#fff">transcript · flex</span><span style="color:#A9A2B6">pad 20 / 28 · blocks 16</span><span style="color:#A9A2B6">tool rows 4 · indent 24</span></div><div style="display:flex;align-items:center;padding-left:10px;color:#A9A2B6">fill</div>
+        <div style="height:20px;border-left:1px dashed #3F3850;border-right:1px dashed #3F3850;display:flex;align-items:center;padding:0 10px;color:#A9A2B6">one blank row</div><div style="display:flex;align-items:center;padding-left:10px;color:#FF8FB1">20</div>
+        <div style="height:22px;background:#201C29;border-left:1px solid #3F3850;border-right:1px solid #3F3850;display:flex;align-items:center;padding:0 10px;color:#fff">status bar</div><div style="display:flex;align-items:center;padding-left:10px;color:#A9A2B6">22</div>
+        <div style="height:8px;border-left:1px dashed #3F3850;border-right:1px dashed #3F3850"></div><div style="display:flex;align-items:center;padding-left:10px;color:#FF8FB1;font-size:10px">8</div>
+        <div style="height:40px;border:1px solid #FF8FB1;border-radius:6px;margin:0 6px;display:flex;align-items:center;padding:0 10px;color:#fff">input · pad 11/14</div><div style="display:flex;align-items:center;padding-left:10px;color:#A9A2B6">46 → 8 lines</div>
+        <div style="height:8px;border-left:1px dashed #3F3850;border-right:1px dashed #3F3850"></div><div style="display:flex;align-items:center;padding-left:10px;color:#FF8FB1;font-size:10px">8</div>
+        <div style="height:56px;border-left:1px solid #3F3850;border-right:1px solid #3F3850;display:flex;flex-direction:column;align-items:flex-end;justify-content:center;padding:0 10px;color:#A9A2B6;gap:2px"><span>ctx ▓▓▓▓░ 62%</span><span>tok/s · ttft · Σ</span><span>watcher ×3 · audit · job</span></div><div style="display:flex;align-items:center;padding-left:10px;color:#A9A2B6">17 / row</div>
+        <div style="height:12px;border:1px solid #3F3850;border-top:0;border-radius:0 0 4px 4px"></div><div style="display:flex;align-items:center;padding-left:10px;color:#FF8FB1;font-size:10px">12</div>
+      </div>
+      <div style="margin-top:16px;font-size:11.5px;line-height:18px;color:#A9A2B6">side gutter 24 · meta rows right-align to input edge · edit panel 460 (min 320) · divider 1 px, 9 px hit area · radii 4 / 6 / 8 / 12</div>
+    </div>
+  </div>
+</section>
+
+<section id="d1" data-screen-label="01 Coding session" style="padding:48px 56px;border-bottom:1px solid rgba(0,0,0,.1);font-family:'Chivo Mono',ui-monospace,monospace;color:#16131C">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px"><span style="font:400 11px 'Silkscreen',monospace;padding:3px 8px;background:#16131C;color:#fff;border-radius:4px">1</span><span style="font-size:17px;font-weight:600">Coding session, mid-task</span><span style="font-size:13px;color:#5E566C">tool rows · state card · diff in edit panel · watcher, audit and job rows</span></div>
+  <div style="display:flex;gap:32px;align-items:flex-start">
+    <div style="--bg:#16131C;--bg2:#201C29;--bg3:#2A2536;--fg:#FFFFFF;--tx:#ECE8F2;--fg2:#A9A2B6;--acc:#FF8FB1;--code:#9FE0F0;--ok:#78C878;--err:#FF6B7A;--warn:#F2CC6B;--sep:#3F3850;--gut:#6A6280;--add:rgba(120,200,120,.13);--del:rgba(255,107,122,.13);--sel:rgba(255,143,177,.15);--mono:'Chivo Mono',ui-monospace,monospace;--sans:'Chivo Mono',ui-monospace,monospace;--pix:'Silkscreen',monospace;flex:none;width:1320px;height:920px;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:var(--sans);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 0 0 1.5px rgba(255,255,255,.06) inset,0 30px 80px rgba(0,0,0,.3)">
+      <div style="height:38px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--sep);position:relative">
+        <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#FF5F57"></span><span style="width:12px;height:12px;border-radius:50%;background:#FEBC2E"></span><span style="width:12px;height:12px;border-radius:50%;background:#28C840"></span></div>
+        <div style="position:absolute;left:0;right:0;text-align:center;font-size:12.5px;line-height:16px;pointer-events:none"><span style="font-family:var(--pix);font-size:11px;color:var(--fg)">ELISA</span><span style="color:var(--fg2);font-family:var(--mono);font-size:11.5px">  ~/code/ferrous</span></div>
+        <div style="margin-left:auto;display:flex;gap:6px;font-family:var(--mono);font-size:11px;color:var(--fg2)"><span style="padding:2px 7px;border:1px solid var(--sep);border-radius:4px;color:var(--fg)">edits ▸</span></div>
+      </div>
+      <div style="flex:1;min-height:0;display:flex">
+        <div style="flex:1;min-width:0;overflow:hidden;padding:20px 28px 0;display:flex;flex-direction:column;justify-content:flex-end;gap:16px">
+          <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-size:13px;line-height:21px;font-weight:600;color:var(--fg)">the tokenizer test is failing since the refactor. fix it and run the tests</span></div>
+          <div style="display:flex;gap:12px"><div data-ec="idle" data-ec-size="24" data-ec-reply="1" data-ec-static="1" style="flex:none;width:24px;height:24px;margin-top:-2px"></div><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--acc)">ELISA</span>
+              <div style="font-size:13px;line-height:21px">Reading the tokenizer and running the failing test first.</div>
+              <div style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12.5px;line-height:20px">
+                <div style="display:flex;gap:8px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--ok);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">OK</span><span style="color:var(--fg);font-weight:600">Read</span><span style="color:var(--code)">crates/core/src/tokenizer.rs</span><span style="flex:1"></span><span style="color:var(--fg2)">0.1s</span></div>
+                <div style="padding-left:38px;color:var(--fg2)">⎿ 118 lines</div>
+                <div style="display:flex;gap:8px;margin-top:4px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--err);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">ERR</span><span style="color:var(--fg);font-weight:600">Bash</span><span style="color:var(--code)">cargo test -p ferrous-core tokenizer</span><span style="flex:1"></span><span style="color:var(--fg2)">3.9s</span></div>
+                <div style="padding-left:38px;color:var(--fg2);display:flex;flex-direction:column"><span>⎿ <span style="color:var(--err)">test tokenizer::splits_multibyte ... FAILED</span></span><span style="padding-left:20px">byte index 3 is not a char boundary; it is inside 'é'</span><span style="padding-left:20px">… +14 lines <span style="color:var(--tx)">▸ expand</span></span></div>
+              </div>
+              <div style="font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2)">in 1.6K (reused 112) · out 213 · 21.8 tok/s · ttft 16.4s</div>
+            </div>
+          </div>
+          <div style="flex:none;margin-left:36px;border:1px solid var(--sep);border-radius:6px;overflow:hidden">
+            <div style="display:flex;align-items:center;gap:10px;padding:6px 12px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);border-bottom:1px solid var(--sep)"><span style="color:var(--fg)">▾ state #14</span><span>carried forward · updated turn 147</span><span style="flex:1"></span><span>/state</span></div>
+            <div style="display:grid;grid-template-columns:52px 1fr;gap:3px 12px;padding:8px 12px 9px;font-family:var(--mono);font-size:12px;line-height:19px">
+              <span style="color:var(--fg2)">goal</span><span>Fix failing tokenizer test after the bytes() refactor</span>
+              <span style="color:var(--fg2)">now</span><span style="color:var(--fg)">Patched split_words; running workspace tests</span>
+              <span style="color:var(--fg2)">next</span><span>Add regression test for emoji and combining marks</span>
+              <span style="color:var(--fg2)">facts</span><span>tests in crates/core/tests · MSRV 1.74 · no new deps</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:12px"><div data-ec="running" data-ec-size="24" data-ec-reply="1" style="flex:none;width:24px;height:24px;margin-top:-2px"></div><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:10px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--acc)">ELISA</span>
+              <div style="font-size:13px;line-height:21px;text-wrap:pretty"><code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">split_words</code> now walks <code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">bytes()</code>, so it slices through multi-byte characters like <code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">é</code> and emoji. Switching back to <code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">char_indices()</code> and advancing by the character's UTF-8 length fixes it:</div>
+              <div style="border:1px solid var(--sep);border-radius:6px;background:var(--bg2);overflow:hidden;max-width:640px">
+                <div style="display:flex;justify-content:space-between;padding:4px 12px;border-bottom:1px solid var(--sep);font-family:var(--mono);font-size:11px;line-height:17px;color:var(--fg2)"><span>rust</span><span>/copy</span></div>
+                <div style="padding:9px 12px;font-family:var(--mono);font-size:12.5px;line-height:20px">
+                  <div style="white-space:pre"><span style="color:var(--acc)">for</span> (i, c) <span style="color:var(--acc)">in</span> input.<span style="color:var(--code)">char_indices</span>() {</div>
+                  <div style="white-space:pre">    <span style="color:var(--acc)">if</span> <span style="color:var(--code)">is_boundary</span>(c) {</div>
+                  <div style="white-space:pre">        <span style="color:var(--fg2)">// …push the word…</span></div>
+                  <div style="white-space:pre">        start = i + c.<span style="color:var(--code)">len_utf8</span>();</div>
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12.5px;line-height:20px">
+                <div style="display:flex;gap:8px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--ok);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">OK</span><span style="color:var(--fg);font-weight:600">Edit</span><span style="color:var(--code)">crates/core/src/tokenizer.rs</span><span style="color:var(--ok)">+4</span><span style="color:var(--err)">−3</span><span style="flex:1"></span><span style="color:var(--fg2)">0.0s</span></div>
+                <div style="display:flex;gap:8px;margin-top:4px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--acc);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">RUN</span><span style="color:var(--fg);font-weight:600">Bash</span><span style="color:var(--code)">cargo test --workspace</span><span style="flex:1"></span><span style="color:var(--fg)">7.4s</span></div>
+                <div style="padding-left:38px;color:var(--fg2)">⎿ Compiling ferrous-cli v0.4.1 (crates/cli)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="width:1px;flex:none;background:var(--sep);position:relative"><div style="position:absolute;top:50%;left:-2px;width:5px;height:28px;margin-top:-14px;border-radius:3px;background:var(--gut)"></div></div>
+        <div style="width:460px;flex:none;display:flex;flex-direction:column;min-height:0">
+          <div style="height:40px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--sep);font-family:var(--mono)">
+            <span style="font-family:var(--pix);font-size:10px;font-weight:400;letter-spacing:.06em;color:var(--fg2)">EDITS</span><span style="font-size:12px;color:var(--fg)">3 / 3</span><span style="flex:1"></span><span style="font-size:11px;color:var(--fg2)"><span style="color:var(--tx)">[</span> prev  <span style="color:var(--tx)">]</span> next · <span style="color:var(--tx)">ctrl-o</span> hide</span>
+          </div>
+          <div style="flex:none;display:flex;align-items:center;gap:10px;padding:10px 16px 8px;font-family:var(--mono);font-size:12px;line-height:18px"><span style="color:var(--code)">crates/core/src/tokenizer.rs</span><span style="color:var(--ok)">+4</span><span style="color:var(--err)">−3</span><span style="flex:1"></span><span style="font-size:11px;color:var(--fg2)">turn 147 · 14:06</span></div>
+          <div style="flex:1;min-height:0;overflow:hidden;font-family:var(--mono);font-size:12px;line-height:19px">
+            <div style="padding:2px 16px;background:var(--bg2);color:var(--fg2);border-top:1px solid var(--sep);border-bottom:1px solid var(--sep);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">@@ -41,11 +41,12 @@ pub fn split_words(input: &amp;str)</div>
+            <div style="display:grid;grid-template-columns:36px 36px 18px 1fr;white-space:pre">
+              <span style="color:var(--gut);text-align:right">41</span><span style="color:var(--gut);text-align:right">41</span><span></span><span>    <span style="color:var(--acc)">let mut</span> out = Vec::<span style="color:var(--code)">new</span>();</span>
+              <span style="color:var(--gut);text-align:right">42</span><span style="color:var(--gut);text-align:right">42</span><span></span><span>    <span style="color:var(--acc)">let mut</span> start = 0;</span>
+              <span style="color:var(--gut);text-align:right;background:var(--del)">43</span><span style="background:var(--del)"></span><span style="color:var(--err);background:var(--del);text-align:center">−</span><span style="background:var(--del)">    <span style="color:var(--acc)">for</span> (i, b) <span style="color:var(--acc)">in</span> input.<span style="color:var(--code)">bytes</span>().<span style="color:var(--code)">enumerate</span>() {</span>
+              <span style="color:var(--gut);text-align:right;background:var(--del)">44</span><span style="background:var(--del)"></span><span style="color:var(--err);background:var(--del);text-align:center">−</span><span style="background:var(--del)">        <span style="color:var(--acc)">if</span> <span style="color:var(--code)">is_boundary</span>(b <span style="color:var(--acc)">as</span> char) {</span>
+              <span style="background:var(--add)"></span><span style="color:var(--gut);text-align:right;background:var(--add)">43</span><span style="color:var(--ok);background:var(--add);text-align:center">+</span><span style="background:var(--add)">    <span style="color:var(--acc)">for</span> (i, c) <span style="color:var(--acc)">in</span> input.<span style="color:var(--code)">char_indices</span>() {</span>
+              <span style="background:var(--add)"></span><span style="color:var(--gut);text-align:right;background:var(--add)">44</span><span style="color:var(--ok);background:var(--add);text-align:center">+</span><span style="background:var(--add)">        <span style="color:var(--acc)">if</span> <span style="color:var(--code)">is_boundary</span>(c) {</span>
+              <span style="color:var(--gut);text-align:right">45</span><span style="color:var(--gut);text-align:right">45</span><span></span><span>            <span style="color:var(--acc)">if</span> start &lt; i {</span>
+              <span style="color:var(--gut);text-align:right">46</span><span style="color:var(--gut);text-align:right">46</span><span></span><span>                out.<span style="color:var(--code)">push</span>(&amp;input[start..i]);</span>
+              <span style="color:var(--gut);text-align:right">47</span><span style="color:var(--gut);text-align:right">47</span><span></span><span>            }</span>
+              <span style="color:var(--gut);text-align:right;background:var(--del)">48</span><span style="background:var(--del)"></span><span style="color:var(--err);background:var(--del);text-align:center">−</span><span style="background:var(--del)">            start = i + 1;</span>
+              <span style="background:var(--add)"></span><span style="color:var(--gut);text-align:right;background:var(--add)">48</span><span style="color:var(--ok);background:var(--add);text-align:center">+</span><span style="background:var(--add)">            start = i + c.<span style="color:var(--code)">len_utf8</span>();</span>
+              <span style="color:var(--gut);text-align:right">49</span><span style="color:var(--gut);text-align:right">49</span><span></span><span>        }</span>
+              <span style="color:var(--gut);text-align:right">50</span><span style="color:var(--gut);text-align:right">50</span><span></span><span>    }</span>
+              <span style="background:var(--add)"></span><span style="color:var(--gut);text-align:right;background:var(--add)">51</span><span style="color:var(--ok);background:var(--add);text-align:center">+</span><span style="background:var(--add)">    <span style="color:var(--fg2)">// trailing word</span></span>
+              <span style="color:var(--gut);text-align:right">51</span><span style="color:var(--gut);text-align:right">52</span><span></span><span>    <span style="color:var(--acc)">if</span> start &lt; input.<span style="color:var(--code)">len</span>() {</span>
+              <span style="color:var(--gut);text-align:right">52</span><span style="color:var(--gut);text-align:right">53</span><span></span><span>        out.<span style="color:var(--code)">push</span>(&amp;input[start..]);</span>
+              <span style="color:var(--gut);text-align:right">53</span><span style="color:var(--gut);text-align:right">54</span><span></span><span>    }</span>
+            </div>
+          </div>
+          <div style="flex:none;border-top:1px solid var(--sep);padding:10px 16px 12px;font-family:var(--mono);font-size:11.5px;line-height:20px">
+            <div style="font-family:var(--pix);font-size:10px;font-weight:400;letter-spacing:.06em;color:var(--fg2);margin-bottom:4px">HISTORY</div>
+            <div style="display:flex;gap:8px;color:var(--fg2)"><span style="width:14px">1</span><span>Edit</span><span style="color:var(--code)">Cargo.toml</span><span style="color:var(--ok)">+1</span><span style="color:var(--err)">−1</span><span style="flex:1"></span><span>t139</span></div>
+            <div style="display:flex;gap:8px;color:var(--fg2)"><span style="width:14px">2</span><span>Write</span><span style="color:var(--code)">crates/core/tests/split.rs</span><span style="color:var(--ok)">+22</span><span style="flex:1"></span><span>t144</span></div>
+            <div style="display:flex;gap:8px;color:var(--fg);background:var(--sel);margin:0 -8px;padding:0 8px;border-radius:4px"><span style="width:14px;color:var(--acc)">3</span><span>Edit</span><span style="color:var(--code)">crates/core/src/tokenizer.rs</span><span style="color:var(--ok)">+4</span><span style="color:var(--err)">−3</span><span style="flex:1"></span><span>t147</span></div>
+          </div>
+        </div>
+      </div>
+      <div style="flex:none;padding:0 24px 12px;display:flex;flex-direction:column">
+        <div style="height:20px"></div>
+        <div style="display:flex;align-items:center;gap:10px;height:22px;font-family:var(--mono);font-size:12px;color:var(--fg2);white-space:nowrap">
+          <div data-ec="running" data-ec-size="16" style="flex:none;width:16px;height:16px"></div><span style="color:var(--fg)">running tool… 7s</span><span>(esc to interrupt)</span><span style="color:var(--gut)">│</span><span>elisa-27b-q4_k_m</span><span style="color:var(--gut)">│</span><span>bg: summarizing</span><span style="color:var(--gut)">│</span><span>1 queued</span><span style="color:var(--gut)">│</span><span>state #14</span><span style="flex:1"></span><span><span style="color:var(--tx)">⏎</span> send · <span style="color:var(--tx)">⇧⏎</span> newline · <span style="color:var(--tx)">/</span> commands · <span style="color:var(--tx)">ctrl-o</span> edits</span>
+        </div>
+        <div style="margin-top:8px;border:1px solid var(--acc);border-radius:8px;background:var(--bg2);padding:11px 14px;display:flex;gap:10px;font-size:13px;line-height:21px">
+          <span style="font-family:var(--mono);color:var(--acc)">›</span><div style="flex:1;color:var(--fg)">also add a regression test for emoji input<span style="display:inline-block;width:8px;height:17px;background:var(--fg);vertical-align:-3px;margin-left:2px"></span></div><span style="font-family:var(--mono);font-size:11px;color:var(--fg2);align-self:flex-end">queued · sends after tool</span>
+        </div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);white-space:nowrap">
+          <div>ctx <span style="color:var(--tx)">7.8K/8.2K</span> <span style="color:var(--err)">▓▓▓▓▓▓▓▓▓</span><span style="color:var(--gut)">░</span> <span style="color:var(--err)">95%</span></div>
+          <div><span style="color:var(--tx)">21.8</span> tok/s · ttft 0.5s · reused 918 · Σ in 139.2K · out 7.5K · memory</div>
+          <div>watcher: <span style="color:var(--code)">code-rust</span> <span style="color:var(--tx)">0.86</span></div>
+          <div>since turn 143 · would unload 1.8 GB (FFN 19% cold, 40 heads)</div>
+          <div>−11.2 ms/pass · <span style="color:var(--warn)">dry run</span></div>
+          <div style="color:var(--ok)">✓ full model agrees (412 tokens)</div>
+          <div><span style="color:var(--acc)">⠼</span> summarizing turns 1–24 <span style="color:var(--acc)">▓▓▓</span><span style="color:var(--gut)">░░</span> 6s</div>
+        </div>
+      </div>
+    </div>
+    <div style="width:280px;flex:none;display:flex;flex-direction:column;gap:18px;font-size:13px;line-height:20px;color:#3A3346;padding-top:8px">
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">A · TRANSCRIPT</div>Bottom-anchored. 20 top / 28 side padding, 16 between blocks. User turns open with a pixel YOU label, no band. Replies open with a pink ELISA label beside the 24 px character and indent 36 px, so tool rows, code and footers align under the prose.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">B · TOOL ROWS</div>Mono 12.5/20, 4 px apart. Solid pixel badge (OK, ERR, RUN, ASK) · verb (fg 600) · target (code) · elapsed right-aligned. Live rows show RUN and fg elapsed time; the ⎿ preview indents 38 px under the verb and collapses to 3 lines with ▸ expand.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">C · EDIT PANEL</div>460 px default, 320 min, 1 px divider with a 5×28 grip. Old/new line numbers in gut, ± column, add/del rows tinted 13%. History pinned at the bottom; [ ] step, ctrl-o hides.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">D · BOTTOM STACK</div>Never scrolls. 20 px blank row, status 22 led by the 16 px character in its live state, input 46 min (grows to 8 lines), then right-aligned meta rows at 17 px. Typing during a tool run queues the message; the input says so.</div>
+    </div>
+  </div>
+</section>
+
+<section id="d1l" data-screen-label="01L Coding session light" style="padding:48px 56px;border-bottom:1px solid rgba(0,0,0,.1);font-family:'Chivo Mono',ui-monospace,monospace;color:#16131C">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px"><span style="font:400 11px 'Silkscreen',monospace;padding:3px 8px;background:#16131C;color:#fff;border-radius:4px">1L</span><span style="font-size:17px;font-weight:600">Coding session, light theme</span><span style="font-size:13px;color:#5E566C">tool rows · state card · diff in edit panel · watcher, audit and job rows</span></div>
+  <div style="display:flex;gap:32px;align-items:flex-start">
+    <div style="--bg:#F8F6FB;--bg2:#EFEBF4;--bg3:#E5E0EC;--fg:#120E18;--tx:#221C2A;--fg2:#5E566C;--acc:#C2386A;--code:#1D6E84;--ok:#2C7D35;--err:#C42B3C;--warn:#8A6400;--sep:#DAD3E4;--gut:#8C8499;--add:rgba(44,125,53,.10);--del:rgba(196,43,60,.09);--sel:rgba(194,56,106,.12);--mono:'Chivo Mono',ui-monospace,monospace;--sans:'Chivo Mono',ui-monospace,monospace;--pix:'Silkscreen',monospace;flex:none;width:1320px;height:920px;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:var(--sans);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.14),0 30px 80px rgba(0,0,0,.18)">
+      <div style="height:38px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--sep);position:relative">
+        <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#FF5F57"></span><span style="width:12px;height:12px;border-radius:50%;background:#FEBC2E"></span><span style="width:12px;height:12px;border-radius:50%;background:#28C840"></span></div>
+        <div style="position:absolute;left:0;right:0;text-align:center;font-size:12.5px;line-height:16px;pointer-events:none"><span style="font-family:var(--pix);font-size:11px;color:var(--fg)">ELISA</span><span style="color:var(--fg2);font-family:var(--mono);font-size:11.5px">  ~/code/ferrous</span></div>
+        <div style="margin-left:auto;display:flex;gap:6px;font-family:var(--mono);font-size:11px;color:var(--fg2)"><span style="padding:2px 7px;border:1px solid var(--sep);border-radius:4px;color:var(--fg)">edits ▸</span></div>
+      </div>
+      <div style="flex:1;min-height:0;display:flex">
+        <div style="flex:1;min-width:0;overflow:hidden;padding:20px 28px 0;display:flex;flex-direction:column;justify-content:flex-end;gap:16px">
+          <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-size:13px;line-height:21px;font-weight:600;color:var(--fg)">the tokenizer test is failing since the refactor. fix it and run the tests</span></div>
+          <div style="display:flex;gap:12px"><div data-ec="idle" data-ec-size="24" data-ec-reply="1" data-ec-static="1" style="flex:none;width:24px;height:24px;margin-top:-2px"></div><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--acc)">ELISA</span>
+              <div style="font-size:13px;line-height:21px">Reading the tokenizer and running the failing test first.</div>
+              <div style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12.5px;line-height:20px">
+                <div style="display:flex;gap:8px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--ok);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">OK</span><span style="color:var(--fg);font-weight:600">Read</span><span style="color:var(--code)">crates/core/src/tokenizer.rs</span><span style="flex:1"></span><span style="color:var(--fg2)">0.1s</span></div>
+                <div style="padding-left:38px;color:var(--fg2)">⎿ 118 lines</div>
+                <div style="display:flex;gap:8px;margin-top:4px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--err);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">ERR</span><span style="color:var(--fg);font-weight:600">Bash</span><span style="color:var(--code)">cargo test -p ferrous-core tokenizer</span><span style="flex:1"></span><span style="color:var(--fg2)">3.9s</span></div>
+                <div style="padding-left:38px;color:var(--fg2);display:flex;flex-direction:column"><span>⎿ <span style="color:var(--err)">test tokenizer::splits_multibyte ... FAILED</span></span><span style="padding-left:20px">byte index 3 is not a char boundary; it is inside 'é'</span><span style="padding-left:20px">… +14 lines <span style="color:var(--tx)">▸ expand</span></span></div>
+              </div>
+              <div style="font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2)">in 1.6K (reused 112) · out 213 · 21.8 tok/s · ttft 16.4s</div>
+            </div>
+          </div>
+          <div style="flex:none;margin-left:36px;border:1px solid var(--sep);border-radius:6px;overflow:hidden">
+            <div style="display:flex;align-items:center;gap:10px;padding:6px 12px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);border-bottom:1px solid var(--sep)"><span style="color:var(--fg)">▾ state #14</span><span>carried forward · updated turn 147</span><span style="flex:1"></span><span>/state</span></div>
+            <div style="display:grid;grid-template-columns:52px 1fr;gap:3px 12px;padding:8px 12px 9px;font-family:var(--mono);font-size:12px;line-height:19px">
+              <span style="color:var(--fg2)">goal</span><span>Fix failing tokenizer test after the bytes() refactor</span>
+              <span style="color:var(--fg2)">now</span><span style="color:var(--fg)">Patched split_words; running workspace tests</span>
+              <span style="color:var(--fg2)">next</span><span>Add regression test for emoji and combining marks</span>
+              <span style="color:var(--fg2)">facts</span><span>tests in crates/core/tests · MSRV 1.74 · no new deps</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:12px"><div data-ec="running" data-ec-size="24" data-ec-reply="1" style="flex:none;width:24px;height:24px;margin-top:-2px"></div><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:10px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--acc)">ELISA</span>
+              <div style="font-size:13px;line-height:21px;text-wrap:pretty"><code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">split_words</code> now walks <code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">bytes()</code>, so it slices through multi-byte characters like <code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">é</code> and emoji. Switching back to <code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">char_indices()</code> and advancing by the character's UTF-8 length fixes it:</div>
+              <div style="border:1px solid var(--sep);border-radius:6px;background:var(--bg2);overflow:hidden;max-width:640px">
+                <div style="display:flex;justify-content:space-between;padding:4px 12px;border-bottom:1px solid var(--sep);font-family:var(--mono);font-size:11px;line-height:17px;color:var(--fg2)"><span>rust</span><span>/copy</span></div>
+                <div style="padding:9px 12px;font-family:var(--mono);font-size:12.5px;line-height:20px">
+                  <div style="white-space:pre"><span style="color:var(--acc)">for</span> (i, c) <span style="color:var(--acc)">in</span> input.<span style="color:var(--code)">char_indices</span>() {</div>
+                  <div style="white-space:pre">    <span style="color:var(--acc)">if</span> <span style="color:var(--code)">is_boundary</span>(c) {</div>
+                  <div style="white-space:pre">        <span style="color:var(--fg2)">// …push the word…</span></div>
+                  <div style="white-space:pre">        start = i + c.<span style="color:var(--code)">len_utf8</span>();</div>
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12.5px;line-height:20px">
+                <div style="display:flex;gap:8px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--ok);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">OK</span><span style="color:var(--fg);font-weight:600">Edit</span><span style="color:var(--code)">crates/core/src/tokenizer.rs</span><span style="color:var(--ok)">+4</span><span style="color:var(--err)">−3</span><span style="flex:1"></span><span style="color:var(--fg2)">0.0s</span></div>
+                <div style="display:flex;gap:8px;margin-top:4px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--acc);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">RUN</span><span style="color:var(--fg);font-weight:600">Bash</span><span style="color:var(--code)">cargo test --workspace</span><span style="flex:1"></span><span style="color:var(--fg)">7.4s</span></div>
+                <div style="padding-left:38px;color:var(--fg2)">⎿ Compiling ferrous-cli v0.4.1 (crates/cli)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="width:1px;flex:none;background:var(--sep);position:relative"><div style="position:absolute;top:50%;left:-2px;width:5px;height:28px;margin-top:-14px;border-radius:3px;background:var(--gut)"></div></div>
+        <div style="width:460px;flex:none;display:flex;flex-direction:column;min-height:0">
+          <div style="height:40px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--sep);font-family:var(--mono)">
+            <span style="font-family:var(--pix);font-size:10px;font-weight:400;letter-spacing:.06em;color:var(--fg2)">EDITS</span><span style="font-size:12px;color:var(--fg)">3 / 3</span><span style="flex:1"></span><span style="font-size:11px;color:var(--fg2)"><span style="color:var(--tx)">[</span> prev  <span style="color:var(--tx)">]</span> next · <span style="color:var(--tx)">ctrl-o</span> hide</span>
+          </div>
+          <div style="flex:none;display:flex;align-items:center;gap:10px;padding:10px 16px 8px;font-family:var(--mono);font-size:12px;line-height:18px"><span style="color:var(--code)">crates/core/src/tokenizer.rs</span><span style="color:var(--ok)">+4</span><span style="color:var(--err)">−3</span><span style="flex:1"></span><span style="font-size:11px;color:var(--fg2)">turn 147 · 14:06</span></div>
+          <div style="flex:1;min-height:0;overflow:hidden;font-family:var(--mono);font-size:12px;line-height:19px">
+            <div style="padding:2px 16px;background:var(--bg2);color:var(--fg2);border-top:1px solid var(--sep);border-bottom:1px solid var(--sep);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">@@ -41,11 +41,12 @@ pub fn split_words(input: &amp;str)</div>
+            <div style="display:grid;grid-template-columns:36px 36px 18px 1fr;white-space:pre">
+              <span style="color:var(--gut);text-align:right">41</span><span style="color:var(--gut);text-align:right">41</span><span></span><span>    <span style="color:var(--acc)">let mut</span> out = Vec::<span style="color:var(--code)">new</span>();</span>
+              <span style="color:var(--gut);text-align:right">42</span><span style="color:var(--gut);text-align:right">42</span><span></span><span>    <span style="color:var(--acc)">let mut</span> start = 0;</span>
+              <span style="color:var(--gut);text-align:right;background:var(--del)">43</span><span style="background:var(--del)"></span><span style="color:var(--err);background:var(--del);text-align:center">−</span><span style="background:var(--del)">    <span style="color:var(--acc)">for</span> (i, b) <span style="color:var(--acc)">in</span> input.<span style="color:var(--code)">bytes</span>().<span style="color:var(--code)">enumerate</span>() {</span>
+              <span style="color:var(--gut);text-align:right;background:var(--del)">44</span><span style="background:var(--del)"></span><span style="color:var(--err);background:var(--del);text-align:center">−</span><span style="background:var(--del)">        <span style="color:var(--acc)">if</span> <span style="color:var(--code)">is_boundary</span>(b <span style="color:var(--acc)">as</span> char) {</span>
+              <span style="background:var(--add)"></span><span style="color:var(--gut);text-align:right;background:var(--add)">43</span><span style="color:var(--ok);background:var(--add);text-align:center">+</span><span style="background:var(--add)">    <span style="color:var(--acc)">for</span> (i, c) <span style="color:var(--acc)">in</span> input.<span style="color:var(--code)">char_indices</span>() {</span>
+              <span style="background:var(--add)"></span><span style="color:var(--gut);text-align:right;background:var(--add)">44</span><span style="color:var(--ok);background:var(--add);text-align:center">+</span><span style="background:var(--add)">        <span style="color:var(--acc)">if</span> <span style="color:var(--code)">is_boundary</span>(c) {</span>
+              <span style="color:var(--gut);text-align:right">45</span><span style="color:var(--gut);text-align:right">45</span><span></span><span>            <span style="color:var(--acc)">if</span> start &lt; i {</span>
+              <span style="color:var(--gut);text-align:right">46</span><span style="color:var(--gut);text-align:right">46</span><span></span><span>                out.<span style="color:var(--code)">push</span>(&amp;input[start..i]);</span>
+              <span style="color:var(--gut);text-align:right">47</span><span style="color:var(--gut);text-align:right">47</span><span></span><span>            }</span>
+              <span style="color:var(--gut);text-align:right;background:var(--del)">48</span><span style="background:var(--del)"></span><span style="color:var(--err);background:var(--del);text-align:center">−</span><span style="background:var(--del)">            start = i + 1;</span>
+              <span style="background:var(--add)"></span><span style="color:var(--gut);text-align:right;background:var(--add)">48</span><span style="color:var(--ok);background:var(--add);text-align:center">+</span><span style="background:var(--add)">            start = i + c.<span style="color:var(--code)">len_utf8</span>();</span>
+              <span style="color:var(--gut);text-align:right">49</span><span style="color:var(--gut);text-align:right">49</span><span></span><span>        }</span>
+              <span style="color:var(--gut);text-align:right">50</span><span style="color:var(--gut);text-align:right">50</span><span></span><span>    }</span>
+              <span style="background:var(--add)"></span><span style="color:var(--gut);text-align:right;background:var(--add)">51</span><span style="color:var(--ok);background:var(--add);text-align:center">+</span><span style="background:var(--add)">    <span style="color:var(--fg2)">// trailing word</span></span>
+              <span style="color:var(--gut);text-align:right">51</span><span style="color:var(--gut);text-align:right">52</span><span></span><span>    <span style="color:var(--acc)">if</span> start &lt; input.<span style="color:var(--code)">len</span>() {</span>
+              <span style="color:var(--gut);text-align:right">52</span><span style="color:var(--gut);text-align:right">53</span><span></span><span>        out.<span style="color:var(--code)">push</span>(&amp;input[start..]);</span>
+              <span style="color:var(--gut);text-align:right">53</span><span style="color:var(--gut);text-align:right">54</span><span></span><span>    }</span>
+            </div>
+          </div>
+          <div style="flex:none;border-top:1px solid var(--sep);padding:10px 16px 12px;font-family:var(--mono);font-size:11.5px;line-height:20px">
+            <div style="font-family:var(--pix);font-size:10px;font-weight:400;letter-spacing:.06em;color:var(--fg2);margin-bottom:4px">HISTORY</div>
+            <div style="display:flex;gap:8px;color:var(--fg2)"><span style="width:14px">1</span><span>Edit</span><span style="color:var(--code)">Cargo.toml</span><span style="color:var(--ok)">+1</span><span style="color:var(--err)">−1</span><span style="flex:1"></span><span>t139</span></div>
+            <div style="display:flex;gap:8px;color:var(--fg2)"><span style="width:14px">2</span><span>Write</span><span style="color:var(--code)">crates/core/tests/split.rs</span><span style="color:var(--ok)">+22</span><span style="flex:1"></span><span>t144</span></div>
+            <div style="display:flex;gap:8px;color:var(--fg);background:var(--sel);margin:0 -8px;padding:0 8px;border-radius:4px"><span style="width:14px;color:var(--acc)">3</span><span>Edit</span><span style="color:var(--code)">crates/core/src/tokenizer.rs</span><span style="color:var(--ok)">+4</span><span style="color:var(--err)">−3</span><span style="flex:1"></span><span>t147</span></div>
+          </div>
+        </div>
+      </div>
+      <div style="flex:none;padding:0 24px 12px;display:flex;flex-direction:column">
+        <div style="height:20px"></div>
+        <div style="display:flex;align-items:center;gap:10px;height:22px;font-family:var(--mono);font-size:12px;color:var(--fg2);white-space:nowrap">
+          <div data-ec="running" data-ec-size="16" style="flex:none;width:16px;height:16px"></div><span style="color:var(--fg)">running tool… 7s</span><span>(esc to interrupt)</span><span style="color:var(--gut)">│</span><span>elisa-27b-q4_k_m</span><span style="color:var(--gut)">│</span><span>bg: summarizing</span><span style="color:var(--gut)">│</span><span>1 queued</span><span style="color:var(--gut)">│</span><span>state #14</span><span style="flex:1"></span><span><span style="color:var(--tx)">⏎</span> send · <span style="color:var(--tx)">⇧⏎</span> newline · <span style="color:var(--tx)">/</span> commands · <span style="color:var(--tx)">ctrl-o</span> edits</span>
+        </div>
+        <div style="margin-top:8px;border:1px solid var(--acc);border-radius:8px;background:var(--bg2);padding:11px 14px;display:flex;gap:10px;font-size:13px;line-height:21px">
+          <span style="font-family:var(--mono);color:var(--acc)">›</span><div style="flex:1;color:var(--fg)">also add a regression test for emoji input<span style="display:inline-block;width:8px;height:17px;background:var(--fg);vertical-align:-3px;margin-left:2px"></span></div><span style="font-family:var(--mono);font-size:11px;color:var(--fg2);align-self:flex-end">queued · sends after tool</span>
+        </div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);white-space:nowrap">
+          <div>ctx <span style="color:var(--tx)">7.8K/8.2K</span> <span style="color:var(--err)">▓▓▓▓▓▓▓▓▓</span><span style="color:var(--gut)">░</span> <span style="color:var(--err)">95%</span></div>
+          <div><span style="color:var(--tx)">21.8</span> tok/s · ttft 0.5s · reused 918 · Σ in 139.2K · out 7.5K · memory</div>
+          <div>watcher: <span style="color:var(--code)">code-rust</span> <span style="color:var(--tx)">0.86</span></div>
+          <div>since turn 143 · would unload 1.8 GB (FFN 19% cold, 40 heads)</div>
+          <div>−11.2 ms/pass · <span style="color:var(--warn)">dry run</span></div>
+          <div style="color:var(--ok)">✓ full model agrees (412 tokens)</div>
+          <div><span style="color:var(--acc)">⠼</span> summarizing turns 1–24 <span style="color:var(--acc)">▓▓▓</span><span style="color:var(--gut)">░░</span> 6s</div>
+        </div>
+      </div>
+    </div>
+    <div style="width:280px;flex:none;display:flex;flex-direction:column;gap:18px;font-size:13px;line-height:20px;color:#3A3346;padding-top:8px">
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">LIGHT MAPPING</div>Same layout and tokens; only values change. Lavender paper #F8F6FB. Pink deepens to #C2386A; code and status colours darken to clear 4.5:1. Diff tints drop to 9–10% so rows stay legible.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">WINDOW</div>Hairline rgba(0,0,0,.14) frame instead of the dark theme's black edge; separators #DAD3E4.</div>
+    </div>
+  </div>
+</section>
+
+<section id="d2" data-screen-label="02 Conversation" style="padding:48px 56px;border-bottom:1px solid rgba(0,0,0,.1);font-family:'Chivo Mono',ui-monospace,monospace;color:#16131C">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px"><span style="font:400 11px 'Silkscreen',monospace;padding:3px 8px;background:#16131C;color:#fff;border-radius:4px">2</span><span style="font-size:17px;font-weight:600">Plain conversation, no edit panel</span><span style="font-size:13px;color:#5E566C">welcome banner · recalled memory · streaming reply · audit mismatch</span></div>
+  <div style="display:flex;gap:32px;align-items:flex-start">
+    <div style="--bg:#16131C;--bg2:#201C29;--bg3:#2A2536;--fg:#FFFFFF;--tx:#ECE8F2;--fg2:#A9A2B6;--acc:#FF8FB1;--code:#9FE0F0;--ok:#78C878;--err:#FF6B7A;--warn:#F2CC6B;--sep:#3F3850;--gut:#6A6280;--add:rgba(120,200,120,.13);--del:rgba(255,107,122,.13);--sel:rgba(255,143,177,.15);--mono:'Chivo Mono',ui-monospace,monospace;--sans:'Chivo Mono',ui-monospace,monospace;--pix:'Silkscreen',monospace;flex:none;width:1120px;height:960px;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:var(--sans);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 30px 80px rgba(0,0,0,.3)">
+      <div style="height:38px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--sep);position:relative">
+        <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#FF5F57"></span><span style="width:12px;height:12px;border-radius:50%;background:#FEBC2E"></span><span style="width:12px;height:12px;border-radius:50%;background:#28C840"></span></div>
+        <div style="position:absolute;left:0;right:0;text-align:center;font-size:12.5px;line-height:16px;pointer-events:none"><span style="font-family:var(--pix);font-size:11px;color:var(--fg)">ELISA</span><span style="color:var(--fg2);font-family:var(--mono);font-size:11.5px">  ~/notes</span></div>
+        <div style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--fg2)"><span style="padding:2px 7px;border:1px solid var(--sep);border-radius:4px">edits ◂</span></div>
+      </div>
+      <div style="flex:1;min-height:0;overflow:hidden;padding:20px 28px 0;display:flex;flex-direction:column;justify-content:flex-end;gap:16px">
+        <div style="flex:none;border:1px solid var(--sep);border-radius:8px;padding:16px 18px;display:flex;flex-direction:column;gap:12px;max-width:820px">
+          <div style="display:flex;align-items:baseline;gap:10px"><div data-ec="idle" data-ec-size="40" style="flex:none;width:40px;height:40px;align-self:center"></div><span style="font-family:var(--pix);font-size:14px;color:var(--fg)">ELISA</span><span style="font-size:13px;color:var(--fg2)">private assistant · runs on this Mac</span></div>
+          <div style="display:grid;grid-template-columns:72px 1fr 72px 1fr;gap:3px 12px;font-family:var(--mono);font-size:12px;line-height:19px">
+            <span style="color:var(--fg2)">model</span><span style="color:var(--fg)">elisa-27b-q4_k_m</span><span style="color:var(--fg2)">server</span><span style="color:var(--code)">http://127.0.0.1:8080</span>
+            <span style="color:var(--fg2)">folder</span><span style="color:var(--code)">~/notes</span><span style="color:var(--fg2)">context</span><span style="color:var(--fg)">8.2K tokens</span>
+          </div>
+          <div style="font-family:var(--mono);font-size:12px;line-height:19px;display:flex;flex-direction:column"><span style="color:var(--fg2)">notes · 3 loaded <span style="color:var(--tx)">/notes</span></span><span>– prefers metric units and short answers</span><span>– building a downloader in Rust (tokio, reqwest)</span><span>– Mara's birthday is Nov 14</span></div>
+          <div style="font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);border-top:1px solid var(--sep);padding-top:10px"><span style="color:var(--tx)">/</span> commands · <span style="color:var(--tx)">esc</span> interrupt · <span style="color:var(--tx)">ctrl-o</span> edits · <span style="color:var(--tx)">/resume</span> past sessions · <span style="color:var(--tx)">ctrl-d</span> exit</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px;max-width:820px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-size:13px;line-height:21px;font-weight:600;color:var(--fg)">what's the practical difference between a mutex and a semaphore?</span></div>
+        <div style="display:flex;gap:12px;max-width:820px"><div data-ec="idle" data-ec-size="24" data-ec-reply="1" data-ec-static="1" style="flex:none;width:24px;height:24px;margin-top:-2px"></div><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px;font-size:13px;line-height:21px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--acc)">ELISA</span>
+            <div style="text-wrap:pretty">A <strong style="color:var(--fg);font-weight:600">mutex</strong> guards one resource: one holder at a time, and only the holder unlocks it. A <strong style="color:var(--fg);font-weight:600">semaphore</strong> is a counter of permits: up to N holders at once, and any task can release a permit.</div>
+            <div style="display:flex;flex-direction:column;gap:2px"><div style="display:flex;gap:10px"><span style="color:var(--fg2)">–</span><span>Use a mutex to protect shared state.</span></div><div style="display:flex;gap:10px"><span style="color:var(--fg2)">–</span><span>Use a semaphore to cap concurrency (connections, workers, downloads).</span></div></div>
+            <div style="font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2)">in 1.6K (reused 112) · out 213 · 21.8 tok/s · ttft 16.4s</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px;max-width:820px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-size:13px;line-height:21px;font-weight:600;color:var(--fg)">and for capping my downloader at 4 at a time?</span></div>
+        <div style="padding-left:36px;font-family:var(--mono);font-size:12px;line-height:19px;display:flex;flex-direction:column"><span style="color:var(--fg2)"><span style="color:var(--code)">↺</span> recalled 1 memory</span><span style="padding-left:16px">│ downloader uses tokio 1.38 + reqwest; jobs spawned per URL <span style="color:var(--fg2)">(turn 61)</span></span></div>
+        <div style="display:flex;gap:12px;max-width:820px"><div data-ec="streaming" data-ec-size="24" data-ec-reply="1" style="flex:none;width:24px;height:24px;margin-top:-2px"></div><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:21px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--acc)">ELISA</span>
+            <div style="text-wrap:pretty">A <code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">tokio::sync::Semaphore</code> with 4 permits. Each spawned job takes a permit before the request and drops it when done:</div>
+            <div style="border:1px solid var(--sep);border-radius:6px;background:var(--bg2);overflow:hidden">
+              <div style="display:flex;justify-content:space-between;padding:4px 12px;border-bottom:1px solid var(--sep);font-family:var(--mono);font-size:11px;line-height:17px;color:var(--fg2)"><span>rust</span><span>/copy</span></div>
+              <div style="padding:9px 12px;font-family:var(--mono);font-size:12.5px;line-height:20px">
+                <div style="white-space:pre"><span style="color:var(--acc)">let</span> sem = Arc::<span style="color:var(--code)">new</span>(Semaphore::<span style="color:var(--code)">new</span>(4));</div>
+                <div style="white-space:pre"><span style="color:var(--acc)">for</span> url <span style="color:var(--acc)">in</span> urls {</div>
+                <div style="white-space:pre">    <span style="color:var(--acc)">let</span> permit = sem.<span style="color:var(--code)">clone</span>().<span style="color:var(--code)">acquire_owned</span>().<span style="color:var(--acc)">await</span>?;</div>
+                <div style="white-space:pre">    tokio::<span style="color:var(--code)">spawn</span>(<span style="color:var(--acc)">async move</span> {<span style="display:inline-block;width:8px;height:16px;background:var(--acc);vertical-align:-3px;margin-left:4px"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="flex:none;padding:0 24px 12px;display:flex;flex-direction:column">
+        <div style="height:20px"></div>
+        <div style="display:flex;align-items:center;gap:10px;height:22px;font-family:var(--mono);font-size:12px;color:var(--fg2);white-space:nowrap">
+          <div data-ec="streaming" data-ec-size="16" style="flex:none;width:16px;height:16px"></div><span style="color:var(--fg)">streaming… 4s</span><span>(esc to interrupt)</span><span style="color:var(--gut)">│</span><span>elisa-27b-q4_k_m</span><span style="color:var(--gut)">│</span><span>state #3</span><span style="flex:1"></span><span><span style="color:var(--tx)">⏎</span> send · <span style="color:var(--tx)">⇧⏎</span> newline · <span style="color:var(--tx)">/</span> commands</span>
+        </div>
+        <div style="margin-top:8px;border:1px solid var(--sep);border-radius:8px;background:var(--bg2);padding:11px 14px;display:flex;gap:10px;font-size:13px;line-height:21px">
+          <span style="font-family:var(--mono);color:var(--acc)">›</span><div style="flex:1;color:var(--fg2)">Message Elisa · / for commands</div>
+        </div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);white-space:nowrap">
+          <div>ctx <span style="color:var(--tx)">3.4K/8.2K</span> <span style="color:var(--ok)">▓▓▓▓</span><span style="color:var(--gut)">░░░░░░</span> <span style="color:var(--ok)">41%</span></div>
+          <div><span style="color:var(--tx)">22.4</span> tok/s · ttft 0.6s · reused 1.4K · Σ in 4.1K · out 0.6K · memory</div>
+          <div>watcher: <span style="color:var(--code)">chat-general</span> <span style="color:var(--tx)">0.71</span></div>
+          <div>since turn 1 · would unload 1.2 GB (FFN 14% cold, 22 heads)</div>
+          <div>−7.9 ms/pass · <span style="color:var(--warn)">dry run</span></div>
+          <div style="color:var(--err)">✗ masked weights changed this reply at token 57 · /full</div>
+        </div>
+      </div>
+    </div>
+    <div style="width:280px;flex:none;display:flex;flex-direction:column;gap:18px;font-size:13px;line-height:20px;color:#3A3346;padding-top:8px">
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">WELCOME BANNER</div>Rounded box (8 px, sep border), first block of every session. Two-column key/value grid in mono 12/19, notes preview capped at 3 lines, key hints under a rule.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">READING WIDTH</div>With no edit panel, transcript blocks cap at 820 px and stay left-aligned so prose holds ~90 characters. The bottom stack stays full width.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">STREAMING</div>Pink block caret at the stream head. The character beside the live reply and in the status bar plays Streaming. The input stays live while streaming; ⏎ queues and the status bar shows the queued count.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">AUDIT</div>One line, replaces itself when the next check finishes. Red mismatch links to /full (see <a href="#d5">5c</a>).</div>
+    </div>
+  </div>
+</section>
+
+<section id="d3" data-screen-label="03 Permission" style="padding:48px 56px;border-bottom:1px solid rgba(0,0,0,.1);font-family:'Chivo Mono',ui-monospace,monospace;color:#16131C">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px"><span style="font:400 11px 'Silkscreen',monospace;padding:3px 8px;background:#16131C;color:#fff;border-radius:4px">3</span><span style="font-size:17px;font-weight:600">Permission box</span><span style="font-size:13px;color:#5E566C">replaces the input while it asks · edit panel empty state</span></div>
+  <div style="display:flex;gap:32px;align-items:flex-start">
+    <div style="--bg:#16131C;--bg2:#201C29;--bg3:#2A2536;--fg:#FFFFFF;--tx:#ECE8F2;--fg2:#A9A2B6;--acc:#FF8FB1;--code:#9FE0F0;--ok:#78C878;--err:#FF6B7A;--warn:#F2CC6B;--sep:#3F3850;--gut:#6A6280;--add:rgba(120,200,120,.13);--del:rgba(255,107,122,.13);--sel:rgba(255,143,177,.15);--mono:'Chivo Mono',ui-monospace,monospace;--sans:'Chivo Mono',ui-monospace,monospace;--pix:'Silkscreen',monospace;flex:none;width:1320px;height:860px;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:var(--sans);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 30px 80px rgba(0,0,0,.3)">
+      <div style="height:38px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--sep);position:relative">
+        <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#FF5F57"></span><span style="width:12px;height:12px;border-radius:50%;background:#FEBC2E"></span><span style="width:12px;height:12px;border-radius:50%;background:#28C840"></span></div>
+        <div style="position:absolute;left:0;right:0;text-align:center;font-size:12.5px;line-height:16px;pointer-events:none"><span style="font-family:var(--pix);font-size:11px;color:var(--fg)">ELISA</span><span style="color:var(--fg2);font-family:var(--mono);font-size:11.5px">  ~/code/ferrous</span></div>
+        <div style="margin-left:auto;font-family:var(--mono);font-size:11px"><span style="padding:2px 7px;border:1px solid var(--sep);border-radius:4px;color:var(--fg)">edits ▸</span></div>
+      </div>
+      <div style="flex:1;min-height:0;display:flex">
+        <div style="flex:1;min-width:0;overflow:hidden;padding:20px 28px 0;display:flex;flex-direction:column;justify-content:flex-end;gap:16px">
+          <div style="font-family:var(--mono);font-size:12px;line-height:19px;color:var(--fg2)">[resumed session · 12 turns · state #2 restored]</div>
+          <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-size:13px;line-height:21px;font-weight:600;color:var(--fg)">run the test suite and tell me what fails</span></div>
+          <div style="display:flex;gap:12px"><div data-ec="permission" data-ec-size="24" data-ec-reply="1" style="flex:none;width:24px;height:24px;margin-top:-2px"></div><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--acc)">ELISA</span>
+              <div style="font-size:13px;line-height:21px">Running the tests for the whole workspace.</div>
+              <div style="display:flex;gap:8px;font-family:var(--mono);font-size:12.5px;line-height:20px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--warn);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">ASK</span><span style="color:var(--fg);font-weight:600">Bash</span><span style="color:var(--code)">cargo test</span><span style="flex:1"></span><span style="color:var(--warn)">waiting for permission</span></div>
+            </div>
+          </div>
+        </div>
+        <div style="width:1px;flex:none;background:var(--sep);position:relative"><div style="position:absolute;top:50%;left:-2px;width:5px;height:28px;margin-top:-14px;border-radius:3px;background:var(--gut)"></div></div>
+        <div style="width:400px;flex:none;display:flex;flex-direction:column">
+          <div style="height:40px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--sep);font-family:var(--mono)"><span style="font-family:var(--pix);font-size:10px;font-weight:400;letter-spacing:.06em;color:var(--fg2)">EDITS</span><span style="font-size:12px;color:var(--fg2)">0</span><span style="flex:1"></span><span style="font-size:11px;color:var(--fg2)"><span style="color:var(--tx)">ctrl-o</span> hide</span></div>
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;font-family:var(--mono);font-size:12px;line-height:19px;color:var(--fg2);text-align:center"><span style="color:var(--tx)">edits will show here</span><span>file changes from this session appear as diffs</span></div>
+        </div>
+      </div>
+      <div style="flex:none;padding:0 24px 12px;display:flex;flex-direction:column">
+        <div style="height:20px"></div>
+        <div style="display:flex;align-items:center;gap:10px;height:22px;font-family:var(--mono);font-size:12px;color:var(--fg2);white-space:nowrap">
+          <div data-ec="permission" data-ec-size="16" style="flex:none;width:16px;height:16px"></div><span style="color:var(--fg)">waiting for permission</span><span style="color:var(--gut)">│</span><span>elisa-27b-q4_k_m</span><span style="color:var(--gut)">│</span><span>state #2</span><span style="flex:1"></span><span><span style="color:var(--tx)">1–3</span> choose · <span style="color:var(--tx)">esc</span> = no</span>
+        </div>
+        <div style="margin-top:8px;border:1px solid var(--acc);border-radius:8px;background:var(--bg2);padding:14px 16px 12px;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;align-items:baseline;gap:10px"><span style="font-size:15px;line-height:22px;font-weight:600;color:var(--fg)">Allow Run <span style="font-family:var(--mono);font-size:14px;color:var(--code);font-weight:500">cargo test</span>?</span><span style="flex:1"></span><span style="font-family:var(--mono);font-size:11.5px;color:var(--fg2)">Bash · in ~/code/ferrous · writes to target/</span></div>
+          <div style="display:flex;flex-direction:column;gap:2px;font-family:var(--mono);font-size:13px;line-height:20px">
+            <div style="display:flex;gap:10px;padding:4px 10px;margin:0 -10px;border-radius:5px;background:var(--sel);color:var(--fg)"><span style="color:var(--acc);width:10px">›</span><span>1. Yes</span></div>
+            <div style="display:flex;gap:10px;padding:4px 10px;margin:0 -10px;color:var(--tx)"><span style="width:10px"></span><span>2. Yes, always allow <span style="color:var(--code)">Bash</span> this session</span></div>
+            <div style="display:flex;gap:10px;padding:4px 10px;margin:0 -10px;color:var(--tx)"><span style="width:10px"></span><span>3. No</span></div>
+          </div>
+          <div style="font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2)"><span style="color:var(--tx)">↑↓</span> select · <span style="color:var(--tx)">enter</span> confirm · <span style="color:var(--tx)">1–3</span> pick · <span style="color:var(--tx)">esc</span> deny</div>
+        </div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);white-space:nowrap">
+          <div>ctx <span style="color:var(--tx)">6.1K/8.2K</span> <span style="color:var(--warn)">▓▓▓▓▓▓▓</span><span style="color:var(--gut)">░░░</span> <span style="color:var(--warn)">74%</span></div>
+          <div><span style="color:var(--tx)">21.6</span> tok/s · ttft 0.4s · reused 5.2K · Σ in 41.0K · out 2.2K · memory</div>
+          <div>watcher: <span style="color:var(--code)">code-rust</span> <span style="color:var(--tx)">0.82</span></div>
+          <div>since turn 9 · would unload 1.7 GB (FFN 18% cold, 38 heads)</div>
+          <div>−10.6 ms/pass · <span style="color:var(--warn)">dry run</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="width:280px;flex:none;display:flex;flex-direction:column;gap:18px;font-size:13px;line-height:20px;color:#3A3346;padding-top:8px">
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">PERMISSION BOX</div>Takes the input's slot and grows upward; the transcript shrinks instead of being covered. Pink 1 px border, title 600 15, options 13/20 with the selection on the sel tint.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">PENDING ROW</div>The tool row waits with an amber ASK badge and "waiting for permission" in place of elapsed time. The character raises a paw (Permission) beside the reply and in the status bar.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">EMPTY EDIT PANEL</div>Centered two-line message, panel stays open at 400 px so the layout doesn't jump on the first edit.</div>
+    </div>
+  </div>
+</section>
+
+<section id="d4" data-screen-label="04 Summarizing" style="padding:48px 56px;border-bottom:1px solid rgba(0,0,0,.1);font-family:'Chivo Mono',ui-monospace,monospace;color:#16131C">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px"><span style="font:400 11px 'Silkscreen',monospace;padding:3px 8px;background:#16131C;color:#fff;border-radius:4px">4</span><span style="font-size:17px;font-weight:600">Summarizing state</span><span style="font-size:13px;color:#5E566C">input paused · notes box · error and info lines · job progress</span></div>
+  <div style="display:flex;gap:32px;align-items:flex-start">
+    <div style="--bg:#16131C;--bg2:#201C29;--bg3:#2A2536;--fg:#FFFFFF;--tx:#ECE8F2;--fg2:#A9A2B6;--acc:#FF8FB1;--code:#9FE0F0;--ok:#78C878;--err:#FF6B7A;--warn:#F2CC6B;--sep:#3F3850;--gut:#6A6280;--add:rgba(120,200,120,.13);--del:rgba(255,107,122,.13);--sel:rgba(255,143,177,.15);--mono:'Chivo Mono',ui-monospace,monospace;--sans:'Chivo Mono',ui-monospace,monospace;--pix:'Silkscreen',monospace;flex:none;width:1120px;height:840px;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:var(--sans);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 30px 80px rgba(0,0,0,.3)">
+      <div style="height:38px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--sep);position:relative">
+        <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#FF5F57"></span><span style="width:12px;height:12px;border-radius:50%;background:#FEBC2E"></span><span style="width:12px;height:12px;border-radius:50%;background:#28C840"></span></div>
+        <div style="position:absolute;left:0;right:0;text-align:center;font-size:12.5px;line-height:16px;pointer-events:none"><span style="font-family:var(--pix);font-size:11px;color:var(--fg)">ELISA</span><span style="color:var(--fg2);font-family:var(--mono);font-size:11.5px">  ~/notes</span></div>
+      </div>
+      <div style="flex:1;min-height:0;overflow:hidden;padding:20px 28px 0;display:flex;flex-direction:column;justify-content:flex-end;gap:16px">
+        <div style="display:flex;flex-direction:column;gap:2px;max-width:820px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-family:var(--mono);font-size:13px;line-height:22px;color:var(--fg)">/notes</span></div>
+        <div style="flex:none;border:1px solid var(--sep);border-radius:8px;padding:12px 16px 14px;max-width:820px;display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;gap:10px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2)"><span style="font-family:var(--pix);font-size:10px;font-weight:400;letter-spacing:.06em">NOTES</span><span>saved summary · turns 1–24 · 286 words</span><span style="flex:1"></span><span>/forget · /pin</span></div>
+          <div style="font-size:13px;line-height:21px;text-wrap:pretty">Planning a 4-day trip to Lisbon in March. Budget about 900 € for two, flights already booked (TAP, arrive Thu 09:40). Prefers walking neighbourhoods over tours; Mara is vegetarian. Shortlisted Alfama and Príncipe Real for the stay.</div>
+          <div style="font-family:var(--mono);font-size:12px;line-height:19px;color:var(--fg2)">pinned · <span style="color:var(--tx)">budget 900 €</span> · <span style="color:var(--tx)">vegetarian</span> · <span style="color:var(--tx)">arrive Thu 09:40</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px;max-width:820px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-size:13px;line-height:21px;font-weight:600;color:var(--fg)">draft a day-by-day plan with two dinner options per night</span></div>
+        <div style="font-family:var(--mono);font-size:12px;line-height:19px;color:var(--err)">[error: context full · 8.3K/8.2K · reply stopped at 1.1K tokens · run /compact or /clear]</div>
+        <div style="display:flex;flex-direction:column;gap:2px;max-width:820px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-family:var(--mono);font-size:13px;line-height:22px;color:var(--fg)">/compact</span></div>
+        <div style="font-family:var(--mono);font-size:12px;line-height:19px;color:var(--fg2)"><span style="color:var(--acc)">⠼</span> [compacting: summarising turns 1–24 into notes · keeping pinned facts and the last 6 turns]</div>
+      </div>
+      <div style="flex:none;padding:0 24px 12px;display:flex;flex-direction:column">
+        <div style="height:20px"></div>
+        <div style="display:flex;align-items:center;gap:10px;height:22px;font-family:var(--mono);font-size:12px;color:var(--fg2);white-space:nowrap">
+          <div data-ec="thinking" data-ec-size="16" style="flex:none;width:16px;height:16px"></div><span style="color:var(--fg)">summarizing… 6s</span><span>(esc to interrupt)</span><span style="color:var(--gut)">│</span><span>elisa-27b-q4_k_m</span><span style="color:var(--gut)">│</span><span>bg: summarize</span><span style="color:var(--gut)">│</span><span>state #6</span><span style="flex:1"></span><span><span style="color:var(--tx)">esc</span> interrupt</span>
+        </div>
+        <div style="margin-top:8px;border:1px dashed var(--sep);border-radius:8px;background:var(--bg);padding:11px 14px;display:flex;gap:10px;font-size:13px;line-height:21px">
+          <span style="font-family:var(--mono);color:var(--acc)">⠼</span><div style="flex:1;font-family:var(--mono);font-size:13px;color:var(--fg2)">summarizing earlier turns… input paused <span style="color:var(--tx)">(esc interrupts)</span></div>
+        </div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);white-space:nowrap">
+          <div>ctx <span style="color:var(--tx)">8.2K/8.2K</span> <span style="color:var(--err)">▓▓▓▓▓▓▓▓▓▓</span> <span style="color:var(--err)">100%</span></div>
+          <div><span style="color:var(--tx)">20.9</span> tok/s · ttft 0.7s · reused 6.8K · Σ in 92.4K · out 5.1K · memory</div>
+          <div>watcher: <span style="color:var(--code)">chat-travel</span> <span style="color:var(--tx)">0.64</span></div>
+          <div>since turn 18 · would unload 0.9 GB (FFN 11% cold, 16 heads)</div>
+          <div>−5.4 ms/pass · <span style="color:var(--warn)">dry run</span></div>
+          <div><span style="color:var(--acc)">⠼</span> summarizing turns 1–24 <span style="color:var(--acc)">▓▓▓</span><span style="color:var(--gut)">░░</span> 6s</div>
+        </div>
+      </div>
+    </div>
+    <div style="width:340px;flex:none;display:flex;flex-direction:column;gap:18px;font-size:13px;line-height:20px;color:#3A3346;padding-top:8px">
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">PAUSED INPUT</div>Same footprint as the live input, dashed sep border on bg, spinner in place of the prompt. Keystrokes are ignored; esc cancels the job and restores the input.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">NOTES BOX</div>8 px rounded box, label row in mono, summary in prose, pinned facts as a mono strip.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">INFO / ERROR LINES</div>Bracketed mono 12/19. Info in fg2, errors in err. They are transcript entries, never toasts.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">JOB ROW · AFTER</div>
+        <div style="margin-top:6px;background:#16131C;border-radius:6px;padding:10px 12px;font:11.5px/17px 'Chivo Mono',monospace;color:#A9A2B6;display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+          <div><span style="color:#FF8FB1">⠼</span> summarizing turns 1–24 <span style="color:#FF8FB1">▓▓▓</span><span style="color:#6A6280">░░</span> 6s</div>
+          <div style="color:#78C878">✓ saved summary · 310 words · memory 120 turns</div>
+          <div style="color:#ECE8F2">[compacted: 7.8K → 2.1K tokens · earlier turns summarised (/notes)]</div>
+        </div>
+        <div style="margin-top:6px">Success row holds for 4 s, then collapses. The info line lands in the transcript at the same moment.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="d5" data-screen-label="05 Watcher, Resume, Full" style="padding:48px 56px;border-bottom:1px solid rgba(0,0,0,.1);font-family:'Chivo Mono',ui-monospace,monospace;color:#16131C">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px"><span style="font:400 11px 'Silkscreen',monospace;padding:3px 8px;background:#16131C;color:#fff;border-radius:4px">5</span><span style="font-size:17px;font-weight:600">/watcher view, /resume picker, /full answer view</span></div>
+  <div style="display:flex;flex-wrap:wrap;gap:40px;align-items:flex-start">
+
+    <div id="5a" style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;gap:8px;align-items:baseline;font-size:13px;color:#4E4759"><span style="font:400 10px 'Silkscreen',monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#16131C;border-radius:5px">5a</span>/watcher</div>
+      <div style="--bg:#16131C;--bg2:#201C29;--bg3:#2A2536;--fg:#FFFFFF;--tx:#ECE8F2;--fg2:#A9A2B6;--acc:#FF8FB1;--code:#9FE0F0;--ok:#78C878;--err:#FF6B7A;--warn:#F2CC6B;--sep:#3F3850;--gut:#6A6280;--add:rgba(120,200,120,.13);--del:rgba(255,107,122,.13);--sel:rgba(255,143,177,.15);--mono:'Chivo Mono',ui-monospace,monospace;--sans:'Chivo Mono',ui-monospace,monospace;--pix:'Silkscreen',monospace;width:1000px;height:800px;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:var(--sans);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 30px 80px rgba(0,0,0,.3)">
+        <div style="height:38px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--sep);position:relative">
+          <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#FF5F57"></span><span style="width:12px;height:12px;border-radius:50%;background:#FEBC2E"></span><span style="width:12px;height:12px;border-radius:50%;background:#28C840"></span></div>
+          <div style="position:absolute;left:0;right:0;text-align:center;font-size:12.5px;line-height:16px;pointer-events:none"><span style="font-family:var(--pix);font-size:11px;color:var(--fg)">ELISA</span><span style="color:var(--fg2);font-family:var(--mono);font-size:11.5px">  ~/code/ferrous</span></div>
+        </div>
+        <div style="flex:1;min-height:0;overflow:hidden;padding:20px 28px 0;display:flex;flex-direction:column;justify-content:flex-end;gap:16px">
+          <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-family:var(--mono);font-size:13px;line-height:22px;color:var(--fg)">/watcher</span></div>
+          <div style="flex:none;border:1px solid var(--sep);border-radius:8px;padding:14px 18px 16px;display:flex;flex-direction:column;gap:14px;font-family:var(--mono);font-size:12px;line-height:19px">
+            <div style="display:flex;align-items:center;gap:10px"><span style="font-family:var(--pix);font-size:10px;font-weight:400;letter-spacing:.06em;color:var(--fg2)">WATCHER</span><span style="color:var(--fg2)">observing since turn 143 · 62 layers</span><span style="flex:1"></span><span style="padding:1px 8px;border:1px solid var(--warn);border-radius:4px;color:var(--warn);font-family:var(--pix);font-size:10px;letter-spacing:.04em">DRY RUN</span></div>
+            <div style="display:grid;grid-template-columns:96px 1fr;gap:6px 16px">
+              <span style="color:var(--fg2)">domain</span><span><span style="color:var(--code)">code-rust</span>   confidence <span style="color:var(--fg)">0.86</span> <span style="color:var(--acc)">▓▓▓▓▓▓▓▓▓</span><span style="color:var(--gut)">░</span></span>
+              <span style="color:var(--fg2)">candidates</span><span>code-rust <span style="color:var(--fg)">0.86</span> · code-general 0.09 · prose-tech 0.03 · chat 0.02</span>
+              <span style="color:var(--fg2)">unload plan</span><span>would unload <span style="color:var(--fg)">1.8 GB</span> · FFN 19% cold · 40 heads · <span style="color:var(--ok)">−11.2 ms/pass</span></span>
+              <span style="color:var(--fg2)">audit</span><span>14 checks · <span style="color:var(--ok)">13 agree</span> · <span style="color:var(--err)">1 diverged</span> (turn 146, token 57) · last <span style="color:var(--ok)">✓ 412 tokens</span></span>
+            </div>
+            <div style="border-top:1px solid var(--sep);padding-top:12px;display:flex;flex-direction:column;gap:4px">
+              <div style="display:flex;justify-content:space-between;color:var(--fg2);margin-bottom:4px"><span>FFN coldness by layer</span><span>▁ warm   █ cold</span></div>
+              <div style="display:flex;gap:16px;align-items:center"><span style="color:var(--gut);width:28px">L00</span><span style="color:var(--acc);font-size:17px;letter-spacing:2px;line-height:22px">▁▁▂▂▃▃▄▅▅▆▆▇▇██▇</span><span style="color:var(--fg2);margin-left:auto">avg 41%</span></div>
+              <div style="display:flex;gap:16px;align-items:center"><span style="color:var(--gut);width:28px">L16</span><span style="color:var(--acc);font-size:17px;letter-spacing:2px;line-height:22px">▇▆▆▅▅▄▄▃▃▃▄▄▅▅▆▆</span><span style="color:var(--fg2);margin-left:auto">avg 33%</span></div>
+              <div style="display:flex;gap:16px;align-items:center"><span style="color:var(--gut);width:28px">L32</span><span style="color:var(--acc);font-size:17px;letter-spacing:2px;line-height:22px">▇▇██▇▆▅▅▄▄▃▃▂▂▂▃</span><span style="color:var(--fg2);margin-left:auto">avg 38%</span></div>
+              <div style="display:flex;gap:16px;align-items:center"><span style="color:var(--gut);width:28px">L48</span><span style="color:var(--acc);font-size:17px;letter-spacing:2px;line-height:22px">▃▄▄▅▅▆▆▇▇█▇▆▅▄</span><span style="color:var(--fg2);margin-left:auto">avg 44%</span></div>
+            </div>
+            <div style="color:var(--fg2);font-size:11.5px;line-height:17px"><span style="color:var(--tx)">/watcher apply</span> leave dry run · <span style="color:var(--tx)">/watcher off</span> · <span style="color:var(--tx)">/full</span> compare last reply</div>
+          </div>
+        </div>
+        <div style="flex:none;padding:0 24px 12px;display:flex;flex-direction:column">
+          <div style="height:20px"></div>
+          <div style="display:flex;align-items:center;gap:10px;height:22px;font-family:var(--mono);font-size:12px;color:var(--fg2);white-space:nowrap"><div data-ec="idle" data-ec-size="16" style="flex:none;width:16px;height:16px"></div><span style="color:var(--fg)">ready</span><span style="color:var(--gut)">│</span><span>elisa-27b-q4_k_m</span><span style="color:var(--gut)">│</span><span>state #14</span><span style="flex:1"></span><span><span style="color:var(--tx)">⏎</span> send · <span style="color:var(--tx)">/</span> commands</span></div>
+          <div style="margin-top:8px;border:1px solid var(--acc);border-radius:8px;background:var(--bg2);padding:11px 14px;display:flex;gap:10px;font-size:13px;line-height:21px"><span style="font-family:var(--mono);color:var(--acc)">›</span><div style="flex:1;color:var(--fg2)">Message Elisa · / for commands</div></div>
+          <div style="margin-top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);white-space:nowrap">
+            <div>ctx <span style="color:var(--tx)">5.2K/8.2K</span> <span style="color:var(--ok)">▓▓▓▓▓▓</span><span style="color:var(--gut)">░░░░</span> <span style="color:var(--ok)">63%</span></div>
+            <div><span style="color:var(--tx)">21.8</span> tok/s · ttft 0.5s · reused 918 · Σ in 139.2K · out 7.5K · memory</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="5b" style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;gap:8px;align-items:baseline;font-size:13px;color:#4E4759"><span style="font:400 10px 'Silkscreen',monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#16131C;border-radius:5px">5b</span>/resume · picker takes the input slot, like the permission box</div>
+      <div style="--bg:#16131C;--bg2:#201C29;--bg3:#2A2536;--fg:#FFFFFF;--tx:#ECE8F2;--fg2:#A9A2B6;--acc:#FF8FB1;--code:#9FE0F0;--ok:#78C878;--err:#FF6B7A;--warn:#F2CC6B;--sep:#3F3850;--gut:#6A6280;--add:rgba(120,200,120,.13);--del:rgba(255,107,122,.13);--sel:rgba(255,143,177,.15);--mono:'Chivo Mono',ui-monospace,monospace;--sans:'Chivo Mono',ui-monospace,monospace;--pix:'Silkscreen',monospace;width:1000px;height:800px;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:var(--sans);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 30px 80px rgba(0,0,0,.3)">
+        <div style="height:38px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--sep);position:relative">
+          <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#FF5F57"></span><span style="width:12px;height:12px;border-radius:50%;background:#FEBC2E"></span><span style="width:12px;height:12px;border-radius:50%;background:#28C840"></span></div>
+          <div style="position:absolute;left:0;right:0;text-align:center;font-size:12.5px;line-height:16px;pointer-events:none"><span style="font-family:var(--pix);font-size:11px;color:var(--fg)">ELISA</span><span style="color:var(--fg2);font-family:var(--mono);font-size:11.5px">  ~/notes</span></div>
+        </div>
+        <div style="flex:1;min-height:0;overflow:hidden;padding:20px 28px 0;display:flex;flex-direction:column;justify-content:flex-end;gap:16px">
+          <div style="flex:none;border:1px solid var(--sep);border-radius:8px;padding:14px 18px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:baseline;gap:10px"><div data-ec="idle" data-ec-size="32" style="flex:none;width:32px;height:32px;align-self:center"></div><span style="font-family:var(--pix);font-size:13px;color:var(--fg)">ELISA</span><span style="font-size:13px;color:var(--fg2)">new session</span></div>
+            <div style="font-family:var(--mono);font-size:12px;line-height:19px;color:var(--fg2)">elisa-27b-q4_k_m · <span style="color:var(--code)">127.0.0.1:8080</span> · <span style="color:var(--code)">~/notes</span> · 8.2K ctx</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-family:var(--mono);font-size:13px;line-height:22px;color:var(--fg)">/resume</span></div>
+        </div>
+        <div style="flex:none;padding:0 24px 12px;display:flex;flex-direction:column">
+          <div style="height:20px"></div>
+          <div style="display:flex;align-items:center;gap:10px;height:22px;font-family:var(--mono);font-size:12px;color:var(--fg2);white-space:nowrap"><div data-ec="idle" data-ec-size="16" style="flex:none;width:16px;height:16px"></div><span style="color:var(--fg)">ready</span><span style="color:var(--gut)">│</span><span>elisa-27b-q4_k_m</span><span style="flex:1"></span><span><span style="color:var(--tx)">↑↓</span> move · <span style="color:var(--tx)">enter</span> resume · <span style="color:var(--tx)">esc</span> cancel</span></div>
+          <div style="margin-top:8px;border:1px solid var(--acc);border-radius:8px;background:var(--bg2);padding:12px 16px 12px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:baseline;gap:10px"><span style="font-size:15px;line-height:22px;font-weight:600;color:var(--fg)">Resume a session</span><span style="font-family:var(--mono);font-size:11.5px;color:var(--fg2)">23 saved · ~/.elisa/sessions</span><span style="flex:1"></span><span style="font-family:var(--mono);font-size:12px;color:var(--fg2);border:1px solid var(--sep);border-radius:4px;padding:1px 8px;min-width:160px">filter<span style="display:inline-block;width:7px;height:14px;background:var(--fg);vertical-align:-2px;margin-left:4px"></span></span></div>
+            <div style="display:grid;grid-template-columns:14px 118px 1fr 74px 64px;column-gap:12px;font-family:var(--mono);font-size:12.5px;line-height:28px">
+              <span></span><span style="color:var(--fg2);font-size:11px">when</span><span style="color:var(--fg2);font-size:11px">first message</span><span style="color:var(--fg2);font-size:11px;text-align:right">turns</span><span style="color:var(--fg2);font-size:11px;text-align:right">size</span>
+              <span style="color:var(--acc);background:var(--sel);margin-left:-8px;padding-left:8px;border-radius:5px 0 0 5px">›</span><span style="background:var(--sel);color:var(--fg)">today 09:41</span><span style="background:var(--sel);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">the tokenizer test is failing since the refactor…</span><span style="background:var(--sel);color:var(--fg);text-align:right">147</span><span style="background:var(--sel);color:var(--fg);text-align:right;margin-right:-8px;padding-right:8px;border-radius:0 5px 5px 0">412 KB</span>
+              <span></span><span style="color:var(--fg2)">yesterday 22:15</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">why does cargo build re-link every time?</span><span style="text-align:right">64</span><span style="text-align:right;color:var(--fg2)">180 KB</span>
+              <span></span><span style="color:var(--fg2)">Oct 30 18:02</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">planning a 4-day trip to Lisbon in March</span><span style="text-align:right">31</span><span style="text-align:right;color:var(--fg2)">96 KB</span>
+              <span></span><span style="color:var(--fg2)">Oct 29 10:20</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">plan: migrate ferrous-cli to clap 4</span><span style="text-align:right">211</span><span style="text-align:right;color:var(--fg2)">640 KB</span>
+              <span></span><span style="color:var(--fg2)">Oct 27 21:48</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">summarise this postgres EXPLAIN output</span><span style="text-align:right">9</span><span style="text-align:right;color:var(--fg2)">31 KB</span>
+              <span></span><span style="color:var(--fg2)">Oct 24 08:12</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">draft a reply to the landlord about the deposit</span><span style="text-align:right">18</span><span style="text-align:right;color:var(--fg2)">22 KB</span>
+            </div>
+            <div style="font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2)">6 of 23 · <span style="color:var(--tx)">↑↓</span> move · <span style="color:var(--tx)">enter</span> resume · <span style="color:var(--tx)">type</span> to filter · <span style="color:var(--tx)">esc</span> back to input</div>
+          </div>
+          <div style="margin-top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);white-space:nowrap">
+            <div>ctx <span style="color:var(--tx)">0.4K/8.2K</span> <span style="color:var(--ok)">▓</span><span style="color:var(--gut)">░░░░░░░░░</span> <span style="color:var(--ok)">5%</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="5c" style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;gap:8px;align-items:baseline;font-size:13px;color:#4E4759"><span style="font:400 10px 'Silkscreen',monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#16131C;border-radius:5px">5c</span>/full · side-by-side at ≥ 900 px, stacked below</div>
+      <div style="--bg:#16131C;--bg2:#201C29;--bg3:#2A2536;--fg:#FFFFFF;--tx:#ECE8F2;--fg2:#A9A2B6;--acc:#FF8FB1;--code:#9FE0F0;--ok:#78C878;--err:#FF6B7A;--warn:#F2CC6B;--sep:#3F3850;--gut:#6A6280;--add:rgba(120,200,120,.13);--del:rgba(255,107,122,.13);--sel:rgba(255,143,177,.15);--mono:'Chivo Mono',ui-monospace,monospace;--sans:'Chivo Mono',ui-monospace,monospace;--pix:'Silkscreen',monospace;width:1000px;height:800px;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:var(--sans);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 30px 80px rgba(0,0,0,.3)">
+        <div style="height:38px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--sep);position:relative">
+          <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#FF5F57"></span><span style="width:12px;height:12px;border-radius:50%;background:#FEBC2E"></span><span style="width:12px;height:12px;border-radius:50%;background:#28C840"></span></div>
+          <div style="position:absolute;left:0;right:0;text-align:center;font-size:12.5px;line-height:16px;pointer-events:none"><span style="font-family:var(--pix);font-size:11px;color:var(--fg)">ELISA</span><span style="color:var(--fg2);font-family:var(--mono);font-size:11.5px">  ~/notes</span></div>
+        </div>
+        <div style="flex:1;min-height:0;overflow:hidden;padding:20px 28px 0;display:flex;flex-direction:column;justify-content:flex-end;gap:16px">
+          <div style="font-family:var(--mono);font-size:12px;line-height:19px;color:var(--err)">✗ masked weights changed this reply at token 57 · /full</div>
+          <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-family:var(--mono);font-size:13px;line-height:22px;color:var(--fg)">/full</span></div>
+          <div style="flex:none;border:1px solid var(--sep);border-radius:8px;overflow:hidden">
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--sep);font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2)"><span style="font-family:var(--pix);font-size:10px;font-weight:400;letter-spacing:.06em">FULL-MODEL CHECK</span><span>turn 3 · re-run with all weights · 9.8s</span><span style="flex:1"></span><span style="color:var(--err)">diverged at token 57</span></div>
+            <div style="display:grid;grid-template-columns:1fr 1px 1fr">
+              <div style="padding:12px 16px 14px;display:flex;flex-direction:column;gap:8px">
+                <div style="font-family:var(--mono);font-size:11.5px;color:var(--fg2)">original · masked · 213 tok</div>
+                <div style="font-size:13px;line-height:21px;text-wrap:pretty">A mutex guards one resource: one holder at a time, and only the holder unlocks it. A semaphore is a counter of permits: up to N holders at once, <span style="background:var(--del);color:var(--fg);border-bottom:1px solid var(--err)">and any task can release a permit.</span></div>
+              </div>
+              <div style="background:var(--sep)"></div>
+              <div style="padding:12px 16px 14px;display:flex;flex-direction:column;gap:8px">
+                <div style="font-family:var(--mono);font-size:11.5px;color:var(--fg2)">full model · 221 tok</div>
+                <div style="font-size:13px;line-height:21px;text-wrap:pretty">A mutex guards one resource: one holder at a time, and only the holder unlocks it. A semaphore is a counter of permits: up to N holders at once, <span style="background:var(--add);color:var(--fg);border-bottom:1px solid var(--ok)">and a permit is normally released by the task that acquired it.</span></div>
+              </div>
+            </div>
+            <div style="display:flex;gap:18px;padding:9px 16px;border-top:1px solid var(--sep);font-family:var(--mono);font-size:12px;line-height:19px;color:var(--tx)"><span><span style="color:var(--acc)">1</span> keep original</span><span><span style="color:var(--acc)">2</span> use full-model reply</span><span><span style="color:var(--acc)">3</span> stacked view</span><span style="flex:1"></span><span style="color:var(--fg2)">esc close</span></div>
+          </div>
+        </div>
+        <div style="flex:none;padding:0 24px 12px;display:flex;flex-direction:column">
+          <div style="height:20px"></div>
+          <div style="display:flex;align-items:center;gap:10px;height:22px;font-family:var(--mono);font-size:12px;color:var(--fg2);white-space:nowrap"><div data-ec="idle" data-ec-size="16" style="flex:none;width:16px;height:16px"></div><span style="color:var(--fg)">ready</span><span style="color:var(--gut)">│</span><span>elisa-27b-q4_k_m</span><span style="color:var(--gut)">│</span><span>state #3</span><span style="flex:1"></span><span><span style="color:var(--tx)">1–3</span> choose · <span style="color:var(--tx)">esc</span> close</span></div>
+          <div style="margin-top:8px;border:1px solid var(--sep);border-radius:8px;background:var(--bg2);padding:11px 14px;display:flex;gap:10px;font-size:13px;line-height:21px"><span style="font-family:var(--mono);color:var(--acc)">›</span><div style="flex:1;color:var(--fg2)">Message Elisa · / for commands</div></div>
+          <div style="margin-top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);white-space:nowrap">
+            <div>ctx <span style="color:var(--tx)">3.6K/8.2K</span> <span style="color:var(--ok)">▓▓▓▓</span><span style="color:var(--gut)">░░░░░░</span> <span style="color:var(--ok)">44%</span></div>
+            <div><span style="color:var(--tx)">22.4</span> tok/s · ttft 0.6s · reused 1.4K · Σ in 4.1K · out 0.8K · memory</div>
+            <div style="color:var(--err)">✗ masked weights changed this reply at token 57 · /full</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="d6" data-screen-label="06 Narrow" style="padding:48px 56px 72px;font-family:'Chivo Mono',ui-monospace,monospace;color:#16131C">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:20px"><span style="font:400 11px 'Silkscreen',monospace;padding:3px 8px;background:#16131C;color:#fff;border-radius:4px">6</span><span style="font-size:17px;font-weight:600">Narrow window, edit panel hidden</span><span style="font-size:13px;color:#5E566C">slash menu · scrolled-up hint · approve-all on</span></div>
+  <div style="display:flex;gap:32px;align-items:flex-start">
+    <div style="--bg:#16131C;--bg2:#201C29;--bg3:#2A2536;--fg:#FFFFFF;--tx:#ECE8F2;--fg2:#A9A2B6;--acc:#FF8FB1;--code:#9FE0F0;--ok:#78C878;--err:#FF6B7A;--warn:#F2CC6B;--sep:#3F3850;--gut:#6A6280;--add:rgba(120,200,120,.13);--del:rgba(255,107,122,.13);--sel:rgba(255,143,177,.15);--mono:'Chivo Mono',ui-monospace,monospace;--sans:'Chivo Mono',ui-monospace,monospace;--pix:'Silkscreen',monospace;flex:none;width:720px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:var(--sans);border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.55),0 30px 80px rgba(0,0,0,.3)">
+      <div style="height:38px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--sep);position:relative">
+        <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#FF5F57"></span><span style="width:12px;height:12px;border-radius:50%;background:#FEBC2E"></span><span style="width:12px;height:12px;border-radius:50%;background:#28C840"></span></div>
+        <div style="position:absolute;left:0;right:0;text-align:center;font-size:12.5px;line-height:16px;pointer-events:none"><span style="font-family:var(--pix);font-size:11px;color:var(--fg)">ELISA</span><span style="color:var(--fg2);font-family:var(--mono);font-size:11.5px">  ~/code/ferrous</span></div>
+        <div style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--fg2)"><span style="padding:2px 7px;border:1px solid var(--sep);border-radius:4px">edits 3 ◂</span></div>
+      </div>
+      <div style="flex:1;min-height:0;position:relative;display:flex;flex-direction:column">
+        <div style="flex:1;min-height:0;overflow:hidden;padding:20px 20px 0;display:flex;flex-direction:column;justify-content:flex-end;gap:16px">
+          <div style="display:flex;gap:12px"><div data-ec="idle" data-ec-size="24" data-ec-reply="1" data-ec-static="1" style="flex:none;width:24px;height:24px;margin-top:-2px"></div><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--acc)">ELISA</span>
+              <div style="font-size:13px;line-height:21px;text-wrap:pretty">Added two cases to <code style="font-family:var(--mono);font-size:12.5px;color:var(--code)">tests/split.rs</code>: a word ending in an emoji and one with a combining accent.</div>
+              <div style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12.5px;line-height:20px">
+                <div style="display:flex;gap:8px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--ok);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">OK</span><span style="color:var(--fg);font-weight:600">Edit</span><span style="color:var(--code);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">crates/core/tests/split.rs</span><span style="color:var(--ok)">+14</span><span style="flex:1"></span><span style="color:var(--fg2)">0.0s</span></div>
+                <div style="display:flex;gap:8px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--ok);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">OK</span><span style="color:var(--fg);font-weight:600">Bash</span><span style="color:var(--code)">cargo test --workspace</span><span style="flex:1"></span><span style="color:var(--fg2)">11.2s</span></div>
+                <div style="padding-left:38px;color:var(--fg2)">⎿ <span style="color:var(--ok)">test result: ok. 48 passed; 0 failed</span></div>
+              </div>
+              <div style="font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2)">in 2.4K (reused 1.9K) · out 164 · 21.2 tok/s · ttft 0.6s</div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--fg2)">YOU</span><span style="font-size:13px;line-height:21px;font-weight:600;color:var(--fg)">nice. now bump the crate version and update the changelog</span></div>
+          <div style="display:flex;gap:12px"><div data-ec="success" data-ec-size="24" data-ec-reply="1" style="flex:none;width:24px;height:24px;margin-top:-2px"></div><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px"><span style="font-family:var(--pix);font-size:10px;line-height:14px;letter-spacing:.06em;color:var(--acc)">ELISA</span>
+              <div style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12.5px;line-height:20px">
+                <div style="display:flex;gap:8px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--ok);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">OK</span><span style="color:var(--fg);font-weight:600">Edit</span><span style="color:var(--code)">crates/core/Cargo.toml</span><span style="color:var(--ok)">+1</span><span style="color:var(--err)">−1</span><span style="flex:1"></span><span style="color:var(--warn)">auto</span></div>
+                <div style="display:flex;gap:8px"><span style="flex:none;align-self:flex-start;margin-top:1px;min-width:30px;padding:0 5px;border-radius:2px;background:var(--ok);color:var(--bg);font-family:var(--pix);font-size:10px;line-height:18px;text-align:center">OK</span><span style="color:var(--fg);font-weight:600">Edit</span><span style="color:var(--code)">CHANGELOG.md</span><span style="color:var(--ok)">+5</span><span style="flex:1"></span><span style="color:var(--warn)">auto</span></div>
+              </div>
+              <div style="font-size:13px;line-height:21px">Bumped ferrous-core to 0.4.2 and added a Fixed entry for the multi-byte split.</div>
+            </div>
+          </div>
+          <div style="height:24px"></div>
+        </div>
+        <div style="position:absolute;right:20px;bottom:8px;font-family:var(--mono);font-size:11.5px;line-height:17px;padding:3px 10px;border:1px solid var(--sep);border-radius:12px;background:var(--bg2);color:var(--fg)">↓ 42 more lines <span style="color:var(--fg2)">· end</span></div>
+        <div style="position:absolute;left:20px;bottom:0;width:430px;border:1px solid var(--sep);border-radius:8px;background:var(--bg2);box-shadow:0 12px 32px rgba(0,0,0,.45);padding:6px;font-family:var(--mono);font-size:12px;line-height:22px">
+          <div style="display:grid;grid-template-columns:80px 1fr;column-gap:12px">
+            <span style="background:var(--sel);color:var(--fg);padding-left:8px;border-radius:4px 0 0 4px">/help</span><span style="background:var(--sel);color:var(--fg);border-radius:0 4px 4px 0;font-family:var(--sans);font-size:13px">show commands and keys</span>
+            <span style="padding-left:8px;color:var(--code)">/clear</span><span style="font-family:var(--sans);font-size:13px">clear the screen, keep context</span>
+            <span style="padding-left:8px;color:var(--code)">/reset</span><span style="font-family:var(--sans);font-size:13px">start a fresh session</span>
+            <span style="padding-left:8px;color:var(--code)">/compact</span><span style="font-family:var(--sans);font-size:13px">summarise earlier turns now</span>
+            <span style="padding-left:8px;color:var(--code)">/context</span><span style="font-family:var(--sans);font-size:13px">show what fills the context window</span>
+            <span style="padding-left:8px;color:var(--code)">/notes</span><span style="font-family:var(--sans);font-size:13px">show the saved summary and notes</span>
+            <span style="padding-left:8px;color:var(--code)">/forget</span><span style="font-family:var(--sans);font-size:13px">remove a note or memory</span>
+            <span style="padding-left:8px;color:var(--code)">/resume</span><span style="font-family:var(--sans);font-size:13px">open a past session</span>
+            <span style="padding-left:8px;color:var(--code)">/state</span><span style="font-family:var(--sans);font-size:13px">show the carried-forward state card</span>
+            <span style="padding-left:8px;color:var(--code)">/pin</span><span style="font-family:var(--sans);font-size:13px">keep a fact through compaction</span>
+            <span style="padding-left:8px;color:var(--code)">/watcher</span><span style="font-family:var(--sans);font-size:13px">show the weight watcher</span>
+            <span style="padding-left:8px;color:var(--code)">/full</span><span style="font-family:var(--sans);font-size:13px">re-check last reply on the full model</span>
+            <span style="padding-left:8px;color:var(--code)">/copy</span><span style="font-family:var(--sans);font-size:13px">copy the last reply</span>
+            <span style="padding-left:8px;color:var(--warn)">/yolo</span><span style="font-family:var(--sans);font-size:13px">approve every tool call (on)</span>
+            <span style="padding-left:8px;color:var(--code)">/exit</span><span style="font-family:var(--sans);font-size:13px">quit Elisa</span>
+          </div>
+          <div style="border-top:1px solid var(--sep);margin-top:4px;padding:4px 8px 0;font-size:11px;line-height:17px;color:var(--fg2)"><span style="color:var(--tx)">↑↓</span> move · <span style="color:var(--tx)">tab</span> complete · <span style="color:var(--tx)">esc</span> close</div>
+        </div>
+      </div>
+      <div style="flex:none;padding:0 20px 12px;display:flex;flex-direction:column">
+        <div style="height:20px"></div>
+        <div style="display:flex;align-items:center;gap:10px;height:22px;font-family:var(--mono);font-size:12px;color:var(--fg2);white-space:nowrap"><div data-ec="idle" data-ec-size="16" style="flex:none;width:16px;height:16px"></div><span style="color:var(--fg)">ready</span><span style="color:var(--gut)">│</span><span>elisa-27b</span><span style="color:var(--gut)">│</span><span>state #15</span><span style="flex:1"></span><span style="color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:0 6px;line-height:18px">approve-all · /yolo</span></div>
+        <div style="margin-top:8px;border:1px solid var(--acc);border-radius:8px;background:var(--bg2);padding:11px 14px;display:flex;gap:10px;font-size:13px;line-height:21px"><span style="font-family:var(--mono);color:var(--acc)">›</span><div style="flex:1;font-family:var(--mono);font-size:13px;color:var(--fg)">/<span style="display:inline-block;width:8px;height:17px;background:var(--fg);vertical-align:-3px;margin-left:1px"></span></div></div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:var(--mono);font-size:11.5px;line-height:17px;color:var(--fg2);white-space:nowrap">
+          <div>ctx <span style="color:var(--tx)">6.4K/8.2K</span> <span style="color:var(--warn)">▓▓▓▓▓▓▓▓</span><span style="color:var(--gut)">░░</span> <span style="color:var(--warn)">78%</span></div>
+          <div><span style="color:var(--tx)">21.2</span> tok/s · ttft 0.6s · Σ in 152.0K · out 7.9K</div>
+          <div>watcher <span style="color:var(--code)">code-rust</span> <span style="color:var(--tx)">0.86</span> · −11.2 ms · <span style="color:var(--warn)">dry run</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="width:300px;flex:none;display:flex;flex-direction:column;gap:18px;font-size:13px;line-height:20px;color:#3A3346;padding-top:8px">
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">BELOW 900 PX</div>Edit panel collapses to the "edits 3 ◂" title-bar toggle (ctrl-o opens it as a full-width sheet). Side padding drops 28 → 20, key hints leave the status bar, the watcher folds to one row.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">SLASH MENU</div>Anchored 0 px above the input, left-aligned, 430 px. Command in code colour, description in tx 13. Floats over the transcript, never over the input.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">SCROLLED UP</div>Pill at the transcript's bottom-right counts unseen lines; click or end jumps down. New output keeps counting instead of yanking the scroll.</div>
+      <div><div style="font:400 10px 'Silkscreen',monospace;letter-spacing:.06em;color:#C2386A;margin-bottom:4px">APPROVE-ALL</div>Yellow outlined chip in the status bar while /yolo is on; auto-approved tool rows show "auto" in yellow instead of elapsed time.</div>
+    </div>
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;character&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Shade&quot;,&quot;Tanuki&quot;],&quot;default&quot;:&quot;Shade&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Character&quot;},&quot;animate&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Character&quot;},&quot;replyMarker&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Tanuki&quot;,&quot;Dot&quot;],&quot;default&quot;:&quot;Tanuki&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Character&quot;}}">
+class Component extends DCLogic {
+  componentDidMount() {
+    this.t0 = performance.now(); this.last = 0; this.f = 0;
+    const tick = now => {
+      this.raf = requestAnimationFrame(tick);
+      const EC = (this.props.character ?? 'Shade') === 'Tanuki' ? window.ElisaTanuki : window.ElisaShade; if (!EC || now - this.last < 60) return; this.last = now; this.f++;
+      const anim = this.props.animate ?? true, dot = (this.props.replyMarker ?? 'Tanuki') === 'Dot', vh = window.innerHeight, vw = window.innerWidth;
+      document.querySelectorAll('[data-ec]').forEach(el => {
+        const st = el.getAttribute('data-ec'), S = EC.STATES[st]; if (!S) return;
+        const size = +el.getAttribute('data-ec-size') || 24;
+        if (dot && el.hasAttribute('data-ec-reply')) { if (el.dataset.mode !== 'dot') { el.innerHTML = '<span style="display:block;width:8px;height:8px;margin:9px 8px;border-radius:50%;background:var(--acc)"></span>'; el.dataset.mode = 'dot'; } return; }
+        const still = !anim || el.hasAttribute('data-ec-static');
+        if (still && el.dataset.mode === 'still') return;
+        if (!still) { const r = el.getBoundingClientRect(); if (r.bottom < -40 || r.top > vh + 40 || r.right < -40 || r.left > vw + 40) return; if (size <= 24 && this.f % 2 && el.dataset.mode === 'live') return; }
+        const t = still ? .5 : (now - this.t0) / S.dur;
+        el.innerHTML = EC.svg(st, t, { size, detail: size <= 24 ? 'mini' : 'full', noProps: size < 64 });
+        el.dataset.mode = still ? 'still' : 'live';
+      });
+    };
+    this.raf = requestAnimationFrame(tick);
+  }
+  componentDidUpdate() { document.querySelectorAll('[data-ec]').forEach(el => { delete el.dataset.mode; }); }
+  componentWillUnmount() { cancelAnimationFrame(this.raf); }
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

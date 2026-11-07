@@ -1,0 +1,279 @@
+{
+  "name": "greeting",
+  "label": "Greeting",
+  "durationMs": 2000,
+  "loop": true,
+  "fps": 60,
+  "viewBox": [
+    0,
+    0,
+    200,
+    200
+  ],
+  "kind": "action",
+  "tracks": {
+    "y": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.1,
+        "ms": 200,
+        "value": -10,
+        "ease": "out"
+      },
+      {
+        "t": 0.25,
+        "ms": 500,
+        "value": 0,
+        "ease": "in"
+      },
+      {
+        "t": 1,
+        "ms": 2000,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "pawR": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "out"
+      },
+      {
+        "t": 0.15,
+        "ms": 300,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 0.85,
+        "ms": 1700,
+        "value": 1,
+        "ease": "in"
+      },
+      {
+        "t": 1,
+        "ms": 2000,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "p1": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.2,
+        "ms": 400,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.3,
+        "ms": 600,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 0.4,
+        "ms": 800,
+        "value": -1,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 1000,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 0.6,
+        "ms": 1200,
+        "value": -1,
+        "ease": "io"
+      },
+      {
+        "t": 0.7,
+        "ms": 1400,
+        "value": 1,
+        "ease": "io"
+      },
+      {
+        "t": 0.8,
+        "ms": 1600,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2000,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "eye": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": "block",
+        "ease": "step"
+      },
+      {
+        "t": 0.2,
+        "ms": 400,
+        "value": "happy",
+        "ease": "io"
+      },
+      {
+        "t": 0.85,
+        "ms": 1700,
+        "value": "block",
+        "ease": "io"
+      }
+    ],
+    "earL": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.15,
+        "ms": 300,
+        "value": -12,
+        "ease": "back"
+      },
+      {
+        "t": 0.85,
+        "ms": 1700,
+        "value": -12,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2000,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "earR": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.15,
+        "ms": 300,
+        "value": -12,
+        "ease": "back"
+      },
+      {
+        "t": 0.85,
+        "ms": 1700,
+        "value": -12,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2000,
+        "value": 0,
+        "ease": "io"
+      }
+    ],
+    "rot": [
+      {
+        "t": 0,
+        "ms": 0,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 0.3,
+        "ms": 600,
+        "value": -4,
+        "ease": "io"
+      },
+      {
+        "t": 0.5,
+        "ms": 1000,
+        "value": 4,
+        "ease": "io"
+      },
+      {
+        "t": 0.7,
+        "ms": 1400,
+        "value": -4,
+        "ease": "io"
+      },
+      {
+        "t": 0.85,
+        "ms": 1700,
+        "value": 0,
+        "ease": "io"
+      },
+      {
+        "t": 1,
+        "ms": 2000,
+        "value": 0,
+        "ease": "io"
+      }
+    ]
+  },
+  "character": "shade",
+  "pivot": {
+    "body": [
+      100,
+      172
+    ],
+    "earL": [
+      74,
+      80
+    ],
+    "earR": [
+      126,
+      80
+    ],
+    "pawR": [
+      118,
+      170
+    ]
+  },
+  "parts": [
+    "shadow",
+    "earL",
+    "earR",
+    "body",
+    "eyeL",
+    "eyeR",
+    "pupilL",
+    "pupilR",
+    "pawL",
+    "pawR",
+    "props"
+  ],
+  "palette": {
+    "body": "#141418",
+    "rim": "#3A3A46",
+    "earInner": "#82C8DC",
+    "eye": "#EEF0E6",
+    "pupil": "#0E0E12",
+    "effect": "#82C8DC"
+  },
+  "notes": "No mouth. Expression is eyes and ears only. Pupils follow lookX/lookY with a constant upward bias of 3.",
+  "keyPose": {
+    "t": 0.35,
+    "ms": 700
+  }
+}
