@@ -1,0 +1,213 @@
+# elisa eval · tools: Elisa's own tools, approvals and prechecks with a scripted model. Format: README "elisa eval".
+suite = "tools"
+kind = "fake"
+
+[[case]]
+id = "tools.edit_precheck"
+description = "an edit that cannot change anything and a write to a URL fail before any approval box (QA longrun M1, security B2)"
+approve = "yes"
+[[case.files]]
+path = "calc.py"
+content = "x = 1\n"
+[[case.script]]
+tool = { name = "edit", input = { path = "calc.py", old = "x = 1", new = "x = 1" } }
+[[case.script]]
+tool = { name = "edit", input = { path = "calc.py", old = "y = 2", new = "y = 3" } }
+[[case.script]]
+tool = { name = "write", input = { path = "https://doc.rust-lang.org/std/index.html", content = "hi\n" } }
+[[case.script]]
+text = "nothing to do"
+[[case.turns]]
+send = "fix calc"
+[[case.checks]]
+type = "approvals"
+max = 0
+[[case.checks]]
+type = "tool_result_contains"
+name = "edit"
+text = "no change"
+[[case.checks]]
+type = "tool_result_contains"
+name = "edit"
+text = "old not found"
+[[case.checks]]
+type = "tool_result_contains"
+name = "write"
+text = "is a URL"
+[[case.checks]]
+type = "file_unchanged"
+path = "calc.py"
+[[case.checks]]
+type = "file_absent"
+path = "https:"
+
+[[case]]
+id = "tools.approve_yes_no"
+description = "yes runs the write; no denies the command and tells the model not to retry (QA chat 3a/3d)"
+[[case.script]]
+tool = { name = "write", input = { path = "new.txt", content = "hi\n" } }
+[[case.script]]
+text = "wrote it"
+[[case.script]]
+tool = { name = "bash", input = { command = "echo nope > x.txt" } }
+[[case.script]]
+text = "ok, not run"
+[[case.turns]]
+send = "make new.txt"
+approvals = ["yes"]
+[[case.turns]]
+send = "now the bash"
+approvals = ["no"]
+[[case.checks]]
+type = "file_contains"
+path = "new.txt"
+text = "hi"
+[[case.checks]]
+type = "file_absent"
+path = "x.txt"
+[[case.checks]]
+type = "tool_result_contains"
+name = "bash"
+text = "denied by user: do not call this tool again"
+[[case.checks]]
+type = "audit_has"
+event = "denial"
+tool = "bash"
+
+[[case]]
+id = "tools.always_allow"
+description = "always is saved in .elisa/allow and the next write does not ask"
+[[case.script]]
+tool = { name = "write", input = { path = "one.txt", content = "1\n" } }
+[[case.script]]
+text = "done"
+[[case.script]]
+tool = { name = "write", input = { path = "two.txt", content = "2\n" } }
+[[case.script]]
+text = "done"
+[[case.turns]]
+send = "write one.txt"
+approvals = ["always"]
+[[case.turns]]
+send = "write two.txt"
+[[case.checks]]
+type = "approvals"
+max = 1
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/allow"
+text = "write"
+[[case.checks]]
+type = "file_contains"
+path = "two.txt"
+text = "2"
+
+[[case]]
+id = "tools.outside_read_asks"
+description = "a read outside the project folder asks (read never asks inside) and a no keeps it out (QA files 1e)"
+approve = "yes"
+[[case.files]]
+path = "inside.txt"
+content = "inside\n"
+[[case.script]]
+tool = { name = "read", input = { path = "inside.txt" } }
+[[case.script]]
+tool = { name = "read", input = { path = "{{outside}}/private.txt" } }
+[[case.script]]
+text = "I could not read it."
+[[case.turns]]
+send = "read inside.txt and then {{outside}}/private.txt"
+approvals = ["no"]
+[[case.checks]]
+type = "event"
+event = "approve"
+text = "\"outside\":true"
+[[case.checks]]
+type = "approvals"
+max = 1
+[[case.checks]]
+type = "tool_result_contains"
+name = "read"
+text = "denied"
+
+[[case]]
+id = "tools.parse_guard"
+description = "an edit that would add a syntax error to a Python file is refused; nothing is written"
+approve = "yes"
+config = "checks = false\n"
+[[case.files]]
+path = "calc.py"
+content = "def add(a, b):\n    return a + b\n"
+[[case.script]]
+tool = { name = "edit", input = { path = "calc.py", old = "return a + b", new = "return (a + b" } }
+[[case.script]]
+text = "Fixed."
+[[case.turns]]
+send = "tweak add in calc.py"
+[[case.checks]]
+type = "tool_result_contains"
+name = "edit"
+text = "refused"
+[[case.checks]]
+type = "file_unchanged"
+path = "calc.py"
+
+[[case]]
+id = "tools.check_before_done"
+description = "after an edit the project's check runs; a failure goes back to the model, the fix passes"
+approve = "yes"
+[[case.files]]
+path = ".elisa/checks.toml"
+content = "commands = [\"sh check.sh\"]\n"
+[[case.files]]
+path = "check.sh"
+content = "grep -q GOOD main.txt && exit 0\necho \"main.txt:1:1: error: main.txt is $(cat main.txt)\"\nexit 1\n"
+[[case.script]]
+tool = { name = "write", input = { path = "main.txt", content = "BAD\n" } }
+[[case.script]]
+text = "done"
+[[case.script]]
+tool = { name = "write", input = { path = "main.txt", content = "GOOD\n" } }
+[[case.script]]
+text = "fixed"
+[[case.turns]]
+send = "make main.txt"
+[[case.checks]]
+type = "event"
+event = "check"
+text = "\"status\":\"fail\""
+[[case.checks]]
+type = "event"
+event = "check"
+text = "\"status\":\"pass\""
+[[case.checks]]
+type = "file_contains"
+path = "main.txt"
+text = "GOOD"
+[[case.checks]]
+type = "reply_contains"
+text = "fixed"
+
+[[case]]
+id = "tools.docs_sheet_default_name"
+description = "docs_sheet with a made-up sheet \"Sheet1\" on a CSV still reads it (QA files M2); docs tools only on a document turn"
+approve = "yes"
+[[case.files]]
+path = "leads.csv"
+content = "name,city\nAda,London\nLin,Taipei\n"
+[[case.script]]
+tool = { name = "docs_sheet", input = { path = "leads.csv", sheet = "Sheet1" } }
+[[case.script]]
+text = "Two leads: Ada in London and Lin in Taipei."
+[[case.turns]]
+send = "what's in the spreadsheet leads.csv?"
+[[case.checks]]
+type = "tool_result_contains"
+name = "docs_sheet"
+text = "Taipei"
+[[case.checks]]
+type = "tools_offered"
+prefix = "docs_"
+[[case.checks]]
+type = "approval_for"
+tool = "docs_sheet"

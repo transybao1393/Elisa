@@ -1,0 +1,228 @@
+# elisa eval · core: the turn loop with a scripted model (no real model). Format: README "elisa eval".
+suite = "core"
+kind = "fake"
+
+[[case]]
+id = "core.text_reply"
+description = "a plain reply streams; the state card is never shown as text; no tools run"
+[[case.script]]
+text = "Paris is the capital of France.\n<state>\ngoal: answer\ndone: answered\nnext: none\n</state>"
+[[case.turns]]
+send = "What is the capital of France?"
+[[case.checks]]
+type = "reply_contains"
+text = "Paris"
+[[case.checks]]
+type = "reply_not_contains"
+text = "<state>"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "event"
+event = "card"
+
+[[case]]
+id = "core.loop_guard_repeat"
+description = "the same failing command a 3rd time does not run; a 2nd blocked step stops the turn (QA chat #1, retest #3)"
+approve = "yes"
+[[case.script]]
+tool = { name = "bash", input = { command = "echo boom; exit 3" } }
+repeat = 4
+[[case.script]]
+text = "never sent"
+[[case.turns]]
+send = "run it"
+[[case.checks]]
+type = "stopped_by_loop_guard"
+[[case.checks]]
+type = "max_steps"
+n = 4
+[[case.checks]]
+type = "tool_result_contains"
+name = "bash"
+text = "this exact call already ran 2 times"
+[[case.checks]]
+type = "audit_has"
+event = "denial"
+reason = "repeated_call"
+
+[[case]]
+id = "core.loop_guard_cycle"
+description = "an A-B-A-B cycle of different reads gets one note, then the turn stops (QA files L1)"
+[[case.files]]
+path = "a.txt"
+content = "alpha\n"
+[[case.files]]
+path = "b.txt"
+content = "beta\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "a.txt" } }]
+[[case.script]]
+tools = [{ name = "read", input = { path = "b.txt", limit = 50 } }]
+[[case.script]]
+tools = [{ name = "glob", input = { pattern = "*.txt" } }]
+[[case.script]]
+tools = [{ name = "grep", input = { pattern = "alpha" } }]
+[[case.script]]
+tools = [{ name = "glob", input = { pattern = "*.txt" } }]
+[[case.script]]
+tools = [{ name = "grep", input = { pattern = "alpha" } }]
+[[case.script]]
+tools = [{ name = "glob", input = { pattern = "*.md" } }]
+[[case.script]]
+tools = [{ name = "grep", input = { pattern = "beta" } }]
+[[case.script]]
+tools = [{ name = "glob", input = { pattern = "*.md" } }]
+[[case.script]]
+tools = [{ name = "grep", input = { pattern = "beta" } }]
+[[case.script]]
+tools = [{ name = "glob", input = { pattern = "*.md" } }]
+[[case.script]]
+tools = [{ name = "grep", input = { pattern = "beta" } }]
+[[case.script]]
+text = "done"
+[[case.turns]]
+send = "look around"
+[[case.checks]]
+type = "info_contains"
+text = "[loop guard: you are repeating the same 2 calls"
+[[case.checks]]
+type = "stopped_by_loop_guard"
+[[case.checks]]
+type = "max_steps"
+n = 12
+
+[[case]]
+id = "core.unknown_tool"
+description = "a tool the request did not offer is refused before any approval, with real names; one audit denial (QA security B1)"
+approve = "yes"
+[[case.script]]
+tool = { name = "sec_malware", input = { path = "." } }
+[[case.script]]
+text = "That tool is not available."
+[[case.turns]]
+send = "scan for malware"
+[[case.checks]]
+type = "no_approval_for"
+tool = "sec_malware"
+[[case.checks]]
+type = "tool_result_contains"
+name = "sec_malware"
+text = "unknown tool `sec_malware`"
+[[case.checks]]
+type = "audit_has"
+event = "denial"
+reason = "unknown_tool"
+tool = "sec_malware"
+max = 1
+
+[[case]]
+id = "core.empty_reply_retry"
+description = "a reply with only its state card is asked once more; the second answer is shown (QA retest N3)"
+[[case.script]]
+text = "<state>\ngoal: none\ndone: none\nnext: none\n</state>"
+[[case.script]]
+text = "You're welcome! What next?\n<state>\ngoal: none\ndone: none\nnext: none\n</state>"
+[[case.turns]]
+send = "thanks"
+[[case.checks]]
+type = "info_contains"
+text = "asking the model once more"
+[[case.checks]]
+type = "reply_contains"
+text = "You're welcome"
+[[case.checks]]
+type = "request_contains"
+text = "one plain sentence"
+turn = 1
+
+[[case]]
+id = "core.text_tool_call_nudge"
+description = "a tool call typed as text gets one correction; the real call that follows runs"
+[[case.files]]
+path = "main.py"
+content = "print('hi')\n"
+[[case.script]]
+text = "I need the file.\n\n<tool>\n<tool_name>read_file</tool_name>\n<path>main.py</path>\n</tool>"
+[[case.script]]
+tool = { name = "read", input = { path = "main.py" } }
+[[case.script]]
+text = "main.py prints hi."
+[[case.turns]]
+send = "read main.py"
+[[case.checks]]
+type = "info_contains"
+text = "wrote a tool call as text"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+args = "main.py"
+[[case.checks]]
+type = "reply_contains"
+text = "prints hi"
+
+[[case]]
+id = "core.reason_gate_simple"
+description = "simple chat prompts get no reasoning tools and no docs / security tools (QA chat 4a)"
+[[case.script]]
+text = "Paris."
+[[case.script]]
+text = "4"
+[[case.turns]]
+send = "what is the capital of France?"
+[[case.turns]]
+send = "2+2=?"
+[[case.checks]]
+type = "no_tools_offered"
+prefix = "think"
+[[case.checks]]
+type = "no_tools_offered"
+prefix = "calc"
+[[case.checks]]
+type = "no_tools_offered"
+prefix = "sec_"
+[[case.checks]]
+type = "tools_offered"
+prefix = "read"
+
+[[case]]
+id = "core.reason_gate_task"
+description = "a multi-step coding request gets the reasoning tools (QA chat 4b)"
+[[case.files]]
+path = "calc.py"
+content = "def average(xs):\n    return sum(xs) / (len(xs) + 1)\n"
+[[case.script]]
+text = "I'll look."
+[[case.turns]]
+send = "fix the failing test in calc.py and then run the tests with pytest"
+[[case.checks]]
+type = "tools_offered"
+prefix = "think"
+[[case.checks]]
+type = "tools_offered"
+prefix = "step_done"
+
+[[case]]
+id = "core.cut_write_not_saved"
+description = "a write cut by the output limit is not saved; the model is told once (mario.html)"
+config = "max_ctx = 32768\n"
+approve = "yes"
+[[case.script]]
+tool = { name = "write", input = { path = "game.html", content = "<html>" } }
+stop = "max_tokens"
+out_tokens = 2048
+[[case.script]]
+text = "I'll use smaller pieces."
+[[case.turns]]
+send = "make a game"
+[[case.checks]]
+type = "file_absent"
+path = "game.html"
+[[case.checks]]
+type = "info_contains"
+text = "cut off: `write game.html`"
+[[case.checks]]
+type = "no_approval_for"
+tool = "write"
+

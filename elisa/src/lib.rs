@@ -55,3 +55,7 @@ pub mod watcher;
 pub mod jsonl;
 /// the scripted no-model gateway behind `--serve-jsonl --demo-states`
 pub mod demo_gateway;
+/// `elisa eval`: the evaluation suite (cases in evals/*.toml, run through `--serve-jsonl`)
+pub mod eval;
+/// the scripted model behind `elisa eval`'s deterministic cases
+pub mod eval_fake;

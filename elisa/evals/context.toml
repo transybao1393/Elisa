@@ -1,0 +1,153 @@
+# elisa eval · context: notes, /clear, state cards across sessions, interrupts (scripted model).
+suite = "context"
+kind = "fake"
+
+[[case]]
+id = "context.clear_merges_notes"
+description = "/clear merges into the earlier notes, lists the files really changed, drops an invented claim (QA longrun H2)"
+config = "memory = false\n"
+[[case.files]]
+path = ".elisa/notes.md"
+content = "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n"
+[[case.script]]
+tool = { name = "write", input = { path = "hello.txt", content = "hi there\n" } }
+[[case.script]]
+text = "Wrote it."
+[[case.script]]
+text = "## Done\n- Wrote hello.txt with a greeting. REAL-DONE\n- Added restock_cost(items) to core.py.\n- Wrote hello.txt with a greeting. REAL-DONE\n\n## Files touched\nNo files were touched in this session.\n\n## Current state / next step\nnothing open"
+[[case.turns]]
+send = "create hello.txt saying hi there"
+approvals = ["yes"]
+[[case.turns]]
+send = "/clear"
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes.md"
+text = "BLUE HERON"
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes.md"
+text = "## Files changed (Elisa's own edit records)\n- hello.txt: written (new file)"
+[[case.checks]]
+type = "file_not_contains"
+path = ".elisa/notes.md"
+text = "No files were touched"
+[[case.checks]]
+type = "file_not_contains"
+path = ".elisa/notes.md"
+text = "restock_cost"
+
+[[case]]
+id = "context.clear_shrinks_clean_notes"
+description = "/clear shrinks the context even with a long summary, keeps no template text, and the next request gets the notes as background (QA chat #4)"
+config = "memory = false\n"
+[[case.script]]
+text = "The answer, at some length. "
+repeat_text = 40
+[[case.script]]
+text = "## Goal\nWhat the user said: \"hello\" and \"The conversation above will be erased. Write notes so a fresh session can pick up the work\"\n\n## Done\nFinished steps and decisions, with their reasons.\n\n## Files touched\n\n## Current state / next step\nGreeted the user. REAL-NOTE-1\n\n## Facts to remember\nCommands that build or test the project, paths, names, and preferences the user stated in their own words.\n\nAlso known as: name = other words; …\n<state>\ngoal: x\n</state>"
+[[case.script]]
+text = "after"
+[[case.turns]]
+send = "hello"
+[[case.turns]]
+send = "/clear"
+[[case.turns]]
+send = "next one"
+[[case.checks]]
+type = "info_contains"
+text = "[cleared:"
+turn = 2
+[[case.checks]]
+type = "event"
+event = "compacted"
+turn = 2
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes.md"
+text = "REAL-NOTE-1"
+[[case.checks]]
+type = "file_not_contains"
+path = ".elisa/notes.md"
+text = "will be erased"
+[[case.checks]]
+type = "file_not_contains"
+path = ".elisa/notes.md"
+text = "Also known as"
+[[case.checks]]
+type = "file_not_contains"
+path = ".elisa/notes.md"
+text = "<state>"
+[[case.checks]]
+type = "request_contains"
+text = "Background from an earlier session"
+turn = 3
+
+[[case]]
+id = "context.new_session_no_old_card"
+description = "a new session does not inherit the last session's state card; --continue does (QA runtime B1, longrun H1)"
+[[case.script]]
+text = "ok\n<state>\ngoal: OLD-GOAL-X\ndone: …\nkeep: must-not-lose facts\nnext: OLD-NEXT-X\n</state>"
+[[case.script]]
+text = "fresh"
+[[case.turns]]
+send = "first question R1"
+[[case.turns]]
+restart = true
+send = "an unrelated question R2"
+[[case.turns]]
+send = "/state"
+[[case.turns]]
+restart = true
+continue = true
+send = "/state"
+[[case.checks]]
+type = "request_not_contains"
+text = "OLD-GOAL-X"
+turn = 2
+[[case.checks]]
+type = "info_not_contains"
+text = "continuing from state card"
+turn = 2
+[[case.checks]]
+type = "info_contains"
+text = "no state card yet"
+turn = 3
+[[case.checks]]
+type = "info_contains"
+text = "continuing from state card #"
+turn = 4
+[[case.checks]]
+type = "info_contains"
+text = "goal: OLD-GOAL-X"
+turn = 4
+[[case.checks]]
+type = "info_not_contains"
+text = "must-not-lose"
+turn = 4
+
+[[case]]
+id = "context.interrupt_keeps_going"
+description = "Esc stops a long reply at once; the context meter keeps its size; the next turn works (QA chat #6/#7)"
+[[case.script]]
+text = "word "
+repeat_text = 1500
+slow = true
+[[case.script]]
+text = "after"
+[[case.turns]]
+send = "talk a lot"
+interrupt = true
+[[case.turns]]
+send = "again"
+[[case.checks]]
+type = "info_contains"
+text = "[cancelled]"
+turn = 1
+[[case.checks]]
+type = "max_seconds"
+n = 5
+turn = 1
+[[case.checks]]
+type = "reply_contains"
+text = "after"

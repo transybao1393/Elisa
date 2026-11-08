@@ -23,7 +23,7 @@ pub static CANCEL: AtomicBool = AtomicBool::new(false);
 pub static AT_PROMPT: AtomicBool = AtomicBool::new(false);
 pub static ASKING: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "usage: elisa [-p PROMPT] [--yes] [--continue] [--provider NAME] [--base-url U [--type T]] [--model M] [--max-ctx N] [--cwd DIR] [--no-character] [--companion] [--serve-jsonl] [--no-checks] [--theme dark|light] [--demo-states [STATE]] [--version] [-h]";
+const USAGE: &str = "usage: elisa [-p PROMPT] [--yes] [--continue] [--provider NAME] [--base-url U [--type T]] [--model M] [--max-ctx N] [--cwd DIR] [--no-character] [--companion] [--serve-jsonl] [--no-checks] [--theme dark|light] [--demo-states [STATE]] [--version] [-h]\n       elisa eval [--suite NAME|all] [--case ID] [--model M] [--json FILE] [--keep]";
 const COMPACT_SYSTEM: &str = "You write short, concrete session notes for a coding agent.";
 const COMPACT_OUT: usize = 800;
 const TOOL_PREAMBLE: usize = 240;
@@ -160,6 +160,7 @@ pub fn parse_args() -> Result<Args, i32> {
 pub fn main_entry() -> i32 {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = crate::provider::cli(&raw) { return code; }
+    if raw.first().map(String::as_str) == Some("eval") { return crate::eval::cli(&raw[1..]); }
     let args = match parse_args() { Ok(a) => a, Err(c) => return c };
     if args.serve_jsonl { return crate::jsonl::run(args); }
     let tty = unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 };
