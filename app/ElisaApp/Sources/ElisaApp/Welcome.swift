@@ -78,7 +78,7 @@ struct WelcomeView: View {
         VStack(spacing: 12) {
             ShadeImage(state: greeting ? "greeting" : "idle", since: greetSince, size: 112, animate: !reduceMotion)
                 .frame(width: 112, height: 112)
-            Pixel("Elisa", size: 30, color: p.fg)
+            Wordmark(height: 30)
             Text("A coding agent that lives on your Mac and runs on your models.")
                 .font(Fonts.mono(15, .semibold)).foregroundStyle(p.tx).multilineTextAlignment(.center)
             Text("Elisa reads your code, edits it, runs your checks and tells you what it did. Reading is free; writing, editing and running commands ask you first. With a local model, nothing leaves this Mac.")

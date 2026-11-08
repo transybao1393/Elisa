@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setvbuf(stdout, nil, _IOLBF, 0)
         NSApp.setActivationPolicy(.regular)
+        MainActor.assumeIsolated { if let icon = Brand.appIcon { NSApp.applicationIconImage = icon } }
         NSApp.activate(ignoringOtherApps: true)
         MainActor.assumeIsolated { launch() }
     }

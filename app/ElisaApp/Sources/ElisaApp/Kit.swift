@@ -108,7 +108,7 @@ enum Fonts {
 
     /// SwiftPM's resource bundle (ElisaApp_ElisaApp.bundle), looked up by hand: `Bundle.module` traps when it is
     /// missing, and a missing bundle must only mean the system-monospace fallback
-    private static func resourceBundle() -> URL? {
+    static func resourceBundle() -> URL? {
         let name = "ElisaApp_ElisaApp.bundle"
         var c: [URL] = []
         if let r = Bundle.main.resourceURL { c.append(r.appendingPathComponent(name)) }
@@ -181,6 +181,36 @@ struct Pixel: View {
     init(_ text: String, size: CGFloat = 10, color: Color) { self.text = text; self.size = size; self.color = color }
     var body: some View {
         Text(text.uppercased()).font(Fonts.pixel(size)).tracking(size * 0.06).foregroundStyle(color)
+    }
+}
+
+// MARK: - brand (designs/: app icon and wordmark, bundled under Resources/Brand)
+
+@MainActor enum Brand {
+    private static var cache: [String: NSImage] = [:]
+    private static func image(_ file: String) -> NSImage? {
+        if let i = cache[file] { return i }
+        guard let u = Fonts.resourceBundle()?.appendingPathComponent("Brand/\(file)"), let i = NSImage(contentsOf: u) else { return nil }
+        cache[file] = i
+        return i
+    }
+    /// the app icon (Dock, ⌘-Tab, About panel); nil leaves the default
+    static var appIcon: NSImage? { image("Elisa.icns") }
+    /// the vector wordmark in the theme's text colour
+    static func wordmark(dark: Bool) -> NSImage? { image(dark ? "elisa-wordmark-on-dark.pdf" : "elisa-wordmark-on-light.pdf") }
+}
+
+/// The Elisa wordmark at a given height; the pixel-font text when the bundled artwork is missing.
+struct Wordmark: View {
+    @Environment(\.pal) var p
+    var height: CGFloat
+    var body: some View {
+        if let img = Brand.wordmark(dark: p.dark) {
+            Image(nsImage: img).resizable().interpolation(.high).aspectRatio(contentMode: .fit).frame(height: height)
+                .accessibilityLabel("Elisa")
+        } else {
+            Pixel("Elisa", size: height, color: p.fg)
+        }
     }
 }
 

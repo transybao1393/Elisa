@@ -13,7 +13,8 @@ let package = Package(
             name: "ElisaApp",
             path: "Sources/ElisaApp",
             // the kit's two OFL fonts (Silkscreen, Chivo Mono; see THIRD_PARTY_NOTICES.md), registered at launch
-            resources: [.copy("Resources/Fonts")],
+            // plus the brand kit's app icon and vector wordmarks (designs/), set as the Dock icon and drawn on Welcome
+            resources: [.copy("Resources/Fonts"), .copy("Resources/Brand")],
             linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("JavaScriptCore")]
         )
     ]
