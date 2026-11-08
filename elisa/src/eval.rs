@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const SCHEMA: &str = "elisa-eval/1";
-const USAGE: &str = "usage: elisa eval [--suite NAME|all|fake|model] [--case ID] [--model M] [--json FILE] [--keep] [--list] [--dir DIR] [--jobs N] [--no-history]";
+const USAGE: &str = "usage: elisa eval [--suite NAME|all|fake|model] [--case ID] [--model M] [--provider NAME] [--base-url URL [--type T]] [--max-ctx N] [--json FILE] [--save] [--keep] [--list] [--dir DIR] [--jobs N] [--no-history]";
 
 /// The built-in cases (also what the installed binary runs: it has no repo next to it). `--dir` reads others.
 pub const BUILTIN: &[(&str, &str)] = &[
@@ -320,11 +320,21 @@ pub struct CaseResult {
     pub dir: Option<PathBuf>,
 }
 
+#[derive(Debug)]
 pub struct Options {
     pub suite: String,
     pub case: Option<String>,
     pub model: Option<String>,
+    /// model cases: this saved connection (`--provider`, as for `elisa`; "none" = no saved connection)
+    pub provider: Option<String>,
+    /// model cases: this server (`--base-url`, with `--type` its kind: then no saved connection, as for `elisa`)
+    pub base_url: Option<String>,
+    pub kind: Option<String>,
+    /// model cases: the context window (`--max-ctx`)
+    pub max_ctx: Option<usize>,
     pub json: Option<PathBuf>,
+    /// also keep the whole report in ~/.elisa/evals/reports/ (the history line names it)
+    pub save: bool,
     pub keep: bool,
     /// the elisa binary under test
     pub exe: PathBuf,
@@ -339,9 +349,44 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { suite: "all".into(), case: None, model: None, json: None, keep: false, exe: PathBuf::new(), dir: None, history: false, jobs: 4, progress: false }
+        Options { suite: "all".into(), case: None, model: None, provider: None, base_url: None, kind: None, max_ctx: None, json: None, save: false, keep: false,
+            exe: PathBuf::new(), dir: None, history: false, jobs: 4, progress: false }
     }
 }
+
+// ---------- stopping cleanly ----------
+
+/// The running sessions (each the leader of its own process group) and the case folders to remove. A stop signal
+/// (`stop_on_signal`) kills those groups and removes the folders, so a cancelled run leaves no Elisa (or model request)
+/// running and no temp project behind. A session is spawned while this lock is held, so none starts unseen.
+static LIVE_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+static LIVE_ROOTS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn live<T>(m: &'static Mutex<Vec<T>>) -> std::sync::MutexGuard<'static, Vec<T>> { m.lock().unwrap_or_else(std::sync::PoisonError::into_inner) }
+
+/// SIGTERM / SIGINT / SIGHUP (the app's Cancel, Ctrl-C): kill every running session's process group, remove the
+/// case folders, exit 128 + signal. The signals are blocked in every thread and taken by one waiting thread, so the
+/// clean-up runs as ordinary code.
+#[cfg(unix)]
+pub fn stop_on_signal() {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for s in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] { libc::sigaddset(&mut set, s); }
+        if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 { return; }
+        std::thread::spawn(move || {
+            let mut sig: libc::c_int = 0;
+            if libc::sigwait(&set, &mut sig) != 0 { return; }
+            let pids = live(&LIVE_PIDS);
+            for &p in pids.iter() { libc::kill(-(p as i32), libc::SIGKILL); }
+            for d in live(&LIVE_ROOTS).iter() { let _ = std::fs::remove_dir_all(d); }
+            eprintln!("elisa eval: stopped");
+            std::process::exit(128 + sig);
+        });
+    }
+}
+#[cfg(not(unix))]
+pub fn stop_on_signal() {}
 
 // ---------- one session over JSON lines ----------
 
@@ -362,7 +407,10 @@ impl Session {
         }
         #[cfg(unix)]
         { use std::os::unix::process::CommandExt; cmd.process_group(0); }
+        let mut pids = live(&LIVE_PIDS);
         let mut child = cmd.spawn().map_err(|e| format!("could not start {}: {e}", exe.display()))?;
+        pids.push(child.id());
+        drop(pids);
         let (stdin, out) = (child.stdin.take().ok_or("no stdin")?, child.stdout.take().ok_or("no stdout")?);
         let (tx, rx) = mpsc::channel();
         let mut file = std::fs::File::create(root.join(format!("events-{n}.jsonl"))).ok();
@@ -410,6 +458,8 @@ impl Session {
         unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL); }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let id = self.child.id();
+        live(&LIVE_PIDS).retain(|&p| p != id);
     }
 }
 
@@ -465,6 +515,7 @@ pub fn run_case(c: &Case, opts: &Options, idx: usize) -> CaseResult {
         Ok(d) => d,
         Err(e) => { r.status = "fail".into(); r.notes.push(e); return r; }
     };
+    if !opts.keep { live(&LIVE_ROOTS).push(root.clone()); }
     let seed = (SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(7) as u64) ^ ((idx as u64 + 1) << 32) ^ std::process::id() as u64;
     let vars = Vars::new(&root, seed);
     let out = drive(c, opts, &root, &vars, &mut r);
@@ -481,7 +532,10 @@ pub fn run_case(c: &Case, opts: &Options, idx: usize) -> CaseResult {
         }
         Err(e) => { r.status = "fail".into(); r.notes.push(e); }
     }
-    if opts.keep { r.dir = Some(root); } else { let _ = std::fs::remove_dir_all(&root); }
+    if opts.keep { r.dir = Some(root); } else {
+        let _ = std::fs::remove_dir_all(&root);
+        live(&LIVE_ROOTS).retain(|d| d != &root);
+    }
     r
 }
 
@@ -510,7 +564,7 @@ fn drive(c: &Case, opts: &Options, root: &Path, v: &Vars, r: &mut CaseResult) ->
                 let p = crate::provider::path_in(&h);
                 if p.is_file() { std::fs::copy(&p, crate::provider::path_in(&home)).map_err(|e| format!("providers.toml: {e}"))?; }
             }
-            if let Some(m) = &opts.model { extra.extend(["--model".into(), m.clone()]); }
+            extra.extend(connection_args(opts));
         }
     }
     let timeout = Duration::from_secs(c.timeout_s.unwrap_or(if fake { 60 } else { 300 }));
@@ -1008,19 +1062,51 @@ pub fn table(results: &[CaseResult]) -> String {
     s
 }
 
-/// The model the model cases talk to: `--model`, else the active connection's (providers.toml / ELISA_PROVIDER).
-pub struct ModelInfo { pub name: String, pub connection: String, pub base_url: String }
-
-pub fn chosen_model(home: Option<&Path>, model: Option<&str>) -> Option<ModelInfo> {
-    let f = home.and_then(|h| crate::provider::Providers::load(h).ok()).unwrap_or_default();
-    let name = std::env::var("ELISA_PROVIDER").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| f.active.clone());
-    let p = f.providers.get(&name);
-    let m = model.map(String::from).filter(|m| !m.trim().is_empty()).or_else(|| p.map(|p| p.model.clone()).filter(|m| !m.trim().is_empty()))?;
-    Some(ModelInfo { name: m, connection: if p.is_some() { name } else { String::new() }, base_url: p.map(|p| p.address()).unwrap_or_default() })
+/// What a model case's `elisa --serve-jsonl` gets to reach the chosen model: `--provider`, `--base-url` / `--type`,
+/// `--max-ctx` and `--model`, as given (the same flags `elisa` takes; nothing is filled in for the user).
+pub fn connection_args(o: &Options) -> Vec<String> {
+    let mut a: Vec<String> = Vec::new();
+    if let Some(p) = &o.provider { a.extend(["--provider".into(), p.clone()]); }
+    if let Some(u) = &o.base_url {
+        a.extend(["--base-url".into(), u.clone()]);
+        if let Some(k) = &o.kind { a.extend(["--type".into(), k.clone()]); }
+    }
+    if let Some(n) = o.max_ctx { a.extend(["--max-ctx".into(), n.to_string()]); }
+    if let Some(m) = &o.model { a.extend(["--model".into(), m.clone()]); }
+    a
 }
 
-/// `elisa eval …`: the exit code (0 all passed, 1 a case failed, 2 a usage error or no model).
-pub fn cli(args: &[String]) -> i32 {
+/// The model the model cases talk to: `--model`, else the connection's: `--provider`, else (`--base-url` with `--type`:
+/// none), else `ELISA_PROVIDER`, else the file's active one. Err: `--provider` names no saved connection.
+#[derive(Debug)]
+pub struct ModelInfo { pub name: String, pub connection: String, pub base_url: String }
+
+pub fn chosen_model(home: Option<&Path>, o: &Options) -> Result<Option<ModelInfo>, String> {
+    let f = match (home.map(crate::provider::Providers::load), &o.provider) {
+        (Some(Err(e)), Some(_)) => return Err(e),
+        (Some(r), _) => r.unwrap_or_default(),
+        (None, _) => Default::default(),
+    };
+    let unsaved = o.base_url.is_some() && o.kind.is_some();
+    let name = o.provider.clone().or_else(|| unsaved.then(|| crate::provider::NONE.to_string()))
+        .or_else(|| std::env::var("ELISA_PROVIDER").ok().filter(|v| !v.is_empty())).unwrap_or_else(|| f.active.clone());
+    let p = if name == crate::provider::NONE { None } else { f.providers.get(&name) };
+    if let Some(forced) = o.provider.as_deref().filter(|n| *n != crate::provider::NONE) {
+        if p.is_none() { return Err(format!("no connection named {forced:?} in ~/.config/elisa/providers.toml")); }
+    }
+    let Some(m) = o.model.clone().filter(|m| !m.trim().is_empty()).or_else(|| p.map(|p| p.model.clone()).filter(|m| !m.trim().is_empty())) else { return Ok(None) };
+    let base_url = o.base_url.as_deref().map(|u| u.trim().trim_end_matches('/').to_string()).or_else(|| p.map(|p| p.address())).unwrap_or_default();
+    Ok(Some(ModelInfo { name: m, connection: if p.is_some() { name } else { String::new() }, base_url }))
+}
+
+/// Where `--save` keeps a run's whole report: `~/.elisa/evals/reports/<started>-<model or suite>.json`.
+pub fn report_path(home: &Path, started: u64, model: Option<&str>, suite: &str) -> PathBuf {
+    let tag: String = model.unwrap_or(suite).chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).take(80).collect();
+    home.join(".elisa/evals/reports").join(format!("{started}-{tag}.json"))
+}
+
+/// The command line: options, and whether `--list` was asked. Err(None) = `--help` was printed.
+fn parse_cli(args: &[String]) -> Result<(Options, bool), Option<String>> {
     let mut o = Options { history: true, progress: true, ..Default::default() };
     let mut list = false;
     let mut it = args.iter();
@@ -1030,17 +1116,33 @@ pub fn cli(args: &[String]) -> i32 {
             "--suite" => val("--suite").map(|v| o.suite = v),
             "--case" => val("--case").map(|v| o.case = Some(v)),
             "--model" => val("--model").map(|v| o.model = Some(v)),
+            "--provider" => val("--provider").map(|v| o.provider = Some(v)),
+            "--base-url" => val("--base-url").map(|v| o.base_url = Some(v)),
+            "--type" => val("--type").and_then(|v| if ["streamdense", "anthropic", "openai"].contains(&v.as_str()) { o.kind = Some(v); Ok(()) } else { Err(format!("bad --type: {v} (streamdense | anthropic | openai)")) }),
+            "--max-ctx" => val("--max-ctx").and_then(|v| v.parse().map(|n| o.max_ctx = Some(n)).map_err(|_| format!("bad --max-ctx: {v}"))),
             "--json" => val("--json").map(|v| o.json = Some(PathBuf::from(v))),
+            "--save" => { o.save = true; Ok(()) }
             "--dir" => val("--dir").map(|v| o.dir = Some(PathBuf::from(v))),
             "--jobs" => val("--jobs").and_then(|v| v.parse().map(|n| o.jobs = n).map_err(|_| format!("bad --jobs: {v}"))),
             "--keep" => { o.keep = true; Ok(()) }
             "--list" => { list = true; Ok(()) }
             "--no-history" => { o.history = false; Ok(()) }
-            "-h" | "--help" => { println!("{USAGE}"); return 0; }
+            "-h" | "--help" => { println!("{USAGE}"); return Err(None); }
             _ => Err(format!("unknown argument: {a}")),
         };
-        if let Err(e) = r { eprintln!("elisa eval: {e}\n{USAGE}"); return 2; }
+        r.map_err(Some)?;
     }
+    if o.kind.is_some() && o.base_url.is_none() { return Err(Some("--type goes with --base-url".into())); }
+    Ok((o, list))
+}
+
+/// `elisa eval …`: the exit code (0 all passed, 1 a case failed, 2 a usage error or no model).
+pub fn cli(args: &[String]) -> i32 {
+    let (mut o, list) = match parse_cli(args) {
+        Ok(x) => x,
+        Err(None) => return 0,
+        Err(Some(e)) => { eprintln!("elisa eval: {e}\n{USAGE}"); return 2; }
+    };
     let all = match load_cases(o.dir.as_deref()) { Ok(c) => c, Err(e) => { eprintln!("elisa eval: {e}"); return 2; } };
     if list {
         for c in &all { println!("{:<44} {:<9} {:<6} {}", c.id, c.suite, c.kind, c.description); }
@@ -1049,11 +1151,12 @@ pub fn cli(args: &[String]) -> i32 {
     let cases = match select(&all, &o.suite, o.case.as_deref()) { Ok(c) => c, Err(e) => { eprintln!("elisa eval: {e}"); return 2; } };
     o.exe = match std::env::current_exe() { Ok(p) => p, Err(e) => { eprintln!("elisa eval: cannot find the elisa binary: {e}"); return 2; } };
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let model = chosen_model(home.as_deref(), o.model.as_deref());
+    let model = match chosen_model(home.as_deref(), &o) { Ok(m) => m, Err(e) => { eprintln!("elisa eval: {e}"); return 2; } };
     if cases.iter().any(|c| c.kind == "model") && model.is_none() {
         eprintln!("{}", crate::api::NO_MODEL);
         return 2;
     }
+    stop_on_signal();
     let started = now_s();
     let n_model = cases.iter().filter(|c| c.kind == "model").count();
     eprintln!("elisa eval: {} case(s){}", cases.len(), match (&model, n_model) {
@@ -1070,12 +1173,19 @@ pub fn cli(args: &[String]) -> i32 {
         }
     }
     if o.keep { for r in &results { if let Some(d) = &r.dir { eprintln!("kept {}: {}", r.id, d.display()); } } }
+    let mut saved: Option<PathBuf> = None;
+    if let (true, Some(h)) = (o.save, &home) {
+        let p = report_path(h, started, rep["model"]["name"].as_str(), &o.suite);
+        let w = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&p, serde_json::to_string_pretty(&rep).unwrap_or_default() + "\n"));
+        match w { Ok(()) => { eprintln!("saved: {}", p.display()); saved = Some(p); } Err(e) => eprintln!("elisa eval: report not saved: {e}") }
+    }
     if o.history {
         if let Some(h) = &home {
             let d = h.join(".elisa/evals");
             let line = json!({"schema": SCHEMA, "elisa_version": env!("CARGO_PKG_VERSION"), "started_at": started, "finished_at": rep["finished_at"],
                 "suite": o.suite, "case": o.case, "model": rep["model"], "summary": rep["summary"], "aggregates": rep["aggregates"],
-                "cases": results.iter().map(|r| json!({"id": r.id, "status": r.status, "seconds": r3(Some(r.seconds))})).collect::<Vec<_>>()});
+                "cases": results.iter().map(|r| json!({"id": r.id, "status": r.status, "seconds": r3(Some(r.seconds))})).collect::<Vec<_>>(),
+                "report": saved.as_ref().map(|p| p.display().to_string())});
             let w = std::fs::create_dir_all(&d).and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(d.join("history.jsonl")))
                 .and_then(|mut f| writeln!(f, "{line}"));
             if let Err(e) = w { eprintln!("elisa eval: run history not saved: {e}"); }
@@ -1128,5 +1238,48 @@ mod tests {
         assert_eq!(a[0]["median_turn_s"], json!(2.0));
         assert_eq!(a[0]["tool_call_accuracy"]["rate"], json!(0.5));
         assert_eq!(a[0]["suites"]["model"]["passed"], json!(1));
+    }
+
+    fn args(s: &str) -> Vec<String> { s.split_whitespace().map(String::from).collect() }
+
+    #[test]
+    fn connection_flags_reach_the_model_sessions_as_given() {
+        let (o, list) = parse_cli(&args("--suite model --model m1 --provider box --json r.json --save")).unwrap();
+        assert!(!list && o.save && o.history);
+        assert_eq!(connection_args(&o), args("--provider box --model m1"));
+        let (o, _) = parse_cli(&args("--base-url http://127.0.0.1:11434/v1 --type openai --max-ctx 8192 --model q")).unwrap();
+        assert_eq!(connection_args(&o), args("--base-url http://127.0.0.1:11434/v1 --type openai --max-ctx 8192 --model q"));
+        // nothing chosen: nothing added (Elisa does not pick)
+        assert!(connection_args(&parse_cli(&[]).unwrap().0).is_empty());
+        assert!(parse_cli(&args("--type openai")).unwrap_err().unwrap().contains("--base-url"));
+        assert!(parse_cli(&args("--type gpt --base-url x")).is_err());
+        assert!(parse_cli(&args("--provider")).unwrap_err().unwrap().contains("needs a value"));
+    }
+
+    #[test]
+    fn chosen_model_follows_provider_and_base_url() {
+        let home = std::env::temp_dir().join(format!("elisa-eval-choose-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
+        std::fs::write(crate::provider::path_in(&home), "active = \"a\"\n[providers.a]\ntype = \"openai\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"ma\"\nmax_ctx = 8192\n[providers.b]\ntype = \"openai\"\nbase_url = \"https://b.example/v1\"\nmodel = \"mb\"\nmax_ctx = 8192\n").unwrap();
+        let o = |s: &str| parse_cli(&args(s)).unwrap().0;
+        let m = chosen_model(Some(&home), &o("--provider b")).unwrap().unwrap();
+        assert_eq!((m.name.as_str(), m.connection.as_str(), m.base_url.as_str()), ("mb", "b", "https://b.example/v1"));
+        let m = chosen_model(Some(&home), &o("--provider b --model x")).unwrap().unwrap();
+        assert_eq!((m.name.as_str(), m.connection.as_str()), ("x", "b"));
+        assert!(chosen_model(Some(&home), &o("--provider nope")).unwrap_err().contains("nope"));
+        // an unsaved server: no connection, and no model unless one is given
+        let m = chosen_model(Some(&home), &o("--base-url http://127.0.0.1:11434/v1/ --type openai --model q")).unwrap().unwrap();
+        assert_eq!((m.name.as_str(), m.connection.as_str(), m.base_url.as_str()), ("q", "", "http://127.0.0.1:11434/v1"));
+        assert!(chosen_model(Some(&home), &o("--base-url http://127.0.0.1:11434/v1 --type openai")).unwrap().is_none());
+        assert!(chosen_model(Some(&home), &o("--provider none")).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn saved_reports_are_named_by_time_and_model() {
+        let p = report_path(Path::new("/h"), 1794150000, Some("qwen3-vl:2b-instruct"), "model");
+        assert_eq!(p, PathBuf::from("/h/.elisa/evals/reports/1794150000-qwen3-vl_2b-instruct.json"));
+        assert_eq!(report_path(Path::new("/h"), 5, None, "fake").file_name().unwrap(), "5-fake.json");
+        assert!(!report_path(Path::new("/h"), 5, Some("../x/y"), "s").to_string_lossy().contains("/x/"));
     }
 }

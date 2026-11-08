@@ -439,6 +439,7 @@ private struct ActiveDot: View {
 struct ConnectionsView: View {
     @ObservedObject var s: ConnectionStore
     @ObservedObject var m: AppModel
+    @ObservedObject private var evals = EvalStore.shared
     @Environment(\.pal) var p
     /// the connection whose Custom size button was pressed (a preset number still shows its field)
     @State private var customCtx: UUID?
@@ -508,6 +509,9 @@ struct ConnectionsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: c.name.isEmpty ? "(unnamed)" : c.name).font(Fonts.mono(13)).foregroundStyle(on ? p.acc : p.tx).lineLimit(1)
                 Text(verbatim: (c.leaves == nil ? "this machine" : c.type == "mcp" ? "through MCP" : "online")).font(Fonts.mono(11)).foregroundStyle(c.leaves == nil ? p.ok : p.warn)
+                if let score = evals.scoreLine(c.model) {
+                    Text(verbatim: score).font(Fonts.mono(10.5)).foregroundStyle(p.code).lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -558,6 +562,7 @@ struct ConnectionsView: View {
                     Field(label: "Model") { TextField("", text: bind(c, \.model)).modifier(Input()) }
                     if c.type == "openai" && Connection.isLocal(c.baseURL) { localModels(c) }
                 }
+                measured(c)
                 contextField(c)
                 visionField(c)
                 keyFields(c)
@@ -568,6 +573,24 @@ struct ConnectionsView: View {
                 Text(verbatim: "With no saved connection, Elisa uses base_url and model from config.toml. By default that is the Streamdense gateway at http://127.0.0.1:8898. Add a connection for another local server, an online API or an MCP server.").font(Fonts.mono(13)).foregroundStyle(p.tx).fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// what was measured on this Mac with this connection's model (the scorecard), and a Test for it
+    private func measured(_ c: Connection) -> some View {
+        let saved = !s.dirty && !c.was.isEmpty && c.was == c.name
+        return Field(label: "Measured on this Mac") {
+            HStack(spacing: 10) {
+                if let score = evals.scoreLine(c.model) {
+                    Text(verbatim: "\(c.model): \(score)").font(Fonts.mono(12)).foregroundStyle(p.tx)
+                } else {
+                    Text(verbatim: c.model.isEmpty ? "no model set" : "\(c.model): not tested yet").font(Fonts.mono(12)).foregroundStyle(p.fg2)
+                }
+                Spacer(minLength: 0)
+                Button { ScorecardWindow.shared.show(m) } label: { Text(verbatim: "Scorecard ›").font(Fonts.mono(11.5)).foregroundStyle(p.acc) }.buttonStyle(.plain)
+            }
+            EvalControl(target: .connection(c), blocked: c.model.isEmpty ? "Set a model to test it." : saved ? nil : "Save the connection to test it.")
+        }
+        .onAppear { evals.loadOnce() }
     }
 
     /// the models on this machine's server, to pick from: asked when the connection is shown and when its URL changes
@@ -775,7 +798,7 @@ final class ConnectionsWindow {
         w.isReleasedWhenClosed = false
         w.minSize = NSSize(width: 820, height: 840)
         w.contentView = NSHostingView(rootView: view(m))
-        w.center()
+        if !DebugFrame.place(w) { w.center() }
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window = w

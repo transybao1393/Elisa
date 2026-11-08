@@ -111,8 +111,11 @@ struct LocalModelPicker: View {
     let current: String
     let use: (String) -> Void
     let otherServer: () -> Void
+    /// the saved connections: a test goes through the Ollama one when there is one
+    var conns: [Connection] = []
     @Environment(\.pal) var p
     @State private var all = false
+    @ObservedObject private var evals = EvalStore.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -140,7 +143,7 @@ struct LocalModelPicker: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(p.bg))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.sep, lineWidth: 1))
-        .onAppear { hub.refresh() }
+        .onAppear { hub.refresh(); evals.loadOnce() }
     }
 
     private var offline: some View {
@@ -198,6 +201,13 @@ struct LocalModelPicker: View {
                         if mdl.gb > 0 && !mdl.fits { badge("needs more memory", p.warn) }
                     }
                     Text(mdl.note).font(Fonts.mono(11)).foregroundStyle(p.fg2)
+                    // measured on this Mac (the scorecard); nothing when the model was never tested
+                    if let score = evals.scoreLine(mdl.name) {
+                        Button { ScorecardWindow.shared.show(Boot.model) } label: {
+                            Text(verbatim: score).font(Fonts.mono(11)).foregroundStyle(p.code)
+                        }
+                        .buttonStyle(.plain).help("Measured on this Mac by Elisa's test cases · open the scorecard")
+                    }
                 }
                 Spacer(minLength: 8)
                 if mdl.gb > 0 { Text(String(format: "%.1f GB", mdl.gb)).font(Fonts.mono(11)).foregroundStyle(p.gut).fixedSize() }
@@ -210,6 +220,9 @@ struct LocalModelPicker: View {
                 } else {
                     SmallBtn(title: "Download") { hub.pull(mdl.name) }.frame(minWidth: 92, alignment: .trailing)
                 }
+            }
+            if have && pull == nil {
+                EvalControl(target: .ollama(mdl.name, conns: conns))
             }
             if let pull {
                 if let e = pull.error {

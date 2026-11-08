@@ -18,6 +18,7 @@ struct WelcomeView: View {
     /// the local model list (LocalModels.swift) is open under the guides
     @State private var picker = false
     @StateObject private var hub = OllamaHub()
+    @ObservedObject private var evals = EvalStore.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,7 +43,10 @@ struct WelcomeView: View {
         .background(p.bg)
         .onAppear {
             conns.load()
+            evals.loadOnce()
             picker = true
+            // --welcome-guides (debug): the guides and the local model list open, as after "Add another model"
+            if CommandLine.arguments.contains("--welcome-guides") { guides = true }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.6)) { shown = true }
             // Shade waves hello once, then settles
             DispatchQueue.main.asyncAfter(deadline: .now() + max(1.6, ShadeKit.shared.dur("greeting") / 1000 * 2)) {
@@ -106,13 +110,18 @@ struct WelcomeView: View {
                 if let a = active {
                     HStack(spacing: 8) {
                         Circle().fill(p.ok).frame(width: 7, height: 7)
-                        Text(a.model.isEmpty ? a.name : a.model).font(Fonts.mono(13, .semibold)).foregroundStyle(p.fg)
-                        Text(a.leaves.map { "· sends to \($0)" } ?? "· stays on this machine").font(Fonts.mono(12)).foregroundStyle(p.fg2)
+                        Text(a.model.isEmpty ? a.name : a.model).font(Fonts.mono(13, .semibold)).foregroundStyle(p.fg).fixedSize()
+                        Text(a.leaves.map { "· sends to \($0)" } ?? "· stays on this machine").font(Fonts.mono(12)).foregroundStyle(p.fg2).lineLimit(1)
+                        if let score = evals.scoreLine(a.model) {
+                            Button { ScorecardWindow.shared.show(m) } label: { Text(verbatim: "· \(score)").font(Fonts.mono(12)).foregroundStyle(p.code).lineLimit(1).fixedSize() }
+                                .buttonStyle(.plain).help("Measured on this Mac by Elisa's test cases · open the scorecard")
+                        }
                         Spacer()
                         WelcomeButton(title: guides ? "Hide guides" : "Add another model") {
                             withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85)) { guides.toggle() }
                         }
-                        WelcomeButton(title: "Change…") { ConnectionsWindow.shared.show(m) }
+                        .fixedSize()
+                        WelcomeButton(title: "Change…") { ConnectionsWindow.shared.show(m) }.fixedSize()
                     }
                 } else {
                     Text("Elisa needs a model to think with. Pick one of these; you can add more and switch any time from Elisa › Model Connections (⌘,).")
@@ -135,7 +144,7 @@ struct WelcomeView: View {
                 }
                 if picker && (active == nil || guides) {
                     LocalModelPicker(hub: hub, current: active?.leaves == nil ? active?.model ?? "" : "", use: useLocal,
-                                     otherServer: { ConnectionsWindow.shared.show(m, openAdd: "lm-studio") })
+                                     otherServer: { ConnectionsWindow.shared.show(m, openAdd: "lm-studio") }, conns: conns.items)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }

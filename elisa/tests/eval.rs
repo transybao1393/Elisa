@@ -32,3 +32,32 @@ fn the_case_files_on_disk_are_the_embedded_ones() {
     let ids = |v: &[elisa::eval::Case]| { let mut i: Vec<String> = v.iter().map(|c| c.id.clone()).collect(); i.sort(); i };
     assert_eq!(ids(&disk), ids(&embedded));
 }
+
+/// Cancel (SIGTERM, what the app's Cancel sends): the run stops, its sessions are killed and its temp folders go.
+#[cfg(unix)]
+#[test]
+fn a_stopped_run_leaves_no_session_or_folder() {
+    let tmp = std::env::temp_dir().join(format!("elisa-eval-stop-{}", std::process::id()));
+    let home = tmp.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_elisa"))
+        .args(["eval", "--suite", "fake", "--jobs", "2", "--no-history"])
+        .env("HOME", &home).env("TMPDIR", &tmp)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    // wait until a case folder exists (a session is starting or running)
+    let t0 = std::time::Instant::now();
+    let cases = || std::fs::read_dir(&tmp).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("elisa-eval-")).count();
+    while cases() == 0 && t0.elapsed().as_secs() < 20 { std::thread::sleep(std::time::Duration::from_millis(50)); }
+    assert!(cases() > 0, "no case started");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    unsafe { libc::kill(child.id() as i32, libc::SIGTERM); }
+    let st = child.wait().unwrap();
+    assert_eq!(st.code(), Some(128 + libc::SIGTERM), "{st:?}");
+    assert_eq!(cases(), 0, "case folders left behind");
+    // no `elisa --serve-jsonl --cwd <tmp>/…` still running
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let ps = std::process::Command::new("ps").args(["-Ao", "args"]).output().unwrap();
+    let left: Vec<String> = String::from_utf8_lossy(&ps.stdout).lines().filter(|l| l.contains("--serve-jsonl") && l.contains(&format!("elisa-eval-stop-{}/", std::process::id()))).map(String::from).collect();
+    assert!(left.is_empty(), "sessions left running: {left:?}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}

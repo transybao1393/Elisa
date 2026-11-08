@@ -615,9 +615,14 @@ elisa eval --case core.loop_guard_repeat --keep   # keep the temp project, home 
 elisa eval --list
 ```
 
-Flags: `--suite NAME|all|fake|model`, `--case ID`, `--model M` (overrides the active connection's model), `--json FILE`,
-`--keep`, `--list`, `--dir DIR` (read cases from another folder), `--jobs N` (scripted cases at a time, default 4),
-`--no-history`. Exit 0 = all passed, 1 = a case failed, 2 = usage error or no model.
+Flags: `--suite NAME|all|fake|model`, `--case ID`, `--model M` (overrides the connection's model), `--provider NAME`
+(model cases use that saved connection instead of the active one; an unknown name is a usage error), `--base-url URL
+--type T` (a server with no saved connection, e.g. Ollama: `--base-url http://127.0.0.1:11434/v1 --type openai
+--max-ctx 8192 --model M`), `--max-ctx N`, `--json FILE`, `--save` (also keep the whole report as
+`~/.elisa/evals/reports/<started>-<model>.json`; the history line names it in `report`), `--keep`, `--list`, `--dir DIR`
+(read cases from another folder), `--jobs N` (scripted cases at a time, default 4), `--no-history`. Exit 0 = all
+passed, 1 = a case failed, 2 = usage error or no model. SIGTERM / SIGINT / SIGHUP (the app's Cancel, Ctrl-C) kill the
+running sessions' process groups, remove the temp folders and exit 128 + signal; nothing is written to the history.
 
 **Two kinds of case.** `fake` cases (suites `core`, `tools`, `security`, `context`) talk to a scripted model
 (`src/eval_fake.rs`), so they test Elisa's own behaviour whatever the model: loop guard, unknown tools, empty-reply
@@ -710,7 +715,9 @@ cases read the requests, model cases ask `/context`, which covers the reasoning,
 ```
 
 `~/.elisa/evals/history.jsonl` holds one line per run with `schema`, `elisa_version`, `started_at`, `finished_at`,
-`suite`, `case`, `model`, `summary`, `aggregates` and `cases` as `[{id, status, seconds}]`. Fields may be added within
+`suite`, `case`, `model`, `summary`, `aggregates`, `cases` as `[{id, status, seconds}]` and `report` (the saved report's
+path with `--save`, else null). The app's Model Scorecard (Elisa > Model Scorecard…) reads it; its "Test this model"
+runs `elisa eval --suite model --provider NAME --model M --json TMP --save`. Fields may be added within
 `elisa-eval/1`; a change of meaning gets a new schema name.
 
 Code: `src/eval.rs` (runner, checks, report), `src/eval_fake.rs` (scripted model), `evals/*.toml` (cases),

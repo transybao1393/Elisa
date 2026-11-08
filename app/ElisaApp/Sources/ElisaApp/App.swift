@@ -11,6 +11,9 @@
 // --shots DIR (debug): plays the demo and writes PNGs of the window (offscreen render, no screen-recording permission).
 // --script FILE: scripted playback of a person typing in this window (Playback.swift); any key or click stops it.
 // --frames DIR (debug): the window as DIR/frame-NNNNN.png every S seconds (default 0.25), for a GIF or video of a run.
+// --frames-window TITLE (debug): those frames of another window ("Model Scorecard", "Model Connections").
+// --scorecard: open the Model Scorecard window at launch. --eval-test MODEL (debug): press Test on that installed
+// Ollama model as the local model list does (confirm, then run); --eval-cancel-after S: then press Cancel.
 import AppKit
 import SwiftUI
 
@@ -69,14 +72,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let dir = opt("--frames") {
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             var n = 0
+            let other = opt("--frames-window")
             Timer.scheduledTimer(withTimeInterval: max(0.05, Double(opt("--frames-every") ?? "") ?? 0.25), repeats: true) { _ in
-                MainActor.assumeIsolated { Shots.shared.capture(String(format: "frame-%05d", n), into: dir); n += 1 }
+                MainActor.assumeIsolated {
+                    let name = String(format: "frame-%05d", n)
+
+                    if let t = other { DebugFrame.snap(title: t, to: (dir as NSString).appendingPathComponent(name + ".png")) } else { Shots.shared.capture(name, into: dir) }
+                    n += 1
+                }
             }
         }
-        // --frame X,Y,W,H: where the window goes (two windows side by side for a two-session run)
-        if let f = opt("--frame")?.split(separator: ",").compactMap({ Double($0) }), f.count == 4 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                NSApp.windows.first { $0.title == "Elisa" || $0.isVisible }?.setFrame(NSRect(x: f[0], y: f[1], width: f[2], height: f[3]), display: true)
+        // --frame X,Y,W,H: where the window goes (two windows side by side for a two-session run); moved as soon as it
+        // exists, so an off-screen test run does not flash on the screen
+        if let r = DebugFrame.rect {
+            func place() -> Bool {
+                guard let w = NSApp.windows.first(where: { $0.title == "Elisa" }) else { return false }
+                if w.frame != r { w.setFrame(r, display: true) }
+                return true
+            }
+            _ = place()
+            var tries = 0
+            Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { t in
+                MainActor.assumeIsolated { tries += 1; if (place() && tries > 100) || tries > 250 { t.invalidate() } }
+            }
+        }
+        // debug runs: when SwiftUI did not open the scene's window (it sometimes does not at launch), host the main view
+        // in a window of its own, as --shots does
+        if opt("--frames") != nil || DebugFrame.rect != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                guard !NSApp.windows.contains(where: { $0.title == "Elisa" }) else { return }
+                let w = NSWindow(contentRect: DebugFrame.rect ?? NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
+                w.title = "Elisa"
+                w.titlebarAppearsTransparent = true
+                w.contentView = NSHostingView(rootView: MainWindow().environmentObject(m).frame(minWidth: 640, minHeight: 560))
+                w.isReleasedWhenClosed = false
+                DebugFrame.place(w)
+                w.orderFrontRegardless()
+                print("frames: no scene window; hosting MainWindow in its own window")
+            }
+        }
+        if args.contains("--scorecard") { DispatchQueue.main.async { ScorecardWindow.shared.show(m) } }
+        if let model = opt("--eval-test") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                let conns = ConnectionStore()
+                conns.load()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    let t = EvalTarget.ollama(model, conns: conns.items)
+                    EvalStore.shared.confirming = t
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { EvalStore.shared.start(t) }
+                    if let s = Double(opt("--eval-cancel-after") ?? "") {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5 + s) { EvalStore.shared.cancel() }
+                    }
+                }
             }
         }
         if m.demo || m.folder != nil {
@@ -94,7 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated { Boot.model.stop() }
+        MainActor.assumeIsolated { Boot.model.stop(); EvalStore.shared.stopNow() }
     }
 }
 
@@ -144,6 +191,7 @@ struct ElisaMain: App {
             }
             CommandMenu("Elisa") {
                 Button("Model Connections…") { ConnectionsWindow.shared.show(m) }.keyboardShortcut(",")
+                Button("Model Scorecard…") { ScorecardWindow.shared.show(m) }
                 Divider()
                 Button(m.editsShown ? "Hide Edits" : "Show Edits") { m.toggleEdits() }.keyboardShortcut("o", modifiers: .control)
                 Button("Previous Edit") { m.editPrev() }.keyboardShortcut("[", modifiers: .command)
