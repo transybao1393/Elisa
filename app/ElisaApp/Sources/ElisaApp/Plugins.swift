@@ -97,15 +97,11 @@ struct PluginPreview {
         commands = (p["commands"] as? [[String: Any]] ?? []).map { Command(name: $0["name"] as? String ?? "", description: $0["description"] as? String ?? "") }
         notes = p["notes"] as? [String] ?? []
         problems = p["problems"] as? [String] ?? []
+        missingImages = p["missing_images"] as? [String] ?? []
     }
 
-    /// the pull command for a server's missing image, exactly as the core wrote it in `problems`
-    func pullCommand(_ s: Server) -> String? {
-        guard s.imagePresent == false, let img = s.image else { return nil }
-        let mark = "pull it once with: "
-        guard let pr = problems.first(where: { $0.contains(img) && $0.contains(mark) }), let r = pr.range(of: mark) else { return nil }
-        return String(pr[r.upperBound...]).trimmingCharacters(in: .whitespaces)
-    }
+    /// listed images that are not on this machine (Elisa can download them after a yes)
+    var missingImages: [String] = []
 
     var verb: String { op == "update" ? "Update" : op == "trust" ? "Trust" : "Install" }
 }
@@ -485,7 +481,9 @@ struct PluginSetupView: View {
     @Environment(\.pal) var p
 
     /// the yes / no question is open (it follows the preview; none comes when the preview has problems)
-    private var asking: Bool { m.approval?.question == true }
+    private var asking: Bool { m.approval?.question == true && !pullAsking }
+    /// the open question is Elisa's own "download this image?" (the preview lists a missing image)
+    private var pullAsking: Bool { m.approval.map { $0.question && $0.tool.hasPrefix("sandbox pull") } ?? false }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -511,8 +509,14 @@ struct PluginSetupView: View {
 
     @ViewBuilder private var footer: some View {
         HStack(spacing: 10) {
-            if let pv = store.preview, !pv.problems.isEmpty {
-                Text(verbatim: "Cannot \(pv.verb.lowercased()) now: fix the problems above, then try again.").font(Fonts.mono(11)).foregroundStyle(p.warn)
+            if pullAsking, let a = m.approval {
+                Text(verbatim: a.summary).font(Fonts.mono(11)).foregroundStyle(p.tx).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                SmallBtn(title: "Not now") { m.answer(word: "no") }
+                SmallBtn(title: "Download", primary: true) { m.answer(word: "yes"); store.status = ("downloading…", true) }
+            } else if let pv = store.preview, !pv.problems.isEmpty {
+                Text(verbatim: pv.missingImages.isEmpty ? "Cannot \(pv.verb.lowercased()) now: fix the problems above, then try again."
+                     : "Cannot \(pv.verb.lowercased()) now: download the image above (Elisa checks again after it), or try later.").font(Fonts.mono(11)).foregroundStyle(p.warn)
                 Spacer()
                 SmallBtn(title: "Close") { PluginSetupWindow.shared.close() }
             } else {
@@ -599,7 +603,7 @@ struct PluginSetupView: View {
                         line("image", img + (s.imagePresent == true ? " (on this machine)" : s.imagePresent == false ? " (not on this machine)" : ""),
                              color: s.imagePresent == false ? p.warn : nil)
                     }
-                    if let pull = pv.pullCommand(s) { line("pull it once", pull, color: p.code) }
+                    if s.imagePresent == false, let img = s.image, pv.missingImages.contains(img) { download(img, pv) }
                     line("mounts", s.mounts.isEmpty ? "none" : s.mounts.map { "\($0.path) (\($0.write ? "read + write" : "read-only"))" }.joined(separator: ", "),
                          color: s.mounts.contains(where: \.write) ? p.warn : nil)
                 }
@@ -629,6 +633,25 @@ struct PluginSetupView: View {
         ForEach(pv.notes, id: \.self) { n in
             Text(verbatim: "note: \(n)").font(Fonts.mono(11)).foregroundStyle(p.warn).fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// a missing listed image: "Download image" (the session asks first, or its pending question is answered yes),
+    /// its progress, then the preview comes again
+    @ObservedObject private var sandbox = SandboxStore.shared
+
+    @ViewBuilder private func download(_ img: String, _ pv: PluginPreview) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(verbatim: "").frame(width: 96, alignment: .leading)
+            if let pr = sandbox.pulling[img] {
+                Text(verbatim: "downloading \(img) · \(pr)").font(Fonts.mono(11.5)).foregroundStyle(p.acc)
+                SmallBtn(title: "Cancel") { sandbox.cancel(m) }
+            } else {
+                SmallBtn(title: "Download image" + (sandbox.size(img).map { " (~\($0) MB)" } ?? ""), primary: true) { sandbox.downloadForPreview(img, pv, m) }
+                    .help("Downloads \(img) into Colima's VM (nothing is installed on this Mac), then checks the plugin again")
+                Text(verbatim: "into Colima's VM; nothing is installed on this Mac").font(Fonts.mono(11)).foregroundStyle(p.fg2)
+            }
+        }
+        .onAppear { if sandbox.images.isEmpty { sandbox.refresh(m) } }
     }
 
     @ViewBuilder private func trust(_ t: ProjectTrust) -> some View {

@@ -170,6 +170,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/mcp", "MCP servers: state, tools, token cost; /mcp NAME for one server's tools"),
     ("/trust", "accept an MCP server's changed tool list or a changed plugin: /trust NAME (no name: list them)"),
     ("/plugin", "plugins: /plugin list · add PATH · remove · enable · disable · update NAME · trust NAME|project"),
+    ("/sandbox", "sandbox images: /sandbox list · pull NAME|IMAGE|stable|project|all (asks first; into Colima's VM)"),
     ("/audit", "the last tool calls and approvals in the audit log, and its chain check: /audit [N]"),
     ("/forget", "delete the saved notes and unpin the pinned facts"),
     ("/resume", "pick a past session to continue"),

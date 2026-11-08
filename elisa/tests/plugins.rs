@@ -1,7 +1,7 @@
 //! Plugins end to end with the real binary and a temp HOME (never the real ~/.elisa): `elisa plugin …` on a plugin
 //! with a host-run fake MCP server (Python 3), then a `--serve-jsonl` session with the scripted model that uses its
 //! server, rules and command. The container path (install in Colima, `--network none` run) is the ignored test at the
-//! end: it needs Colima running and the node:22-alpine image.
+//! end: it needs Colima running and the stable node image of src/images.rs.
 use elisa::eval_fake::{FakeModel, Scripted};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -282,7 +282,7 @@ fn plugin_add_in_a_session_shows_the_setup_asks_and_brings_the_server_in() {
     assert!(of(&evs, "approve").is_empty(), "the plugin's allow rule covers it");
 }
 
-/// Real install and run inside Colima: `@modelcontextprotocol/server-sequential-thinking` pinned, node:22-alpine
+/// Real install and run inside Colima: `@modelcontextprotocol/server-sequential-thinking` pinned, the stable node image
 /// already pulled, then a session calls its tool (an `ask` rule from the plugin: asked even though it is allowed once).
 /// Run with Colima up: `DOCKER_HOST=unix://$HOME/.colima/default/docker.sock cargo test --release --test plugins -- --ignored`
 /// (a temp HOME has no Colima socket of its own, so DOCKER_HOST is required). No mounts: Colima shares only the home
@@ -312,7 +312,8 @@ ask = ["mcp:seqthink"]
 "#).unwrap();
     let (code, out) = elisa(&d.0, &["plugin", "add", &dir.display().to_string(), "--yes"]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("image node:22-alpine (on this machine)") && out.contains("seqthink: 1 tool"), "{out}");
+    let node = elisa::images::stable("javascript").image;
+    assert!(out.contains(&format!("image {node} (on this machine)")) && out.contains("seqthink: 1 tool"), "{out}");
     let lock: Value = serde_json::from_str(&std::fs::read_to_string(d.0.join("home/.elisa/plugins/seqthink/plugin.lock")).unwrap()).unwrap();
     assert_eq!(lock["servers"][0]["sha256"].as_str().unwrap().len(), 64);
     assert_eq!(lock["servers"][0]["tools"], 1);

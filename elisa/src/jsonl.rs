@@ -43,8 +43,22 @@
 //! - `plugin_preview` {op: "add"|"update"|"trust", name, text, preview: {name, version, old_version, description,
 //!   source, host, servers: [{name, runs, installer, package, version, image, image_present, command, mounts:
 //!   [{path, write}], env: [names], tools}], rules: [{level, pattern, broad}], commands: [{name, description}], notes,
-//!   problems}} — the setup screen, sent before anything is installed; a yes / no `approve` (question) follows unless
-//!   `problems` is non-empty (no Colima, a missing image: each says what to run)
+//!   problems, missing_images: ["node:26-alpine"]}} — the setup screen, sent before anything is installed; a yes / no
+//!   `approve` (question) follows unless `problems` is non-empty (no Colima, a missing image: each says what to do).
+//!   With `missing_images` (listed images not on this machine) an interactive session first asks whether to download
+//!   them (an `approve` question, tool `sandbox pull IMAGE…`), then sends the preview again
+//! - `sandbox_images` {images: [{image, lang, version, label, purpose, stable, project, default, present, size_mb,
+//!   disk_mb, pinned}], error?} — Elisa's pinned image list (src/images.rs) and what is on this machine: on `/sandbox`, after
+//!   every download, and on a `sandbox` list request. `stable`: the language's stable line; `project`: the line this
+//!   project's version files pick; `default`: the line a run with no project version uses and plugin installers
+//!   take (the newest present, else stable); `size_mb`: approximate download; `disk_mb`: size on disk (null when missing);
+//!   `pinned`: its digest is in ~/.elisa/images.lock. `error` (no Colima: says `colima start`) with an empty list
+//! - `image_pull` {image, state: "pulling"|"done"|"kept"|"cancelled"|"failed", text, done?, layers?, elapsed_s?} — a
+//!   download's progress (layers done of layers seen, not per byte) and its end. A download happens only after a yes
+//!   to an `approve` question (tool `sandbox pull IMAGE`, summary `The Go 1.27 sandbox needs golang:1.27-alpine (~72
+//!   MB), downloaded into Colima's VM …`): asked by Elisa itself when a `run_code` call or a plugin server is blocked
+//!   by a missing listed image (the blocked call then runs once more), or after `/sandbox pull`. A pull whose digest
+//!   differs from the pinned one asks a second question before it is used. `interrupt` cancels a download
 //! - `plugin_result` {op, name, ok, text} — the outcome of add / remove / enable / disable / update / trust
 //! - `project_trust` {path, hash, text, commands: [{name, description, source}], rules: [{level, pattern, source}],
 //!   plugins} — the project's own commands and plugins in full, before its one-time trust question
@@ -72,6 +86,8 @@
 //! - `approve` {answer: "yes"|"always"|"rule"|"no"} ("once" = yes, "session" = always), `pick` {index: n | null}
 //! - `plugin` {op: "list"|"add"|"remove"|"enable"|"disable"|"update"|"trust", path?: "…" (add), name?: "…"} — the same
 //!   as sending `/plugin OP ARG` (queued like a message); `trust` with name "project" trusts the project's commands
+//! - `sandbox` {op: "list"|"pull", name?: "go" | "golang:1.27-alpine" | "stable" | "project" | "all"} — the same as
+//!   sending `/sandbox OP NAME` (a pull asks first)
 //! - `interrupt` {} — Esc: cancels the request / tool / approval, drops queued messages
 //! - `care` {action: "poke"|"water"|"food"|"toy"}, `typing` {nonempty}, `theme` {theme: "dark"|"light"}, `quit` {}
 //!
@@ -232,7 +248,9 @@ pub fn check_json(c: &CheckEvent) -> Value {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd { Send(String), SendImages(String, Vec<Block>), Approve(Approval), Pick(Option<usize>), Interrupt, Care(&'static str), Typing(bool), Theme(bool), Quit,
     /// `{"type":"plugin","op":…,"name"|"path":…}`: the same as sending the line `/plugin OP ARG`
-    Plugin(String, String) }
+    Plugin(String, String),
+    /// `{"type":"sandbox","op":"list"|"pull","name":…}`: the same as sending the line `/sandbox OP NAME`
+    Sandbox(String, String) }
 
 /// the `plugin` command's operations
 const PLUGIN_OPS: [&str; 7] = ["list", "add", "remove", "enable", "disable", "update", "trust"];
@@ -256,6 +274,13 @@ pub fn parse_cmd(line: &str) -> Option<Cmd> {
             if arg.contains(['\n', '\r']) { return None; }
             Cmd::Plugin(op.to_string(), arg.to_string())
         }
+        "sandbox" => {
+            let op = j["op"].as_str().unwrap_or("list");
+            if op != "list" && op != "pull" { return None; }
+            let arg = j["name"].as_str().unwrap_or("");
+            if arg.contains(['\n', '\r']) { return None; }
+            Cmd::Sandbox(op.to_string(), arg.to_string())
+        }
         "pick" => Cmd::Pick(j["index"].as_u64().map(|i| i as usize)),
         "interrupt" => Cmd::Interrupt,
         "care" => Cmd::Care(match j["action"].as_str()? { "poke" => "poke", "water" => "water", "food" => "food", "toy" => "toy", _ => return None }),
@@ -274,6 +299,7 @@ pub fn encode_cmd(c: &Cmd) -> String {
             Block::Image { source } => Some(json!({"media_type": source.media_type, "data": source.data})), _ => None }).collect::<Vec<_>>()})),
         Cmd::Approve(a) => ("approve", json!({"answer": match a { Approval::Yes => "yes", Approval::Always => "always", Approval::Rule => "rule", Approval::No => "no" }})),
         Cmd::Plugin(op, arg) => ("plugin", if op == "add" { json!({"op": op, "path": arg}) } else if arg.is_empty() { json!({"op": op}) } else { json!({"op": op, "name": arg}) }),
+        Cmd::Sandbox(op, arg) => ("sandbox", if arg.is_empty() { json!({"op": op}) } else { json!({"op": op, "name": arg}) }),
         Cmd::Pick(i) => ("pick", json!({"index": i})),
         Cmd::Interrupt => ("interrupt", json!({})),
         Cmd::Care(a) => ("care", json!({"action": a})),
@@ -508,6 +534,7 @@ impl<W: Write> Server<W> {
             Cmd::Theme(l) => self.light = l,
             Cmd::Quit => self.quit(),
             Cmd::Plugin(op, arg) => self.submit(format!("/plugin {op} {arg}").trim_end().to_string(), Vec::new()),
+            Cmd::Sandbox(op, arg) => self.submit(format!("/sandbox {op} {arg}").trim_end().to_string(), Vec::new()),
         }
     }
 
@@ -758,13 +785,15 @@ mod tests {
         let all = [Cmd::Send("fix it \"now\"\nplease — ü".into()), Cmd::Approve(Approval::Yes), Cmd::Approve(Approval::Always),
             Cmd::Approve(Approval::No), Cmd::Pick(Some(2)), Cmd::Pick(None), Cmd::Interrupt, Cmd::Care("water"), Cmd::Care("poke"),
             Cmd::Typing(true), Cmd::Theme(true), Cmd::Theme(false), Cmd::Quit, Cmd::Approve(Approval::Rule),
-            Cmd::Plugin("add".into(), "/Users/me/my plugin".into()), Cmd::Plugin("list".into(), String::new()), Cmd::Plugin("trust".into(), "project".into())];
+            Cmd::Plugin("add".into(), "/Users/me/my plugin".into()), Cmd::Plugin("list".into(), String::new()), Cmd::Plugin("trust".into(), "project".into()),
+            Cmd::Sandbox("list".into(), String::new()), Cmd::Sandbox("pull".into(), "golang:1.27-alpine".into())];
         for c in all {
             let l = encode_cmd(&c);
             assert!(l.ends_with('\n') && l.matches('\n').count() == 1, "one line: {l}");
             assert_eq!(parse_cmd(&l), Some(c), "{l}");
         }
         for bad in ["", "nope", "{}", r#"{"type":"send"}"#, r#"{"type":"approve","answer":"maybe"}"#, r#"{"type":"care","action":"pizza"}"#, r#"{"type":"plan_choice","answer":"yes"}"#, r#"{"type":"dance"}"#,
+            r#"{"type":"sandbox","op":"rm","name":"x"}"#,
             r#"{"type":"plugin","op":"install","name":"x"}"#, r#"{"type":"plugin","op":"add","path":"a
 b"}"#] {
             assert_eq!(parse_cmd(bad), None, "{bad}");

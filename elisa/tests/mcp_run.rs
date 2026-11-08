@@ -1,9 +1,11 @@
 //! The built-in code sandbox (`elisa --mcp-serve run`, src/mcp_run.rs), spoken to over stdio like the session does.
-//! The tests marked `#[ignore]` need Colima running and the images pulled (golang optional: its cases are skipped
-//! when the image is not there); `colima_fetches_deps_*` also need the internet (PyPI, npm, crates.io, the Go proxy)
-//! and use their own cache volumes (`elisa-test-PID-…`), removed at the end:
-//!   colima start && docker pull python:3.13-alpine node:22-alpine bash:5.2 rust:1.91-alpine golang:1.25-alpine
-//!   DOCKER_HOST=unix://$HOME/.colima/default/docker.sock cargo test --release --test mcp_run -- --ignored
+//! The tests marked `#[ignore]` need Colima running and, per language, any listed image of it (src/images.rs; a run
+//! with no project version uses the newest one present). A language with none is skipped with a note;
+//! `colima_fetches_deps_*` also need the internet (PyPI, npm, crates.io, the Go proxy) and use their own cache volumes
+//! (`elisa-test-PID-…`), removed at the end:
+//!   colima start                     (and, for missing languages: elisa sandbox pull LANG, after a yes)
+//!   DOCKER_HOST=unix://$HOME/.colima/default/docker.sock cargo test --release --test mcp_run -- --ignored --test-threads=1
+//!   (one at a time: the leftover-container checks see every running test's containers)
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -203,6 +205,16 @@ fn a_slow_fetch_is_killed_at_its_own_limit_and_the_code_never_runs() {
 
 fn colima() -> Server { colima_with(10) }
 
+/// the newest listed image of `lang` that Colima has (what a run with no project version uses), or None with a note
+fn present(lang: &str) -> Option<&'static str> {
+    let i = elisa::images::lines(lang).into_iter().map(|i| i.image).find(|i| !docker(&["images", "-q", i]).trim().is_empty());
+    if i.is_none() { eprintln!("no listed {lang} image is on this machine: its cases are skipped"); }
+    i
+}
+
+/// every one of these languages has a present image (else the test is skipped, with a note)
+fn have(langs: &[&str]) -> bool { langs.iter().all(|l| present(l).is_some()) }
+
 fn exit_line(t: &str) -> &str { t.lines().next().unwrap_or("") }
 
 #[test]
@@ -211,10 +223,12 @@ fn colima_runs_each_language() {
     let mut s = colima();
     for (lang, code) in [("python", "print(6*7)"), ("javascript", "console.log(6*7)"), ("bash", "echo $((6*7))"),
         ("rust", "fn main() { println!(\"{}\", 6 * 7); }")] {
+        let Some(image) = present(lang) else { continue };
         let (t, err) = s.run(json!({"language": lang, "code": code}));
-        assert!(!err && t.starts_with("exit 0 ·") && t.contains("stdout:\n42"), "{lang}: {t}");
+        assert!(!err && t.starts_with("exit 0 ·") && t.contains("stdout:\n42") && exit_line(&t).contains(image), "{lang}: {t}");
         eprintln!("{lang}: {}", exit_line(&t));
     }
+    if !have(&["python", "rust"]) { return; }
     // stdin reaches the snippet; a failing snippet is an error result (red), its exit code in the text
     let (t, _) = s.run(json!({"language": "python", "code": "import sys; print(sys.stdin.read().upper())", "stdin": "hello"}));
     assert!(t.contains("HELLO"), "{t}");
@@ -227,6 +241,7 @@ fn colima_runs_each_language() {
 #[test]
 #[ignore = "needs Colima and the images"]
 fn colima_contains_an_infinite_loop() {
+    if !have(&["python"]) { return; }
     let mut s = colima_with(3);
     let t0 = Instant::now();
     let (t, err) = s.run(json!({"language": "python", "code": "print('before', flush=True)\nwhile True: pass"}));
@@ -239,6 +254,7 @@ fn colima_contains_an_infinite_loop() {
 #[test]
 #[ignore = "needs Colima and the images"]
 fn colima_contains_a_fork_bomb() {
+    if !have(&["python", "bash"]) { return; }
     let mut s = colima_with(5);
     // the classic bomb, kept alive for a moment: the process limit stops it, the run still ends, the host is fine
     let t0 = Instant::now();
@@ -256,6 +272,7 @@ fn colima_contains_a_fork_bomb() {
 #[test]
 #[ignore = "needs Colima and the images"]
 fn colima_cuts_big_output() {
+    if !have(&["python", "bash"]) { return; }
     let mut s = colima();
     let (t, _) = s.run(json!({"language": "python", "code": "import sys\nwhile True: sys.stdout.write('x'*1000+'\\n')"}));
     eprintln!("big output: {}", exit_line(&t));
@@ -268,6 +285,7 @@ fn colima_cuts_big_output() {
 #[test]
 #[ignore = "needs Colima and the images"]
 fn colima_has_no_network_no_host_files_and_no_root() {
+    if !have(&["python", "bash", "javascript"]) { return; }
     let mut s = colima();
     let (t, _) = s.run(json!({"language": "python", "code": "import socket\ntry:\n    socket.create_connection(('1.1.1.1', 80), timeout=3); print('CONNECTED')\nexcept OSError as e: print('blocked', e)\ntry:\n    socket.getaddrinfo('example.com', 80); print('RESOLVED')\nexcept OSError as e: print('no dns', e)"}));
     assert!(t.contains("blocked") && t.contains("no dns") && !t.contains("CONNECTED") && !t.contains("RESOLVED"), "{t}");
@@ -346,8 +364,9 @@ fn the_sandbox_is_off_by_default_and_a_project_can_only_switch_it_off() {
 fn the_approval_line_shows_the_language_and_first_line() {
     let s = elisa::tools::summary("run_code", &json!({"language": "python", "code": "\nimport math\nprint(math.pi)\n"}));
     assert_eq!(s, "run_code python: import math (+1 lines)");
-    let c = elisa::mcp_host::builtin_run(7, 45);
-    assert_eq!((c.name.as_str(), &c.command[1..]), ("run", &["--mcp-serve".to_string(), "run".into(), "--timeout".into(), "7".into(), "--fetch-timeout".into(), "45".into()][..]));
+    let c = elisa::mcp_host::builtin_run(7, 45, Path::new("/p"));
+    assert_eq!((c.name.as_str(), &c.command[1..]), ("run", &["--mcp-serve".to_string(), "run".into(), "--timeout".into(), "7".into(), "--fetch-timeout".into(), "45".into(),
+        "--root".into(), "/p".into()][..]));
     // deps are named on the approval line, with the fact that they are fetched online
     let s = elisa::tools::summary("run_code", &json!({"language": "python", "code": "import six\nprint(six.__version__)", "deps": ["six==1.16.0"]}));
     assert_eq!(s, "run_code python: import six (+1 lines) · fetches online: six==1.16.0");
@@ -384,9 +403,8 @@ fn colima_fetches_deps_then_runs_offline() {
         ("javascript", "console.log(require('left-pad')('7', 3, '0'))", json!(["left-pad@1.3.0"]), "007"),
         ("rust", "fn main() { let mut b = itoa::Buffer::new(); println!(\"{}\", b.format(42)); }", json!(["itoa@1.0.11"]), "42"),
     ];
-    if docker(&["images", "-q", "golang:1.25-alpine"]).trim().is_empty() {
-        eprintln!("golang:1.25-alpine is not pulled: go deps skipped");
-    } else {
+    cases.retain(|c| present(c.0).is_some());
+    if present("go").is_some() {
         cases.push(("go", "package main\nimport (\"fmt\"; \"golang.org/x/text/language\")\nfunc main() { fmt.Println(language.English) }", json!(["golang.org/x/text@v0.14.0"]), "en"));
     }
     for (lang, code, deps, want) in cases {
@@ -399,6 +417,7 @@ fn colima_fetches_deps_then_runs_offline() {
         assert!(!err && t.contains("deps cached") && t.contains(&format!("stdout:\n{want}")), "{lang}: {t}");
     }
     // with deps the code still has no network, and the cache is read-only
+    if !have(&["python"]) { return; }
     let (t, _) = s.run(json!({"language": "python", "deps": ["six==1.16.0"], "code": "import socket\ntry:\n    socket.create_connection(('1.1.1.1', 80), timeout=3); print('CONNECTED')\nexcept OSError as e: print('blocked', e)\ntry:\n    open('/deps/x', 'w'); print('WROTE')\nexcept OSError as e: print('ro', e)"}));
     assert!(t.contains("blocked") && t.contains("ro") && !t.contains("CONNECTED") && !t.contains("WROTE"), "{t}");
     // a version that does not exist: the registry's own words, and the code never ran
@@ -410,8 +429,63 @@ fn colima_fetches_deps_then_runs_offline() {
 #[test]
 #[ignore = "needs Colima and the golang image"]
 fn colima_runs_go() {
-    if docker(&["images", "-q", "golang:1.25-alpine"]).trim().is_empty() { eprintln!("golang:1.25-alpine is not pulled: skipped"); return; }
+    if present("go").is_none() { return; }
     let mut s = colima_with(30);
     let (t, err) = s.run(json!({"language": "go", "code": "package main\nimport \"fmt\"\nfunc main() { fmt.Println(6 * 7) }"}));
     assert!(!err && t.contains("stdout:\n42"), "{t}");
+}
+
+/// a docker that has no images: `run` fails as the real CLI does with `--pull never`
+fn imageless_docker(d: &Path) -> PathBuf {
+    let bin = d.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = d.join("log");
+    std::fs::write(bin.join("docker"), format!(
+        "#!/bin/sh\necho \"ARGS $*\" >> {log}\n\
+         if [ \"$1\" = run ]; then echo \"docker: Error response from daemon: No such image\" >&2; exit 125; fi\n",
+        log = log.display())).unwrap();
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(bin.join("docker"), std::fs::Permissions::from_mode(0o755)).unwrap(); }
+    std::fs::write(d.join("sock"), "").unwrap();
+    log
+}
+
+#[test]
+fn a_missing_image_is_named_in_meta_and_the_project_picks_the_version() {
+    let d = scratch("missing");
+    let log = imageless_docker(&d);
+    let proj = d.join("proj");
+    std::fs::create_dir_all(proj.join(".git")).unwrap();
+    std::fs::write(proj.join(".python-version"), "3.13.1\n").unwrap();
+    std::fs::write(proj.join("go.mod"), "module x\n\ngo 1.21\n").unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_elisa"));
+    c.args(["--mcp-serve", "run", "--timeout", "5", "--root"]).arg(&proj).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    for (k, v) in fake_env(&d) { c.env(k, v); }
+    let mut child = c.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut ask = |id: u64, args: Value| -> Value {
+        writeln!(stdin, "{}", json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "run_code", "arguments": args}})).unwrap();
+        let mut l = String::new();
+        loop { l.clear(); out.read_line(&mut l).unwrap(); let v: Value = serde_json::from_str(&l).unwrap(); if v["id"] == id { return v; } }
+    };
+    // the project's .python-version picks python 3.13; the image is missing: an error result with the image in _meta
+    let r = ask(1, json!({"language": "python", "code": "print(1)"}));
+    assert_eq!(r["result"]["isError"], true);
+    assert_eq!(r["result"]["_meta"]["elisa/missing_image"], "python:3.13-alpine", "{r}");
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("/sandbox pull python:3.13-alpine"), "{r}");
+    // go.mod asks for at least 1.21: the newest listed line (stable)
+    let r = ask(2, json!({"language": "go", "code": "package main\nfunc main(){}"}));
+    assert_eq!(r["result"]["_meta"]["elisa/missing_image"], elisa::images::stable("go").image, "{r}");
+    // an explicit version wins; one that is not on the list is refused before docker runs
+    let r = ask(3, json!({"language": "python", "code": "print(1)", "version": "3.14"}));
+    assert_eq!(r["result"]["_meta"]["elisa/missing_image"], "python:3.14-alpine", "{r}");
+    let n = std::fs::read_to_string(&log).unwrap().lines().count();
+    let r = ask(4, json!({"language": "python", "code": "print(1)", "version": "2.7"}));
+    assert!(r["result"]["_meta"].is_null() && r["result"]["content"][0]["text"].as_str().unwrap().contains("can run here"), "{r}");
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), n, "docker was not run for a refused version");
+    let l = std::fs::read_to_string(&log).unwrap();
+    assert!(l.contains("--pull never") && !l.contains("ARGS pull"), "the server never pulls: {l}");
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&d);
 }

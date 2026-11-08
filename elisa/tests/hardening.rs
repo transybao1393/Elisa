@@ -160,7 +160,7 @@ fn builtin_servers_pass_on_only_what_they_need() {
     let web = elisa::mcp_host::builtin_web("brave", "", "k-123");
     assert!(web.builtin && web.env_pass.iter().any(|k| k == "ELISA_BRAVE_URL") && web.env_pass.iter().any(|k| k == "HTTPS_PROXY"));
     assert!(!web.env_pass.iter().any(|k| k.contains("API_KEY")), "{:?}", web.env_pass);
-    let run = elisa::mcp_host::builtin_run(5, 60);
+    let run = elisa::mcp_host::builtin_run(5, 60, Path::new("/x"));
     assert!(run.builtin && run.env_pass == ["DOCKER_HOST"]);
     assert!(elisa::mcp_host::builtin_docs(Path::new("/x"), 100).env_pass.is_empty());
     assert!(elisa::mcp_host::builtin_reason().env_pass.is_empty());

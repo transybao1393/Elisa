@@ -274,6 +274,7 @@ celebration. `--serve-jsonl` sends a `check` event (`src/jsonl.rs`).
 | `/yolo` | toggle approve-all |
 | `/trust [NAME]` | accept an MCP server's changed tool list (see "MCP servers"), or review and accept a plugin whose installed files changed (see "Plugins"); without a name, list both |
 | `/plugin …` | plugins (see "Plugins"): `list`, `add PATH`, `remove NAME`, `enable NAME`, `disable NAME`, `update NAME`, `trust NAME`, `trust project` |
+| `/sandbox [list \| pull X]` | the sandbox images (see "Sandbox images"): each one's purpose, stable / this-project tags, present or missing and size on disk; `/sandbox pull NAME\|IMAGE\|stable\|project\|all` asks first (with the total download size) and then downloads into Colima's VM |
 | `/audit [N]` | the last N (20) entries of this project's audit log, then `chain ok (K entries)` or `chain broken at line L` |
 | `/exit` | quit |
 
@@ -388,8 +389,12 @@ Slash commands go in the plugin's `commands/` folder (`commands/review.md`, see 
 - **Installed inside Colima, never on the Mac.** A throwaway container (`docker run --rm --pull never`, the network
   on for this step only, npm with `--ignore-scripts`) installs the pinned package into a docker volume Elisa owns
   (`elisa-plugin-PLUGIN-SERVER-<home tag>`). A second container with no network hashes the installed tree. The
-  images are the code sandbox's (`node:22-alpine` npm, `python:3.13-alpine` pip, `rust:1.91-alpine` cargo) and must
-  already be on the machine: if one is missing the setup screen says `pull it once with: docker pull …`. If Colima
+  images are the code sandbox's: the newest listed line of the installer's language that is on the machine
+  (`node:22-alpine` npm, `python:3.13-alpine` pip, `rust:1.91-alpine` cargo when those are what you have), else the
+  stable one (`node:26-alpine`, `python:3.15-alpine`, `rust:1.99-alpine`; see "Sandbox images"); the setup screen
+  names the one it will use. If one is missing, Elisa asks once whether to download it (the setup screen and the
+  app show a "Download image" button) and installs after a yes; a server whose image disappeared later is offered the
+  same way at session start. Plugin manifests cannot name images. If Colima
   is not running it says to run `colima start` — Elisa never starts it. `~/.elisa/plugins/NAME/plugin.lock` records
   each server's installer, package, version, image, volume, sha256 of the installed tree, and its tool count and
   token cost (learnt by starting it once after the install).
@@ -431,16 +436,83 @@ asks again.
   folder is open)
 - `plugin_preview` {op: "add"|"update"|"trust", name, text, preview: {name, version, old_version, description,
   source, host, servers: [{name, runs, installer, package, version, image, image_present, command, mounts, env,
-  tools}], rules: [{level, pattern, broad}], commands, notes, problems}} — the setup screen; a yes / no `approve`
-  with `question: true` follows unless `problems` is non-empty
+  tools}], rules: [{level, pattern, broad}], commands, notes, problems, missing_images}} — the setup screen; a yes /
+  no `approve` with `question: true` follows unless `problems` is non-empty. With `missing_images`, Elisa first asks
+  whether to download them (tool `sandbox pull IMAGE…`) and then sends the preview again
+- `sandbox_images` {images: [{image, lang, version, label, purpose, stable, project, default, present, size_mb,
+  disk_mb, pinned}], error?} (`default`: the line used with no project version, and by plugin installers) — the pinned image list and what is on this machine (on `/sandbox`, after a download, and on a
+  `sandbox` list request); `elisa sandbox list --json` prints the same without a session
+- `image_pull` {image, state: "pulling"|"done"|"kept"|"cancelled"|"failed", text, done?, layers?, elapsed_s?} — a
+  download's progress and end; `interrupt` cancels it
 - `plugin_result` {op, name, ok, text} — after add / remove / enable / disable / update / trust
 - `project_trust` {path, hash, text, commands, rules, plugins} — before the project's trust question
 - `approve` gains `rule` (the pattern "always allow this pattern" would save; answer `"rule"`) and `question`
 
 Request: `{"type":"plugin","op":"list"|"add"|"remove"|"enable"|"disable"|"update"|"trust", "path": "…"}` (add) or
 `"name": "…"` (the rest; `trust` with `"project"` trusts the project's commands) — the same as sending `/plugin OP ARG`.
+`{"type":"sandbox","op":"list"|"pull","name":"…"}` — the same as sending `/sandbox OP NAME` (a pull asks first).
 
 Code: `src/plugins.rs`, `src/commands.rs`, `src/perms.rs`.
+
+## Sandbox images
+
+Elisa runs code (`run_code`) and installs plugins only in images from one pinned list (`src/images.rs`). Nothing
+else can ever be downloaded, plugin manifests cannot name images, and the model has no download tool.
+
+| Image | Stable | ~download |
+|---|---|---|
+| `python:3.15-alpine` | yes | 20 MB |
+| `python:3.14-alpine` | | 18 MB |
+| `python:3.13-alpine` | | 17 MB |
+| `node:26-alpine` | yes (Active LTS) | 68 MB |
+| `node:24-alpine` | | 62 MB |
+| `node:22-alpine` | | 61 MB |
+| `rust:1.99-alpine` | yes | 351 MB |
+| `rust:1.91-alpine` | (older, kept) | 330 MB |
+| `golang:1.27-alpine` | yes | 72 MB |
+| `golang:1.26-alpine` | | 69 MB |
+| `bash:5.3` | yes | 7 MB |
+| `bash:5.2` | (older, kept) | 7 MB |
+
+"Stable" is the newest line that has had at least one patch release and still gets security fixes (checked
+against python.org, nodejs.org, go.dev and static.rust-lang.org, and that the tag exists on Docker Hub; the date is
+in `images.rs`). `rust:1.91-alpine` and `bash:5.2` are older lines kept because many machines (and older plugin
+locks) already have them; Rust is backward compatible, so a project minimum they meet still runs on them.
+
+**What is here comes first.** A run with no project version uses the newest listed line of that language that is
+already on the machine, and stable only when none is (which then asks for the download). When that line is not
+stable, the result says so once per session per language (`note: using python 3.13 (on this Mac); stable is 3.15,
+/sandbox pull python to get it`). Plugin installers pick the same way.
+
+**Version from the project.** `run_code` picks the line from the project's small version files, read on the host
+(at the project root, else the nearest one upward to the repository root; nothing goes into the container):
+Python `.python-version`, `pyproject.toml` `requires-python`, `runtime.txt`; Node `.nvmrc`, `.node-version`,
+`package.json` `engines.node`; Rust `rust-toolchain(.toml)`, `Cargo.toml` `rust-version`; Go `go.mod` `toolchain` /
+`go`. A project version wins: a minimum (`>=3.11`, `^20`, `~=3.12`) resolves to the newest listed line that
+satisfies it. When that line is missing, Elisa asks to download it; on a no, the call runs on the newest present line
+that still fits (with a note), and that image is not asked about again in the session. If no present line fits, the
+model gets the usual missing-image result. A pin outside the list falls back to the line used with no project version,
+with a one-line note. The model may pass `version`, which is checked against the list the same way.
+
+**Download only with your yes.** When `run_code`, or a plugin install or start, fails because a listed image is
+missing (a structured marker: `_meta["elisa/missing_image"]` on the run_code result, `elisa:missing-image=IMAGE` from
+a plugin; never text matching), Elisa asks yes / no — in the terminal UI, plain mode, and over JSONL (an `approve`
+with `question: true`, tool `sandbox pull IMAGE`). Yes: `docker pull` against the same daemon the runs use, with a
+summarised progress line (layers done, time); Esc / Ctrl-C kills the pull's process group. Then the blocked call is
+retried once. No: the model gets the usual "missing image" result. Colima not running: it says `colima start`
+(Elisa never starts it). Every download (done, declined, cancelled, failed) is an `image_pull` audit entry.
+
+**Digests: trust on first download.** `~/.elisa/images.lock` records each image's digest the first time it is
+downloaded. If a later download brings a different digest, Elisa warns and asks again; no keeps the old image.
+
+**Ahead of time.** `/sandbox` lists the images (purpose, stable / this project / on this Mac — the present line runs
+and installers use while stable is missing —, present or missing, size on disk);
+`/sandbox pull NAME|IMAGE|stable|project|all` asks first with the total size (`all`, `stable`, `project` take only
+missing images; a single name downloads it again). From a shell: `elisa sandbox list [--json]` and
+`elisa sandbox pull NAME… [--yes] [--json]` (asks y/N on a terminal; without one it needs `--yes`). Names are an
+image (`golang:1.26-alpine`), a language (`go` = its stable line) or a language with a version (`go@1.26`,
+`python 3.14`). The app has a Sandbox Images window (menu, or `--sandbox`) with Download buttons, and Plugin Setup
+shows "Download image" when a plugin's image is missing.
 
 ## Model connections
 
@@ -643,7 +715,7 @@ env = { GITHUB_TOKEN = "..." }             # extra environment for a command ser
     No network.
 - **Built-in code sandbox (opt-in).** With `sandbox = "colima"` in `~/.config/elisa/config.toml` the session also
   starts `elisa --mcp-serve run --timeout N --fetch-timeout M` (`src/mcp_run.rs`), whose one tool
-  `run_code(language, code, stdin?, deps?)` (language: python, javascript, bash, rust, go)
+  `run_code(language, code, stdin?, deps?, version?)` (language: python, javascript, bash, rust, go)
   runs a short snippet in a throwaway container and returns the exit code, the time, stdout and stderr (stdout cut at
   4000 characters with a `[… cut …]` note; stderr at 2000, keeping its first quarter and its end, where a traceback
   says what went wrong; a run that prints more than 1 MB is stopped). A non-zero exit or a timeout is an error result
@@ -654,17 +726,18 @@ env = { GITHUB_TOKEN = "..." }             # extra environment for a command ser
   ```sh
   brew install colima docker
   colima start                     # Elisa never starts (or stops) Colima itself
-  docker pull python:3.13-alpine   # python      (75 MB on disk)
-  docker pull node:22-alpine       # javascript  (235 MB)
-  docker pull bash:5.2             # bash        (26 MB)
-  docker pull rust:1.91-alpine     # rust, optional: compile + run (1.4 GB)
-  docker pull golang:1.25-alpine   # go, optional: compile + run
+  elisa sandbox pull stable        # asks, then downloads the stable image of each language
+  elisa sandbox pull project       # or just the ones this project's version files ask for
   ```
+
+  Images can also be left to the moment they are needed: see "Sandbox images". The version comes from the project
+  (`.python-version`, `package.json` engines, `go.mod`, … ) or the optional `version` argument, else the newest listed line already here, else stable; the
+  result's status line names the image (`exit 0 · 0.14 s · python:3.13-alpine`).
 
   The daemon is `DOCKER_HOST` if set, else `~/.colima/default/docker.sock`, else `/var/run/docker.sock`, handed to the
   docker CLI as `DOCKER_HOST` (your docker context is not used or changed). No daemon: the model gets "Colima isn't
-  running — start it with `colima start`". A missing image is never pulled inside a call (too slow); the model gets
-  the exact `docker pull` line instead. Every run is
+  running — start it with `colima start`". A missing image is never pulled by the model: the call
+  returns a structured marker and Elisa asks you whether to download it (see "Sandbox images"). Every run is
   `docker run --rm -i --pull never --name elisa-run-… --init --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m
   --memory 256m --memory-swap 256m --cpus 1 --pids-limit 64 --user 65534:65534 --cap-drop ALL --security-opt
   no-new-privileges --log-driver none` (rust's /tmp allows exec for the binary it compiles): no network, no host

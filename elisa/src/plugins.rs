@@ -91,8 +91,11 @@ pub enum Installer { Npm, Pip, Cargo }
 impl Installer {
     fn parse(s: &str) -> Option<Installer> { match s { "npm" => Some(Installer::Npm), "pip" => Some(Installer::Pip), "cargo" => Some(Installer::Cargo), _ => None } }
     pub fn word(self) -> &'static str { match self { Installer::Npm => "npm", Installer::Pip => "pip", Installer::Cargo => "cargo" } }
-    /// the image that installs and runs it (the same ones the code sandbox uses; pulled by the user, never by Elisa)
-    pub fn image(self) -> &'static str { match self { Installer::Npm => "node:22-alpine", Installer::Pip => "python:3.13-alpine", Installer::Cargo => "rust:1.91-alpine" } }
+    /// the sandbox language whose image installs and runs it
+    pub fn lang(self) -> &'static str { match self { Installer::Npm => "javascript", Installer::Pip => "python", Installer::Cargo => "rust" } }
+    /// the stable image of its language on Elisa's list (`images.rs`), used when none of its lines is present
+    /// (`Docker::installer_image` picks); a manifest cannot name an image. Downloaded only when the user says yes.
+    pub fn image(self) -> &'static str { crate::images::stable(self.lang()).image }
     /// the install command inside the throwaway container (no shell: each word one argument)
     fn install_args(self, package: &str, version: &str) -> Vec<String> {
         let v: Vec<&str> = match self {
@@ -367,7 +370,7 @@ pub struct Docker { bin: PathBuf, host: String, from_env: bool, tag: String }
 pub fn home_tag(home: &Path) -> String { crate::pins::sha256_hex(home.display().to_string().as_bytes())[..8].to_string() }
 
 /// (exit code, stdout, stderr) of a finished command; Err when it could not start or ran past `timeout` (killed)
-fn run_cmd(mut cmd: Command, timeout: Duration) -> Result<(Option<i32>, String, String), String> {
+pub(crate) fn run_cmd(mut cmd: Command, timeout: Duration) -> Result<(Option<i32>, String, String), String> {
     use std::io::Read;
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("cannot run docker: {e}"))?;
@@ -415,22 +418,69 @@ impl Docker {
         c
     }
 
+    /// the docker CLI with these arguments, pointed at the same daemon as every run (`images::pull`)
+    pub fn command(&self, args: &[&str]) -> Command { self.cmd(args) }
+
     fn why(&self, err: &str) -> String {
         if err.contains("Cannot connect to the Docker daemon") || err.contains("failed to connect to the docker API") || err.contains("Is the docker daemon running") {
             crate::mcp_run::NOT_RUNNING.to_string()
         } else { format!("docker: {}", tail(err, 4)) }
     }
 
-    /// the command that pulls `image` (the user runs it; Elisa never pulls)
-    pub fn pull_cmd(&self, image: &str) -> String {
-        if self.from_env { format!("docker pull {image}") } else { format!("docker -H {} pull {image}", self.host) }
+    /// How to get a missing image: a listed one Elisa downloads when the user says yes (`/sandbox pull`, `elisa
+    /// sandbox pull`); anything else (an image an older install recorded) the user pulls themselves.
+    pub fn pull_hint(&self, image: &str) -> String {
+        if crate::images::listed(image).is_some() { return format!("Elisa can download it: /sandbox pull {image} (or elisa sandbox pull {image})"); }
+        if self.from_env { format!("pull it with: docker pull {image}") } else { format!("pull it with: docker -H {} pull {image}", self.host) }
     }
 
-    pub fn image_present(&self, image: &str) -> Result<bool, String> {
-        let (code, _, err) = run_cmd(self.cmd(&["image", "inspect", "--format", "{{.Id}}", image]), Duration::from_secs(15))?;
-        if code == Some(0) { return Ok(true); }
-        if err.contains("No such image") || err.contains("No such object") { return Ok(false); }
+    pub fn image_present(&self, image: &str) -> Result<bool, String> { Ok(self.image_info(image)?.is_some()) }
+
+    /// The image an installer uses: the newest listed line of its language that is present, else stable (which then
+    /// is offered for download).
+    pub fn installer_image(&self, inst: Installer) -> &'static str {
+        let have = self.image_sizes();
+        crate::images::default_line(inst.lang(), &|i| have.contains_key(i.image)).image
+    }
+
+    /// a local image's id, size and repository digest; None when it is not there
+    pub fn image_info(&self, image: &str) -> Result<Option<crate::images::Local>, String> {
+        let (code, out, err) = run_cmd(self.cmd(&["image", "inspect", "--format", "{{.Id}}|{{.Size}}|{{range .RepoDigests}}{{.}} {{end}}", image]), Duration::from_secs(15))?;
+        if code == Some(0) {
+            let mut p = out.trim().splitn(3, '|');
+            let id = p.next().unwrap_or("").to_string();
+            let bytes = p.next().and_then(|b| b.trim().parse().ok()).unwrap_or(0);
+            let digest = p.next().and_then(|d| d.split_whitespace().next()).map(str::to_string);
+            return Ok(Some(crate::images::Local { id, bytes, digest }));
+        }
+        if err.contains("No such image") || err.contains("No such object") || err.contains("not found") { return Ok(None); }
         Err(self.why(&err))
+    }
+
+    /// What `docker image ls` reports as each image's size (unpacked, on disk; `image inspect` gives the content
+    /// size, which with the containerd store is the download): REPO:TAG → bytes
+    pub fn image_sizes(&self) -> std::collections::HashMap<String, u64> {
+        let Ok((Some(0), out, _)) = run_cmd(self.cmd(&["image", "ls", "--format", "{{.Repository}}:{{.Tag}}|{{.Size}}"]), Duration::from_secs(15)) else { return Default::default() };
+        out.lines().filter_map(|l| {
+            let (name, size) = l.trim().split_once('|')?;
+            let s = size.trim();
+            let at = s.find(|c: char| c.is_ascii_alphabetic())?;
+            let n: f64 = s[..at].trim().parse().ok()?;
+            let mult = match &s[at..] { "B" => 1.0, "kB" | "KB" => 1e3, "MB" => 1e6, "GB" => 1e9, "TB" => 1e12, _ => return None };
+            Some((name.to_string(), (n * mult) as u64))
+        }).collect()
+    }
+
+    /// `docker tag SRC DST` (puts a pinned image back under its tag)
+    pub fn tag(&self, src: &str, dst: &str) -> Result<(), String> {
+        let (code, _, err) = run_cmd(self.cmd(&["tag", src, dst]), Duration::from_secs(30))?;
+        if code == Some(0) { Ok(()) } else { Err(self.why(&err)) }
+    }
+
+    /// `docker rmi IMAGE`
+    pub fn rmi(&self, image: &str) -> Result<(), String> {
+        let (code, _, err) = run_cmd(self.cmd(&["rmi", image]), Duration::from_secs(60))?;
+        if code == Some(0) { Ok(()) } else { Err(self.why(&err)) }
     }
 
     /// the volume is there (docker would otherwise make an empty one when a container names it)
@@ -450,7 +500,7 @@ impl Docker {
     /// installed tree in a second one with no network.
     fn install(&self, plugin: &str, s: &Server, say: &mut dyn FnMut(&str)) -> Result<LockServer, String> {
         let inst = s.installer.ok_or("nothing to install for a host server")?;
-        let (image, vol) = (inst.image(), s.volume(plugin, &self.tag));
+        let (image, vol) = (self.installer_image(inst), s.volume(plugin, &self.tag));
         self.volume_rm(&vol)?;
         let label = format!("elisa.plugin={plugin}");
         let (code, _, err) = run_cmd(self.cmd(&["volume", "create", "--label", &label, "--label", &format!("elisa.home={}", self.tag), &vol]), Duration::from_secs(30))?;
@@ -468,7 +518,7 @@ impl Docker {
         let (code, out, err) = r.map_err(fail)?;
         if code != Some(0) {
             if code == Some(125) && (err.contains("No such image") || err.contains("Unable to find image")) {
-                return Err(fail(format!("the image {image} is not on this machine; pull it once with: {}", self.pull_cmd(image))));
+                return Err(fail(format!("{}={image} · the image {image} is not on this machine; {}", crate::images::MARKER, self.pull_hint(image))));
             }
             let detail = tail(&format!("{out}\n{err}"), 6);
             return Err(fail(format!("{}: {} install failed (exit {}):\n{detail}", s.name, inst.word(), code.map_or("?".into(), |c| c.to_string()))));
@@ -571,11 +621,14 @@ pub struct Preview {
     pub json: Value,
     /// what stops the install (no Colima, a missing image): shown, and nothing can be approved
     pub problems: Vec<String>,
+    /// listed images that are not on this machine (a session offers to download them, then previews again)
+    pub missing_images: Vec<&'static str>,
 }
 
 /// What `add` / `update` will do, before anything happens. `old`: the installed manifest (update).
 pub fn preview(m: &Manifest, src: &Path, old: Option<&Manifest>, home: &Path) -> Preview {
     let mut problems = Vec::new();
+    let mut missing_images: Vec<&'static str> = Vec::new();
     let containers = m.servers.iter().any(|s| !s.host);
     let docker = if containers { Some(Docker::find(home)) } else { None };
     if let Some(Err(e)) = &docker { problems.push(e.clone()); }
@@ -591,15 +644,26 @@ pub fn preview(m: &Manifest, src: &Path, old: Option<&Manifest>, home: &Path) ->
         let filter = if s.filter.is_empty() { "all its tools (known after install)".to_string() } else { s.filter.describe() };
         let env: Vec<&str> = s.env.iter().map(|(k, _)| k.as_str()).collect();
         let mut image_present = Value::Null;
+        let mut image_name: Option<&'static str> = None;
         if s.host {
             t.push_str(&format!("  ⚠ {} runs DIRECTLY ON THIS MAC, not in a container: `{}`\n", s.name, s.command.join(" ")));
             t.push_str("    it can read and change anything you can; Elisa installs nothing for it\n");
         } else if let Some(i) = s.installer {
             t.push_str(&format!("  {} · {} {}@{} · runs in a container with no network\n", s.name, i.word(), s.package, s.version));
-            let img = i.image();
+            let img = match &docker { Some(Ok(d)) => d.installer_image(i), _ => i.image() };
+            image_name = Some(img);
             let have = match &docker { Some(Ok(d)) => match d.image_present(img) {
+                Ok(true) if crate::images::listed(img).is_some_and(|l| !l.stable) => {
+                    image_present = json!(true);
+                    format!("on this machine; stable is {}, /sandbox pull to use it", i.image())
+                }
                 Ok(true) => { image_present = json!(true); "on this machine".to_string() }
-                Ok(false) => { image_present = json!(false); problems.push(format!("the image {img} is not on this machine; pull it once with: {}", d.pull_cmd(img))); "NOT on this machine".to_string() }
+                Ok(false) => {
+                    image_present = json!(false);
+                    if !missing_images.contains(&img) { missing_images.push(img); }
+                    problems.push(format!("the image {img} is not on this machine; {}", d.pull_hint(img)));
+                    "NOT on this machine".to_string()
+                }
                 Err(e) => { problems.push(e.clone()); "unknown".to_string() }
             }, _ => "unknown".to_string() };
             t.push_str(&format!("    image {img} ({have}) · install: a throwaway container, network on for the download only\n"));
@@ -614,7 +678,7 @@ pub fn preview(m: &Manifest, src: &Path, old: Option<&Manifest>, home: &Path) ->
         if !env.is_empty() { t.push_str(&format!("    environment: {}\n", env.join(", "))); }
         t.push_str(&format!("    tools offered: {filter}\n"));
         servers.push(json!({"name": s.name, "runs": s.runs(), "installer": s.installer.map(Installer::word), "package": s.package, "version": s.version,
-            "image": s.installer.map(Installer::image), "image_present": image_present, "command": s.command,
+            "image": image_name, "image_present": image_present, "command": s.command,
             "mounts": s.mounts.iter().map(|mt| json!({"path": mt.path, "write": mt.write})).collect::<Vec<_>>(), "env": env, "tools": filter}));
     }
     let mut rules = Vec::new();
@@ -640,8 +704,8 @@ pub fn preview(m: &Manifest, src: &Path, old: Option<&Manifest>, home: &Path) ->
     let json = json!({"name": m.name, "version": m.version, "old_version": old.map(|o| o.version.clone()), "description": m.description,
         "source": src.display().to_string(), "servers": servers, "rules": rules, "host": m.servers.iter().any(|s| s.host),
         "commands": cmds.iter().map(|c| json!({"name": c.name, "description": c.description})).collect::<Vec<_>>(),
-        "notes": m.notes, "problems": problems});
-    Preview { text: t, json, problems }
+        "notes": m.notes, "problems": problems, "missing_images": missing_images});
+    Preview { text: t, json, problems, missing_images }
 }
 
 // ---------- operations ----------
@@ -1074,6 +1138,10 @@ fn prepare_run(home: &Path, plugin: &str, server: &str, project: Option<&Path>) 
     let lock = Lock::load(&dir).unwrap_or_default();
     let lk = lock.of(s).ok_or_else(|| format!("not installed as declared: /plugin update {plugin}"))?;
     let d = Docker::find(home)?;
+    // a missing image: said first on the line, so the session can offer to download it (`images::marked`)
+    if !d.image_present(&lk.image)? {
+        return Err(format!("{}={} · the image {} is not on this machine; {}", crate::images::MARKER, lk.image, lk.image, d.pull_hint(&lk.image)));
+    }
     if !d.volume_exists(&lk.volume)? { return Err(format!("its installed package (volume {}) is gone: /plugin update {plugin}", lk.volume)); }
     let cname = format!("elisa-plugin-{plugin}-{server}-{}", std::process::id());
     let args = run_args(plugin, s, lk, &cname, home, project)?;
@@ -1096,6 +1164,8 @@ pub fn run_server(args: &[String]) -> i32 {
             eprintln!("plugin {plugin}/{server}: cannot run docker: {e}");
             1
         }
+        // the marker stays at the start of the line (the session keeps only the first part of the last stderr line)
+        Err(e) if e.starts_with(crate::images::MARKER) => { eprintln!("{e} · plugin {plugin}/{server}"); 2 }
         Err(e) => { eprintln!("plugin {plugin}/{server}: {e}"); 2 }
     }
 }
@@ -1104,7 +1174,7 @@ pub fn run_server(args: &[String]) -> i32 {
 
 const CLI_USAGE: &str = "usage: elisa plugin list [--json] | add PATH [--yes] | remove NAME | enable NAME | disable NAME | update NAME [--yes] | trust NAME [--yes]";
 
-fn confirm(q: &str, yes: bool) -> bool {
+pub(crate) fn confirm(q: &str, yes: bool) -> bool {
     if yes { return true; }
     // SAFETY: isatty only inspects the descriptor
     if unsafe { libc::isatty(0) } != 1 { eprintln!("{q} — no terminal to ask: add --yes to approve"); return false; }

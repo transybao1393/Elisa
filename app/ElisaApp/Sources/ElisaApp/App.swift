@@ -119,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if args.contains("--scorecard") { DispatchQueue.main.async { ScorecardWindow.shared.show(m) } }
         if args.contains("--plugins") { DispatchQueue.main.async { PluginsWindow.shared.show(m) } }
+        if args.contains("--sandbox") { DispatchQueue.main.async { SandboxWindow.shared.show(m) } }
         var pending: [() -> Void] = []
         if let path = opt("--plugins-add") { pending.append { PluginStore.shared.add(path: path, m) } }
         for t in optAll("--send") { pending.append { m.send(t) } }
@@ -212,6 +213,7 @@ struct ElisaMain: App {
                 Button("Model Connections…") { ConnectionsWindow.shared.show(m) }.keyboardShortcut(",")
                 Button("Model Scorecard…") { ScorecardWindow.shared.show(m) }
                 Button("Plugins…") { PluginsWindow.shared.show(m) }
+                Button("Sandbox Images…") { SandboxWindow.shared.show(m) }
                 Divider()
                 Button(m.editsShown ? "Hide Edits" : "Show Edits") { m.toggleEdits() }.keyboardShortcut("o", modifiers: .control)
                 Button("Previous Edit") { m.editPrev() }.keyboardShortcut("[", modifiers: .command)

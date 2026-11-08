@@ -341,6 +341,13 @@ final class AppModel: ObservableObject {
         elisa.send("plugin", f)
     }
 
+    /// `{"type":"sandbox","op":…}`: the same as typing `/sandbox OP NAME` (a pull asks in the chat first)
+    func sendSandbox(_ op: String, _ name: String = "") {
+        var f: [String: Any] = ["op": op]
+        if !name.isEmpty { f["name"] = name }
+        elisa.send("sandbox", f)
+    }
+
     func pick(_ i: Int?) {
         guard picker != nil else { return }
         elisa.send("pick", ["index": i.map { $0 as Any } ?? NSNull()])
@@ -701,6 +708,8 @@ final class AppModel: ObservableObject {
             exited(Int32(n(e, "code")))
         case "plugins", "plugin_preview", "plugin_result", "project_trust":
             PluginStore.shared.event(s(e, "type"), e, self)
+        case "sandbox_images", "image_pull":
+            SandboxStore.shared.event(s(e, "type"), e, self)
         default:
             break
         }

@@ -8,6 +8,7 @@ use crate::outside;
 use crate::perms::Level;
 use crate::commands::FileCommand;
 use crate::plugins;
+use crate::images;
 use serde_json::json;
 use crate::metrics;
 use crate::tools::{self, Access, ToolCtx};
@@ -27,7 +28,7 @@ pub static CANCEL: AtomicBool = AtomicBool::new(false);
 pub static AT_PROMPT: AtomicBool = AtomicBool::new(false);
 pub static ASKING: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "usage: elisa [-p PROMPT] [--yes] [--continue] [--provider NAME] [--base-url U [--type T]] [--model M] [--max-ctx N] [--cwd DIR] [--no-character] [--companion] [--serve-jsonl] [--no-checks] [--theme dark|light] [--demo-states [STATE]] [--version] [-h]\n       elisa eval [--suite NAME|all] [--case ID] [--model M] [--json FILE] [--keep]\n       elisa plugin list | add PATH [--yes] | remove NAME | enable NAME | disable NAME | update NAME [--yes] | trust NAME [--yes]";
+const USAGE: &str = "usage: elisa [-p PROMPT] [--yes] [--continue] [--provider NAME] [--base-url U [--type T]] [--model M] [--max-ctx N] [--cwd DIR] [--no-character] [--companion] [--serve-jsonl] [--no-checks] [--theme dark|light] [--demo-states [STATE]] [--version] [-h]\n       elisa eval [--suite NAME|all] [--case ID] [--model M] [--json FILE] [--keep]\n       elisa plugin list | add PATH [--yes] | remove NAME | enable NAME | disable NAME | update NAME [--yes] | trust NAME [--yes]\n       elisa sandbox list [--json] | pull NAME|IMAGE|stable|project|all [--yes] [--json]";
 const COMPACT_SYSTEM: &str = "You write short, concrete session notes for a coding agent.";
 const COMPACT_OUT: usize = 800;
 const TOOL_PREAMBLE: usize = 240;
@@ -166,6 +167,7 @@ pub fn main_entry() -> i32 {
     if let Some(code) = crate::provider::cli(&raw) { return code; }
     if raw.first().map(String::as_str) == Some("eval") { return crate::eval::cli(&raw[1..]); }
     if matches!(raw.first().map(String::as_str), Some("plugin" | "plugins")) { return crate::plugins::cli(&raw[1..]); }
+    if raw.first().map(String::as_str) == Some("sandbox") { return crate::images::cli(&raw[1..]); }
     let args = match parse_args() { Ok(a) => a, Err(c) => return c };
     if args.serve_jsonl { return crate::jsonl::run(args); }
     let tty = unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 };
@@ -245,6 +247,8 @@ pub fn run_session(args: Args, fe: &mut dyn Frontend) -> i32 {
             s.budget_warning();
             if let Some(id) = s.card_id { s.fe.info(&format!("continuing from state card #{id}")); }
             if args.cont && resumed.is_none() { s.fe.info("no saved session to continue"); }
+            // a plugin server that could not start for a missing image: ask once whether to download it
+            s.offer_plugin_images();
             s.run_repl();
             s.end_memory();
             0
@@ -292,6 +296,9 @@ struct Session<'f> {
     /// Raw text of the current turn's user input (re-sent with the new notes after an auto-compact).
     input: String,
     interactive: bool,
+    /// sandbox images the user said no to this session: a run that has a present line to fall back to is not asked
+    /// about them again
+    declined_images: Vec<&'static str>,
     yolo: bool,
     always: HashSet<String>,
     mem: Option<Mem>,
@@ -424,7 +431,7 @@ impl<'f> Session<'f> {
         }
         // the code sandbox (`run_code`): only when the user switched it on (`sandbox = "colima"`)
         let run_on = cfg.sandbox == "colima" && !cfg.mcp_off.iter().any(|n| n == "run");
-        if run_on && !servers.iter().any(|c| c.name == "run") { servers.push(crate::mcp_host::builtin_run(cfg.sandbox_timeout_s, cfg.sandbox_fetch_timeout_s)); }
+        if run_on && !servers.iter().any(|c| c.name == "run") { servers.push(crate::mcp_host::builtin_run(cfg.sandbox_timeout_s, cfg.sandbox_fetch_timeout_s, &cwd)); }
         // the reasoning tools for small models, last, unless `reason = "off"` or replaced (offered per turn: `reason_turn`)
         let reason_srv = cfg.reason != "off" && !cfg.mcp_off.iter().any(|n| n == crate::mcp_reason::NAME);
         if reason_srv && !servers.iter().any(|c| c.name == crate::mcp_reason::NAME) { servers.push(crate::mcp_host::builtin_reason()); }
@@ -457,7 +464,7 @@ impl<'f> Session<'f> {
         if cfg.transport != crate::provider::Transport::Gateway { watch.disable(); }
         let mut s = Session {
             fe, cfg, client, store, tctx, cwd, max_ctx, vision: false, attach: Vec::new(), mcp, tools: Vec::new(), tools_tokens: 0, project, notes, notes_bg: true,
-            system: String::new(), system_tokens: 0, history: Vec::new(), real: None, calib: None, input: String::new(), interactive, yolo: yes, always,
+            system: String::new(), system_tokens: 0, history: Vec::new(), real: None, calib: None, input: String::new(), interactive, declined_images: Vec::new(), yolo: yes, always,
             mem: None, turn_no: 0, folded: 0, fold_ids: Vec::new(), fold_retry_at: 0, digest_only: false, in_turn: false, folded_this_turn: false, tool_lines: Vec::new(), unsent: false,
             recall_slow: false, save_slow: false, index_rate: None, unindexed: 0, watch,
             card: None, card_id: None, card_ex: None, exchanges: 0, new_card: None, card_broken: false, checks_off: false, outside_mode: outside::Mode::Ask, outside_ok: Vec::new(), ast_stats: AstStats::default(), cards: 0,
@@ -866,6 +873,7 @@ impl<'f> Session<'f> {
         self.plugin_infos = l.infos;
         for n in self.merge_commands() { self.fe.info(&n); }
         self.rebuild_system();
+        self.offer_plugin_images();
     }
 
     fn mcp_names(&self) -> Vec<String> { self.mcp.costs().into_iter().map(|(n, _)| n).collect() }
@@ -900,6 +908,124 @@ impl<'f> Session<'f> {
         lines.join("\n")
     }
 
+    // ---------- sandbox images (`images.rs`) ----------
+
+    /// the `sandbox_images` event (the app's list); quiet when docker cannot be reached
+    fn sandbox_event(&mut self) {
+        let Some(home) = self.home.clone() else { return };
+        match images::status(&home, Some(&self.cwd)) {
+            Ok(rows) => self.fe.event("sandbox_images", &images::status_json(&rows, &home)),
+            Err(e) => self.fe.event("sandbox_images", &json!({"images": [], "error": e})),
+        }
+    }
+
+    /// Downloads listed images after the user said yes (never for the model, never without a person): the question
+    /// (`images::question`, `why` = what needs it), then each `docker pull` with its progress, cancellable with Esc /
+    /// Ctrl-C, every outcome in the audit log. Ok: every image is there now.
+    fn pull_images(&mut self, imgs: &[&'static images::Img], why: Option<String>) -> Result<(), String> {
+        let Some(home) = self.home.clone() else { return Err("no home folder".into()) };
+        if imgs.is_empty() { return Ok(()); }
+        // no Colima: say how to start it (Elisa never does) before anyone is asked anything
+        if let Err(e) = plugins::Docker::find(&home) { self.fe.error(&e); return Err(e); }
+        let names = imgs.iter().map(|i| i.image).collect::<Vec<_>>().join(" ");
+        if !self.interactive {
+            let e = format!("downloading {names} needs a person to say yes: /sandbox pull in an interactive session, or elisa sandbox pull {names} --yes");
+            for i in imgs { images::audit(&self.audit, i.image, "denied", "non-interactive"); }
+            return Err(e);
+        }
+        let q = images::question(imgs, why.as_deref());
+        if imgs.len() > 1 { self.fe.info(&imgs.iter().map(|i| format!("  {} (~{} MB) — {}", i.image, i.mb, i.purpose())).collect::<Vec<_>>().join("\n")); }
+        if !self.fe.ask_yes_no(&format!("sandbox pull {names}"), &q) {
+            for i in imgs { images::audit(&self.audit, i.image, "declined", ""); }
+            self.fe.info("nothing was downloaded");
+            return Err("declined".into());
+        }
+        for i in imgs {
+            let fe: *mut (dyn Frontend + '_) = &mut *self.fe;
+            let mut last = String::new();
+            let t0 = Instant::now();
+            // SAFETY: `fe` is used only inside these callbacks while `pull` runs on this thread; nothing else touches
+            // `self.fe` meanwhile
+            let r = images::pull(&home, i, &|| CANCEL.load(Ordering::SeqCst), &mut |p| unsafe {
+                if p.label() != last {
+                    last = p.label();
+                    (*fe).progress(Some(&Progress { label: last.clone(), frac: (p.layers > 0).then(|| p.done as f32 / p.layers as f32), elapsed_s: p.elapsed_s, done: None }));
+                }
+                (*fe).event("image_pull", &p.json("pulling"));
+            }, &mut |q| unsafe { (*fe).ask_yes_no(&format!("sandbox pull {}", i.image), q) });
+            let label = format!("downloading {}", i.image);
+            let done = |t: &str| Progress { label: label.clone(), frac: Some(1.0), elapsed_s: t0.elapsed().as_secs_f64(), done: Some(t.to_string()) };
+            let (state, text, ok) = match r {
+                Ok(images::Pulled::Ok(t)) => { images::audit(&self.audit, i.image, "ok", &t); ("done", t, true) }
+                Ok(images::Pulled::Kept(t)) => { images::audit(&self.audit, i.image, "kept", &t); ("kept", t, false) }
+                Ok(images::Pulled::Cancelled) => { images::audit(&self.audit, i.image, "cancelled", ""); ("cancelled", format!("download of {} cancelled", i.image), false) }
+                Err(e) => { images::audit(&self.audit, i.image, "error", &e); ("failed", e, false) }
+            };
+            self.fe.progress(Some(&done(state)));
+            self.fe.event("image_pull", &json!({"image": i.image, "state": state, "text": text}));
+            if ok { self.fe.info(&text) } else { self.fe.error(&text) }
+            if !ok { self.sandbox_event(); return Err(text); }
+        }
+        self.sandbox_event();
+        Ok(())
+    }
+
+    /// `/sandbox [list] | pull NAME|IMAGE|stable|project|all`
+    fn sandbox_command(&mut self, arg: &str) {
+        let (op, rest) = arg.split_once(char::is_whitespace).map(|(a, b)| (a, b.trim())).unwrap_or((arg, ""));
+        let Some(home) = self.home.clone() else { self.fe.error("no home folder"); return };
+        match op {
+            "" | "list" => match images::status(&home, Some(&self.cwd)) {
+                Ok(rows) => { self.fe.info(&images::status_text(&rows)); self.fe.event("sandbox_images", &images::status_json(&rows, &home)); }
+                Err(e) => { self.fe.error(&e); self.fe.event("sandbox_images", &json!({"images": [], "error": e})); }
+            },
+            "pull" => {
+                let d = match plugins::Docker::find(&home) { Ok(d) => d, Err(e) => { self.fe.error(&e); return } };
+                let present = |i: &images::Img| d.image_info(i.image).ok().flatten().is_some();
+                match images::targets(rest, Some(&self.cwd), &present) {
+                    Ok((v, _)) if v.is_empty() => self.fe.info("nothing to download: those images are on this machine already"),
+                    Ok((v, again)) => {
+                        let why = (again && v.len() == 1 && present(v[0]))
+                            .then(|| format!("{} is on this machine already; downloading it again updates it. The {} uses", v[0].image, v[0].purpose()));
+                        let _ = self.pull_images(&v, why);
+                    }
+                    Err(e) => self.fe.error(&e),
+                }
+            }
+            _ => self.fe.error("usage: /sandbox [list] | pull NAME|IMAGE|stable|project|all"),
+        }
+    }
+
+    /// Plugin servers that did not start because a listed image is missing: one question for those images, then
+    /// the servers start again (interactive sessions only; elsewhere the startup note says how to get them).
+    fn offer_plugin_images(&mut self) {
+        if !self.interactive { return; }
+        let down = self.mcp.down_for_image();
+        if down.is_empty() { return; }
+        let mut imgs: Vec<&'static images::Img> = Vec::new();
+        for (_, i) in &down { if !imgs.contains(i) { imgs.push(i); } }
+        let who = down.iter().map(|(c, _)| c.name.clone()).collect::<Vec<_>>().join(", ");
+        let why = (imgs.len() == 1).then(|| format!("Plugin server {who} needs"));
+        if self.pull_images(&imgs, why).is_err() { return; }
+        let cfgs: Vec<crate::mcp_host::ServerCfg> = down.into_iter().map(|(c, _)| c).collect();
+        let own: Vec<String> = tools::defs_for(true).into_iter().map(|d| d.name).collect();
+        for (warn, n) in self.mcp.extend(&cfgs, &|n| own.iter().any(|o| o == n)) { if warn { self.fe.error(&n) } else { self.fe.info(&n) } }
+        self.rebuild_system();
+        self.plugins_event();
+    }
+
+    /// A plugin preview that lists missing images: shown, then one question to download them. true: they are
+    /// there now (preview again).
+    fn offer_preview_images(&mut self, op: &str, name: &str, p: &plugins::Preview) -> bool {
+        if p.missing_images.is_empty() || !self.interactive { return false; }
+        let imgs: Vec<&'static images::Img> = p.missing_images.iter().filter_map(|i| images::listed(i)).collect();
+        if imgs.len() != p.missing_images.len() { return false; }
+        self.fe.info(&p.text);
+        self.fe.event("plugin_preview", &json!({"op": op, "name": name, "preview": p.json, "text": p.text}));
+        let why = (imgs.len() == 1).then(|| format!("Plugin {name} needs"));
+        self.pull_images(&imgs, why).is_ok()
+    }
+
     /// `/plugin list | add PATH | remove NAME | enable NAME | disable NAME | update NAME | trust NAME|project`
     fn plugin_command(&mut self, arg: &str) {
         let (op, rest) = arg.split_once(char::is_whitespace).map(|(a, b)| (a, b.trim())).unwrap_or((arg, ""));
@@ -914,9 +1040,20 @@ impl<'f> Session<'f> {
             "add" => {
                 if rest.is_empty() { return need(self, "PATH"); }
                 let (m, src, p) = match plugins::prepare_add(&home, &self.cwd, rest) { Ok(x) => x, Err(e) => return self.plugin_result("add", rest, Err(e)) };
+                let (m, src, p) = if self.offer_preview_images("add", &m.name, &p) {
+                    match plugins::prepare_add(&home, &self.cwd, rest) { Ok(x) => x, Err(e) => return self.plugin_result("add", rest, Err(e)) }
+                } else { (m, src, p) };
                 if let Err(e) = self.plugin_setup("add", &m, &p) { return self.plugin_result("add", &m.name, Err(e)); }
                 let fe = &mut *self.fe;
-                if let Err(e) = plugins::install(&home, &src, &m, &mut |l| fe.info(l)) { return self.plugin_result("add", &m.name, Err(e)); }
+                let mut r = plugins::install(&home, &src, &m, &mut |l| fe.info(l));
+                // the image went missing between the preview and the install: offer it once, then try again
+                if let Some(img) = r.as_ref().err().and_then(|e| images::marked(e)) {
+                    if self.pull_images(&[img], Some(format!("Plugin {} needs", m.name))).is_ok() {
+                        let fe = &mut *self.fe;
+                        r = plugins::install(&home, &src, &m, &mut |l| fe.info(l));
+                    }
+                }
+                if let Err(e) = r { return self.plugin_result("add", &m.name, Err(e)); }
                 let probe = self.plugin_probe(&m.name);
                 self.reload_plugins(Some(&m.name));
                 let mut t = format!("plugin {} {} installed and on", m.name, m.version);
@@ -944,6 +1081,9 @@ impl<'f> Session<'f> {
             "update" => {
                 if rest.is_empty() { return need(self, "NAME"); }
                 let (m, src, p) = match plugins::prepare_update(&home, rest) { Ok(x) => x, Err(e) => return self.plugin_result("update", rest, Err(e)) };
+                let (m, src, p) = if self.offer_preview_images("update", rest, &p) {
+                    match plugins::prepare_update(&home, rest) { Ok(x) => x, Err(e) => return self.plugin_result("update", rest, Err(e)) }
+                } else { (m, src, p) };
                 if let Err(e) = self.plugin_setup("update", &m, &p) { return self.plugin_result("update", rest, Err(e)); }
                 let mine: Vec<String> = self.plugin_servers.iter().filter(|(pl, _)| pl == rest).map(|(_, s)| s.clone()).collect();
                 if !mine.is_empty() { self.mcp.remove(&mine); }
@@ -964,6 +1104,9 @@ impl<'f> Session<'f> {
             "trust" => {
                 if rest.is_empty() { return need(self, "NAME | project"); }
                 let (m, p) = match plugins::prepare_trust(&home, rest) { Ok(x) => x, Err(e) => return self.plugin_result("trust", rest, Err(e)) };
+                let (m, p) = if self.offer_preview_images("trust", rest, &p) {
+                    match plugins::prepare_trust(&home, rest) { Ok(x) => x, Err(e) => return self.plugin_result("trust", rest, Err(e)) }
+                } else { (m, p) };
                 if let Err(e) = self.plugin_setup("trust", &m, &p) { return self.plugin_result("trust", rest, Err(e)); }
                 let r = plugins::trust(&home, rest);
                 if r.is_ok() { self.reload_plugins(Some(rest)); }
@@ -979,6 +1122,7 @@ impl<'f> Session<'f> {
         match cmd {
             "/help" => { let h = self.help(); self.fe.info(&h) }
             "/plugin" | "/plugins" => self.plugin_command(line[cmd.len()..].trim()),
+            "/sandbox" => self.sandbox_command(line[cmd.len()..].trim()),
             "/exit" | "/quit" => return false,
             "/clear" | "/compact" => {
                 if self.history.is_empty() { self.fe.info("history is empty; notes unchanged"); return true; }
@@ -1688,9 +1832,29 @@ impl<'f> Session<'f> {
                                 // the file before the change: which symbols it touched narrows the test check
                                 let before = if write && self.cfg.ast_targeted_checks { checks::before(&self.cwd, input) } else { None };
                                 if write && !self.mcp.owns(name) { self.ledger.before(input, &self.cwd); }
-                                let o = if self.mcp.owns(name) {
+                                let mut o = if self.mcp.owns(name) {
                                     self.mcp.call(name, input, &CANCEL, self.cfg.tool_output_max_chars)
                                 } else { tools::run(name, input, &self.tctx) };
+                                // the sandbox's image is not on this machine (a structured marker, not the words):
+                                // Elisa, not the model, asks the user; on yes it downloads it and runs the call once more
+                                // without the download, a present line that still fits what the project asks for runs it
+                                if let Some((img, fallback)) = self.mcp.take_missing_image().and_then(|(i, f)| images::listed(&i).map(|i| (i, f))) {
+                                    let pulled = if fallback.is_some() && self.declined_images.contains(&img.image) { false } else {
+                                        let r = self.pull_images(&[img], Some(images::needs(img)));
+                                        if matches!(&r, Err(e) if e == "declined") && !self.declined_images.contains(&img.image) { self.declined_images.push(img.image); }
+                                        r.is_ok()
+                                    };
+                                    if pulled {
+                                        o = self.mcp.call(name, input, &CANCEL, self.cfg.tool_output_max_chars);
+                                        let _ = self.mcp.take_missing_image();
+                                    } else if let Some(v) = fallback {
+                                        let mut again = input.clone();
+                                        again["version"] = json!(v);
+                                        o = self.mcp.call(name, &again, &CANCEL, self.cfg.tool_output_max_chars);
+                                        let _ = self.mcp.take_missing_image();
+                                        o.content.push_str(&format!("\nnote: {} is not on this Mac (not downloaded); ran on {} {v}, the newest line here that fits what was asked", img.image, images::display(img.lang)));
+                                    }
+                                }
                                 if !o.is_error && write { checks.edited(&self.cwd, input, before); }
                                 // Elisa's own record of what changed (the notes' file list; checks a summary's claims)
                                 if !o.is_error && !self.mcp.owns(name) { self.ledger.record(name, input, &self.cwd); }

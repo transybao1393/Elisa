@@ -101,11 +101,12 @@ pub fn builtin_web(engine: &str, searxng_url: &str, brave_key: &str) -> ServerCf
 
 /// Elisa's code sandbox (`elisa --mcp-serve run --timeout SECS --fetch-timeout SECS`, `mcp_run.rs`), on when config
 /// `sandbox = "colima"`. Named `run` so its one tool keeps the name `run_code`; its approval key is `mcp:run`.
-pub fn builtin_run(timeout_s: u64, fetch_timeout_s: u64) -> ServerCfg {
+/// `root`: the project folder whose version files (`.python-version`, `go.mod`, …) pick the image (`images::resolve`).
+pub fn builtin_run(timeout_s: u64, fetch_timeout_s: u64, root: &std::path::Path) -> ServerCfg {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "elisa".into());
     // the docker daemon the user chose (`mcp_run::find_daemon`); HOME and PATH come with every server
     ServerCfg { name: "run".into(), command: vec![exe, "--mcp-serve".into(), "run".into(), "--timeout".into(), timeout_s.to_string(),
-        "--fetch-timeout".into(), fetch_timeout_s.to_string()],
+        "--fetch-timeout".into(), fetch_timeout_s.to_string(), "--root".into(), root.display().to_string()],
         env_pass: vec!["DOCKER_HOST".into()], builtin: true, ..ServerCfg::default() }
 }
 
@@ -184,10 +185,13 @@ pub struct Host {
     filter_notes: Vec<String>,
     /// the session's audit log (`audit_to`), for servers added later (`extend`)
     audit: Option<crate::audit::Log>,
+    /// the image the last call's built-in server named as missing, and the present version it could run on instead
+    /// (`take_missing_image`)
+    missing_image: Option<(String, Option<String>)>,
 }
 
 impl Default for Host {
-    fn default() -> Self { Host { servers: Vec::new(), setup: SETUP_TIMEOUT, pins: None, down: Vec::new(), filter_notes: Vec::new(), audit: None } }
+    fn default() -> Self { Host { servers: Vec::new(), setup: SETUP_TIMEOUT, pins: None, down: Vec::new(), filter_notes: Vec::new(), audit: None, missing_image: None } }
 }
 
 /// Stops every server, in parallel (each may take up to `mcp::STOP_GRACE` + 0.5 s to stop by itself), and logs it.
@@ -627,6 +631,7 @@ impl Host {
     /// is restarted on the next call (once per session).
     pub fn call(&mut self, name: &str, input: &Value, cancel: &AtomicBool, max_chars: usize) -> crate::tools::ToolOutput {
         let out = |content: String, is_error: bool| crate::tools::ToolOutput { content, is_error };
+        self.missing_image = None;
         let setup = self.setup;
         let Some(s) = self.servers.iter_mut().find(|s| s.tools.iter().any(|t| t.exposed == name)) else { return out(format!("no MCP tool {name}"), true) };
         if let Err(e) = s.ready(setup, cancel) { return out(e, true); }
@@ -649,12 +654,27 @@ impl Host {
                     None => None,
                 }).collect::<Vec<_>>().join("\n")).unwrap_or_default();
                 if text.is_empty() { text = r["structuredContent"].to_string(); }
+                // Elisa's own sandbox names an image that is not on this machine (`images::META_KEY`); only a built-in
+                // server can, and only a listed image is ever offered for download
+                let missing = if s.cfg.builtin { r["_meta"][crate::images::META_KEY].as_str().map(|i| (i.to_string(),
+                    r["_meta"][crate::images::FALLBACK_KEY].as_str().map(str::to_string))) } else { None };
                 if text.chars().count() > max_chars {
                     text = format!("{}\n[… cut at {max_chars} characters]", text.chars().take(max_chars).collect::<String>());
                 }
+                self.missing_image = missing;
                 out(text, r["isError"].as_bool().unwrap_or(false))
             }
         }
+    }
+
+    /// the image the last call's built-in server said was missing (`images::META_KEY`), with the version of a present
+    /// line that still fits (`images::FALLBACK_KEY`), once
+    pub fn take_missing_image(&mut self) -> Option<(String, Option<String>)> { self.missing_image.take() }
+
+    /// servers that did not start because a listed image is not on this machine (`images::MARKER` in their last
+    /// stderr line): (their config, the image)
+    pub fn down_for_image(&self) -> Vec<(ServerCfg, &'static crate::images::Img)> {
+        self.down.iter().filter_map(|(c, e)| crate::images::marked(e).map(|i| (c.clone(), i))).collect()
     }
 }
 

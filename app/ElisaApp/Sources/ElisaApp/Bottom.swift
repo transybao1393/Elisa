@@ -232,10 +232,18 @@ struct PermissionBox: View {
                     Spacer()
                     Text(a.tool).font(Fonts.mono(11.5)).foregroundStyle(p.fg2).lineLimit(1)
                 }
-                Button { PluginSetupWindow.shared.reopen(m) } label: {
-                    Text("details in the Plugin Setup window").font(Fonts.mono(11.5)).foregroundStyle(p.acc).underline()
+                if a.tool.hasPrefix("sandbox pull") {
+                    // Elisa's own download question (a missing sandbox image): the images are listed in their window
+                    Button { SandboxWindow.shared.show(m) } label: {
+                        Text("see the Sandbox Images window").font(Fonts.mono(11.5)).foregroundStyle(p.acc).underline()
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button { PluginSetupWindow.shared.reopen(m) } label: {
+                        Text("details in the Plugin Setup window").font(Fonts.mono(11.5)).foregroundStyle(p.acc).underline()
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             } else {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 (Text("Allow \(word)\(what.isEmpty ? "" : " ")").font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg)

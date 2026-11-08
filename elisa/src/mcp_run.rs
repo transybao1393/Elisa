@@ -21,9 +21,15 @@
 //! read-only at /deps and the language pointed at `/deps/KEY` (PYTHONPATH, NODE_PATH, a Cargo project built
 //! `--offline --locked`, GOMODCACHE with GOPROXY=off). The fetch has its own limit (config `sandbox_fetch_timeout`).
 //!
+//! The image (`images.rs`, the one pinned list): the `version` the model passed (checked against the list), else what
+//! the project under `--root DIR` declares (`.python-version`, `package.json` engines, `go.mod`, …), else the stable
+//! line of the language. The result's status line names the image; a project version that is not on the list runs on
+//! stable with a one-line note.
+//!
 //! The daemon: `DOCKER_HOST` if set, else Colima's `~/.colima/default/docker.sock`, else `/var/run/docker.sock`,
 //! handed to the docker CLI as `DOCKER_HOST` (the user's docker context is never read or changed). This server never
-//! starts Colima and never pulls an image (`--pull never`): it says what to run instead.
+//! starts Colima and never pulls an image (`--pull never`). A missing image comes back as an error result whose
+//! `_meta` names it (`images::META_KEY`): the session (not the model) then asks the user whether to download it.
 use regex::Regex;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -59,35 +65,31 @@ const OUTPUT_STOP: usize = 1 << 20;
 const STDOUT_CHARS: usize = 4000;
 const STDERR_CHARS: usize = 2000;
 
-/// (language, image, file name, command run in /tmp). Images are pinned to a minor release; pull each once with
-/// `docker pull IMAGE` (README "MCP servers").
-pub const LANGS: [(&str, &str, &str, &str); 5] = [
-    ("python", "python:3.13-alpine", "main.py", "python3 main.py"),
-    ("javascript", "node:22-alpine", "main.js", "node main.js"),
-    ("bash", "bash:5.2", "main.sh", "bash main.sh"),
-    ("rust", "rust:1.91-alpine", "main.rs", "rustc --edition 2021 -o main main.rs && ./main"),
-    ("go", "golang:1.25-alpine", "main.go", "go run main.go"),
+/// (language, file name, command run in /tmp); the images are in `images::IMAGES`
+pub const LANGS: [(&str, &str, &str); 5] = [
+    ("python", "main.py", "python3 main.py"),
+    ("javascript", "main.js", "node main.js"),
+    ("bash", "main.sh", "bash main.sh"),
+    ("rust", "main.rs", "rustc --edition 2021 -o main main.rs && ./main"),
+    ("go", "main.go", "go run main.go"),
 ];
 
 /// the tools this server lists (MCP `tools/list`); kept short for small context windows
 pub fn tools() -> Value {
     json!([
-        {"name": "run_code", "description": "Run a short snippet in an offline sandbox (no network, no project files); returns stdout, stderr, exit code, time. deps: exact pins fetched online first (six==1.16.0, left-pad@1.3.0, itoa@1.0.11, golang.org/x/text@v0.14.0).",
+        {"name": "run_code", "description": "Run a short snippet in an offline sandbox (no network, no project files); returns stdout, stderr, exit code, time. deps: exact pins fetched online first (six==1.16.0, left-pad@1.3.0, itoa@1.0.11, golang.org/x/text@v0.14.0). version: optional (default: the project's, else the installed one).",
          "inputSchema": {"type": "object", "properties": {
              "language": {"type": "string", "enum": ["python", "javascript", "bash", "rust", "go"]},
              "code": {"type": "string"},
              "stdin": {"type": "string"},
-             "deps": {"type": "array", "items": {"type": "string"}}}, "required": ["language", "code"]}},
+             "deps": {"type": "array", "items": {"type": "string"}},
+             "version": {"type": "string"}}, "required": ["language", "code"]}},
     ])
 }
 
 /// the language a model asked for, with the usual aliases
-fn lang(l: &str) -> Option<&'static (&'static str, &'static str, &'static str, &'static str)> {
-    let l = l.trim().to_ascii_lowercase();
-    let l = match l.as_str() {
-        "py" | "python3" => "python", "js" | "node" | "nodejs" => "javascript", "sh" | "shell" => "bash", "rs" => "rust",
-        "golang" => "go", o => o,
-    };
+fn lang(l: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
+    let l = crate::images::lang_name(l)?;
     LANGS.iter().find(|x| x.0 == l)
 }
 
@@ -215,7 +217,7 @@ pub fn volume(lname: &str, prefix: Option<&str>) -> String {
 /// rust deps as a Cargo manifest: exact versions, features from `name[a,b]@1.2.3`, the image's rust as rust-version
 /// (so the resolver prefers releases this compiler can build)
 fn cargo_manifest(image: &str, deps: &[String]) -> String {
-    let rv = image.split(':').nth(1).and_then(|t| t.split('-').next()).unwrap_or("1.91");
+    let rv = image.split(':').nth(1).and_then(|t| t.split('-').next()).unwrap_or(crate::images::stable("rust").version);
     let mut m = format!("[package]\nname = \"snippet\"\nversion = \"0.1.0\"\nedition = \"2021\"\nrust-version = \"{rv}\"\n\n[dependencies]\n");
     for d in deps {
         let (name, ver) = d.rsplit_once('@').unwrap_or((d, ""));
@@ -318,8 +320,8 @@ fn unique_name(kind: &str) -> String {
 /// `$ELISA_CODE`) to /tmp, drops the variable, and runs it under a backstop `timeout`. With `deps` (the cache
 /// volume and the set's key) the volume is mounted read-only at /deps and the language is pointed at /deps/KEY;
 /// everything else, `--network none` first of all, is the same.
-pub fn run_args(name: &str, lname: &str, timeout: Duration, deps: Option<(&str, &str)>) -> Vec<String> {
-    let (_, image, file, plain) = *lang(lname).unwrap_or(&LANGS[0]);
+pub fn run_args(name: &str, lname: &str, image: &str, timeout: Duration, deps: Option<(&str, &str)>) -> Vec<String> {
+    let (_, file, plain) = *lang(lname).unwrap_or(&LANGS[0]);
     let (tmp, mem) = limits(lname, deps.is_some());
     // rust and go run the binary they compiled into /tmp; everything else only reads its file there
     let exec = if matches!(lname, "rust" | "go") { "exec" } else { "noexec" };
@@ -375,7 +377,26 @@ pub struct Outcome {
     pub stopped: Option<String>,
     /// with deps: "deps cached" or "deps fetched in 3.1 s" (on the status line)
     pub deps: Option<String>,
+    /// the image it ran in (on the status line)
+    pub image: String,
+    /// the project's version is not on the list: what ran instead (a line after the status line)
+    pub note: Option<String>,
 }
+
+/// Why a call could not run at all: words for the model, and (an image that is not on this machine) the image, for
+/// the session to offer a download.
+#[derive(Debug, PartialEq)]
+pub struct Fail {
+    pub text: String,
+    /// the listed image that is not on this machine (offered for download by the session)
+    pub missing: Option<String>,
+    /// with `missing`: the version of the newest present line that still fits, which the session runs on when the user
+    /// says no to the download
+    pub fallback: Option<String>,
+}
+
+impl From<String> for Fail { fn from(text: String) -> Fail { Fail { text, missing: None, fallback: None } } }
+impl From<&str> for Fail { fn from(text: &str) -> Fail { Fail { text: text.into(), missing: None, fallback: None } } }
 
 /// Reads a stream to its end: (kept bytes, bytes in all). Keeps the first KEEP_BYTES; with `tail` (stderr, where a
 /// traceback ends with the line that matters) a longer stream keeps its first and last KEEP_BYTES / 2 instead.
@@ -421,7 +442,7 @@ fn kill(docker: &Path, host: &str, name: &str) {
 /// image, no daemon) come back as Err, in words for the model.
 #[allow(clippy::too_many_arguments)]
 fn exec(docker: &Path, daemon: &Daemon, name: &str, args: Vec<String>, env: &[(&str, &str)], stdin: Option<&str>,
-    timeout: Duration, cancel: &mut dyn FnMut() -> bool, lname: &str, image: &str) -> Result<Outcome, String> {
+    timeout: Duration, cancel: &mut dyn FnMut() -> bool, lname: &str, image: &str) -> Result<Outcome, Fail> {
     let t0 = Instant::now();
     let mut c = Command::new(docker);
     c.args(args).env("DOCKER_HOST", &daemon.host).env_remove("DOCKER_CONTEXT")
@@ -462,34 +483,58 @@ fn exec(docker: &Path, daemon: &Daemon, name: &str, args: Vec<String>, env: &[(&
     if stdout.is_empty() && (code == Some(125) || (code == Some(1) && stopped.is_none())) {
         let e = String::from_utf8_lossy(&stderr);
         if code == Some(125) && (e.contains("No such image") || e.contains("Unable to find image") || e.contains("pull access denied")) {
-            let h = if daemon.from_env { String::new() } else { format!(" -H {}", daemon.host) };
-            return Err(format!("the {lname} image {image} is not on this machine; pull it once (outside Elisa) with: docker{h} pull {image}"));
+            let _ = daemon;
+            return Err(Fail { text: format!("the {lname} image {image} is not on this machine, so nothing was run (the user can download it with /sandbox pull {image})"),
+                missing: Some(image.to_string()), fallback: None });
         }
         if e.contains("Cannot connect to the Docker daemon") || e.contains("failed to connect to the docker API") {
             return Err(NOT_RUNNING.into());
         }
-        if code == Some(125) { return Err(format!("docker could not start the sandbox: {}", e.trim())); }
+        if code == Some(125) { return Err(format!("docker could not start the sandbox: {}", e.trim()).into()); }
     }
-    Ok(Outcome { stdout, stderr, total: (n_out, n_err), code, secs, stopped, deps: None })
+    Ok(Outcome { stdout, stderr, total: (n_out, n_err), code, secs, stopped, ..Outcome::default() })
 }
 
 /// the time limits of one call: the run, and fetching its deps
 #[derive(Clone, Copy, Debug)]
 pub struct Limits { pub run: Duration, pub fetch: Duration }
 
+/// What one call asks for.
+pub struct Call<'a> {
+    pub language: &'a str,
+    pub code: &'a str,
+    pub stdin: &'a str,
+    pub deps: &'a Value,
+    /// the model's `version` (checked against `images::IMAGES`)
+    pub version: Option<&'a str>,
+    /// the project folder whose version files pick the image (`--root`)
+    pub root: Option<&'a Path>,
+}
+
 /// Run one snippet, after fetching its `deps` (checked, sorted; empty: no fetch). `cancel` is polled while it runs
 /// (true: the call was cancelled). Err: the sandbox could not run it at all (no daemon, no image, bad input, a failed
 /// fetch), as a message for the model.
-pub fn run(language: &str, code: &str, stdin: &str, deps: &Value, lim: Limits, cancel: &mut dyn FnMut() -> bool) -> Result<Outcome, String> {
-    let (lname, image, _, _) = *lang(language).ok_or_else(|| format!("unknown language {language:?} ({UNKNOWN_LANG})"))?;
+pub fn run(c: &Call, lim: Limits, cancel: &mut dyn FnMut() -> bool) -> Result<Outcome, Fail> {
+    let (language, code, stdin) = (c.language, c.code, c.stdin);
+    let (lname, _, _) = *lang(language).ok_or_else(|| format!("unknown language {language:?} ({UNKNOWN_LANG})"))?;
     if code.trim().is_empty() { return Err("missing code".into()); }
-    if code.len() > MAX_CODE { return Err(format!("code is too long ({} bytes; at most {MAX_CODE})", code.len())); }
+    if code.len() > MAX_CODE { return Err(format!("code is too long ({} bytes; at most {MAX_CODE})", code.len()).into()); }
     if code.contains('\0') { return Err("code contains a NUL byte".into()); }
-    if stdin.len() > MAX_STDIN { return Err(format!("stdin is too long ({} bytes; at most {MAX_STDIN})", stdin.len())); }
-    let deps = parse_deps(lname, deps).map_err(|e| format!("{e} (nothing was fetched or run)"))?;
+    if stdin.len() > MAX_STDIN { return Err(format!("stdin is too long ({} bytes; at most {MAX_STDIN})", stdin.len()).into()); }
+    // bad input is refused before docker is touched (the image list included)
+    let deps = parse_deps(lname, c.deps).map_err(|e| format!("{e} (nothing was fetched or run)"))?;
+    if c.version.is_some_and(|v| !v.trim().is_empty()) { crate::images::resolve(lname, c.version, c.root, &|_| false)?; }
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let daemon = find_daemon(std::env::var("DOCKER_HOST").ok().as_deref(), home.as_deref())?;
-    let docker = docker_bin().ok_or("the docker CLI is not installed (brew install docker colima)")?;
+    let daemon = find_daemon(std::env::var("DOCKER_HOST").ok().as_deref(), home.as_deref());
+    let docker = docker_bin();
+    let choice = match (&daemon, &docker) {
+        (Ok(d), Some(b)) => choose(lname, c, b, d)?,
+        // no docker: the error below says so; the line is still checked first
+        _ => crate::images::resolve(lname, c.version, c.root, &|_| false)?,
+    };
+    let image = choice.img.image;
+    let daemon = daemon?;
+    let docker = docker.ok_or("the docker CLI is not installed (brew install docker colima)")?;
     let mut cached = None;
     let mut note = None;
     if !deps.is_empty() {
@@ -503,20 +548,66 @@ pub fn run(language: &str, code: &str, stdin: &str, deps: &Value, lim: Limits, c
         let said = String::from_utf8_lossy(&f.stdout);
         if let Some(w) = &f.stopped {
             let w = if w.starts_with("timed out") { format!("{w} (config sandbox_fetch_timeout)") } else { w.clone() };
-            return Err(format!("deps: fetching {list} {w}; the code was not run"));
+            return Err(format!("deps: fetching {list} {w}; the code was not run").into());
         }
         if f.code != Some(0) || !(said.contains("ELISA-FETCHED") || said.contains("ELISA-CACHED")) {
             let why = if f.stderr.is_empty() { trimmed_ends(&f.stdout, f.total.0, 1500) } else { trimmed_ends(&f.stderr, f.total.1, 1500) };
-            return Err(format!("deps: fetching {list} failed (exit {}); the code was not run:\n{why}", f.code.map_or("killed".into(), |c| c.to_string())));
+            return Err(format!("deps: fetching {list} failed (exit {}); the code was not run:\n{why}", f.code.map_or("killed".into(), |c| c.to_string())).into());
         }
         note = Some(if said.contains("ELISA-CACHED") { "deps cached".to_string() } else { format!("deps fetched in {:.1} s", f.secs) });
         cached = Some((vol, key));
     }
     let name = unique_name("run");
-    let args = run_args(&name, lname, lim.run, cached.as_ref().map(|(v, k)| (v.as_str(), k.as_str())));
-    let mut o = exec(&docker, &daemon, &name, args, &[("ELISA_CODE", code)], Some(stdin), lim.run, cancel, lname, image)?;
+    let args = run_args(&name, lname, image, lim.run, cached.as_ref().map(|(v, k)| (v.as_str(), k.as_str())));
+    let mut o = exec(&docker, &daemon, &name, args, &[("ELISA_CODE", code)], Some(stdin), lim.run, cancel, lname, image).map_err(|mut f| {
+        if f.missing.is_some() {
+            forget_present();
+            f.fallback = choice.fallback.map(|i| i.version.to_string());
+        }
+        f
+    })?;
     o.deps = note;
+    o.image = image.to_string();
+    o.note = choice.note.or_else(|| choice.hint.filter(|_| first_hint(lname)));
     Ok(o)
+}
+
+/// the listed images on the daemon, as last seen (this server lives as long as the session)
+static PRESENT: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+fn forget_present() { if let Ok(mut p) = PRESENT.lock() { *p = None; } }
+
+/// `docker image ls`: REPO:TAG of every image (empty when it cannot be read: the run then says what is wrong)
+fn present_now(docker: &Path, d: &Daemon) -> Vec<String> {
+    let mut c = std::process::Command::new(docker);
+    c.args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}|{{.Size}}"]).env("DOCKER_HOST", &d.host).env_remove("DOCKER_CONTEXT");
+    match crate::plugins::run_cmd(c, Duration::from_secs(10)) {
+        Ok((Some(0), out, _)) => out.lines().filter_map(|l| l.split('|').next()).map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The line for a call, from what is present. The image list is read once and read again only while the line the
+/// call would take with everything present is not in it (so an image downloaded meanwhile is seen at once).
+fn choose(lname: &str, c: &Call, docker: &Path, d: &Daemon) -> Result<crate::images::Choice, String> {
+    let ideal = crate::images::resolve(lname, c.version, c.root, &|_| true)?.img.image;
+    let mut seen = PRESENT.lock().map(|p| p.clone()).unwrap_or(None);
+    if !seen.as_ref().is_some_and(|s| s.iter().any(|i| i == ideal)) {
+        let now = present_now(docker, d);
+        if let Ok(mut p) = PRESENT.lock() { *p = Some(now.clone()); }
+        seen = Some(now);
+    }
+    let have = seen.unwrap_or_default();
+    crate::images::resolve(lname, c.version, c.root, &|i| have.iter().any(|h| h == i.image))
+}
+
+/// true the first time a language's "older line present" hint is due in this server (once per session)
+fn first_hint(lname: &str) -> bool {
+    static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let Ok(mut s) = SAID.lock() else { return false };
+    if s.iter().any(|l| l == lname) { return false; }
+    s.push(lname.to_string());
+    true
 }
 
 /// at most `max` characters of a stream, with a note when it was cut (web.rs style)
@@ -545,8 +636,10 @@ fn trimmed_ends(b: &[u8], total: usize, max: usize) -> String {
 pub fn format(o: &Outcome) -> String {
     let code = o.code.map_or("killed".to_string(), |c| c.to_string());
     let mut t = format!("exit {code} · {:.2} s", o.secs);
+    if !o.image.is_empty() { t.push_str(&format!(" · {}", o.image)); }
     if let Some(d) = &o.deps { t.push_str(&format!(" · {d}")); }
     if let Some(w) = &o.stopped { t.push_str(&format!(" · {w}")); }
+    if let Some(n) = &o.note { t.push_str(&format!("\nnote: {n}")); }
     if !o.stdout.is_empty() { t.push_str(&format!("\nstdout:\n{}", trimmed(&o.stdout, o.total.0, STDOUT_CHARS, "stdout"))); }
     if !o.stderr.is_empty() { t.push_str(&format!("\nstderr:\n{}", trimmed_ends(&o.stderr, o.total.1, STDERR_CHARS))); }
     if o.stdout.is_empty() && o.stderr.is_empty() { t.push_str("\n(no output)"); }
@@ -556,20 +649,21 @@ pub fn format(o: &Outcome) -> String {
 /// an error result (a red row; the exit code is in the text): a non-zero exit, a kill, a timeout or another stop
 fn failed(o: &Outcome) -> bool { o.stopped.is_some() || o.code != Some(0) }
 
-/// one `tools/call`: (text, is_error)
-pub fn call(name: &str, args: &Value, lim: Limits, cancel: &mut dyn FnMut() -> bool) -> (String, bool) {
-    if name != "run_code" { return (format!("unknown tool {name}"), true); }
+/// one `tools/call`: (text, is_error, the image that is missing and the present version to fall back to)
+pub fn call(name: &str, args: &Value, root: Option<&Path>, lim: Limits, cancel: &mut dyn FnMut() -> bool) -> (String, bool, Option<(String, Option<String>)>) {
+    if name != "run_code" { return (format!("unknown tool {name}"), true, None); }
     let s = |k: &str| args[k].as_str().unwrap_or("");
-    if s("language").trim().is_empty() { return (format!("missing language ({UNKNOWN_LANG})"), true); }
-    match run(s("language"), s("code"), s("stdin"), &args["deps"], lim, cancel) {
+    if s("language").trim().is_empty() { return (format!("missing language ({UNKNOWN_LANG})"), true, None); }
+    let c = Call { language: s("language"), code: s("code"), stdin: s("stdin"), deps: &args["deps"], version: args["version"].as_str(), root };
+    match run(&c, lim, cancel) {
         // a non-zero exit is an error result too (shown red; the exit code is in the text), as is a timeout
-        Ok(o) => (format(&o), failed(&o)),
-        Err(e) => (e, true),
+        Ok(o) => (format(&o), failed(&o), None),
+        Err(e) => (e.text, true, e.missing.map(|m| (m, e.fallback))),
     }
 }
 
 /// the answer to one JSON-RPC message; None for a notification
-pub fn answer(m: &Value, lim: Limits, cancel: &mut dyn FnMut() -> bool) -> Option<Value> {
+pub fn answer(m: &Value, root: Option<&Path>, lim: Limits, cancel: &mut dyn FnMut() -> bool) -> Option<Value> {
     let id = m.get("id")?.clone();
     let result = match m["method"].as_str().unwrap_or("") {
         "initialize" => json!({"protocolVersion": m["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
@@ -577,8 +671,14 @@ pub fn answer(m: &Value, lim: Limits, cancel: &mut dyn FnMut() -> bool) -> Optio
         "ping" => json!({}),
         "tools/list" => json!({"tools": tools()}),
         "tools/call" => {
-            let (text, err) = call(m["params"]["name"].as_str().unwrap_or(""), &m["params"]["arguments"], lim, cancel);
-            json!({"content": [{"type": "text", "text": text}], "isError": err})
+            let (text, err, missing) = call(m["params"]["name"].as_str().unwrap_or(""), &m["params"]["arguments"], root, lim, cancel);
+            let mut r = json!({"content": [{"type": "text", "text": text}], "isError": err});
+            // structured, so the session never has to read the words: the image to offer for download
+            if let Some((i, f)) = missing {
+                r["_meta"] = json!({crate::images::META_KEY: i});
+                if let Some(v) = f { r["_meta"][crate::images::FALLBACK_KEY] = json!(v); }
+            }
+            r
         }
         other => return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("method not found: {other}")}})),
     };
@@ -591,7 +691,7 @@ pub fn clamp_timeout(s: u64) -> Duration { Duration::from_secs(s.clamp(1, MAX_TI
 /// the `--fetch-timeout` value, within 5 ..= MAX_FETCH_TIMEOUT_S
 pub fn clamp_fetch_timeout(s: u64) -> Duration { Duration::from_secs(s.clamp(5, MAX_FETCH_TIMEOUT_S)) }
 
-/// `--mcp-serve run …`: serve stdin / stdout until stdin closes. Messages are read on their own thread, so a run in
+/// `--mcp-serve run [--root DIR] …`: serve stdin / stdout until stdin closes. Messages are read on their own thread, so a run in
 /// progress sees `notifications/cancelled` (or stdin closing) and kills its container; a ping is answered meanwhile.
 pub fn serve(args: &[String]) -> i32 {
     let opt = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
@@ -599,6 +699,7 @@ pub fn serve(args: &[String]) -> i32 {
         run: clamp_timeout(opt("--timeout").and_then(|t| t.parse().ok()).unwrap_or(DEFAULT_TIMEOUT_S)),
         fetch: clamp_fetch_timeout(opt("--fetch-timeout").and_then(|t| t.parse().ok()).unwrap_or(DEFAULT_FETCH_TIMEOUT_S)),
     };
+    let root = opt("--root").map(PathBuf::from);
     let (tx, rx) = std::sync::mpsc::channel::<Option<Value>>();
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines().map_while(Result::ok) {
@@ -626,7 +727,7 @@ pub fn serve(args: &[String]) -> i32 {
             }
             eof
         };
-        if let Some(a) = answer(&m, lim, &mut cancel) {
+        if let Some(a) = answer(&m, root.as_deref(), lim, &mut cancel) {
             if writeln!(out, "{a}").and_then(|()| out.flush()).is_err() { return 0; }
         }
     }
@@ -639,19 +740,19 @@ mod tests {
     #[test]
     fn speaks_mcp_and_lists_run_code() {
         let t = Limits { run: Duration::from_secs(1), fetch: Duration::from_secs(5) };
-        let init = answer(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}), t, &mut || false).unwrap();
+        let init = answer(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}), None, t, &mut || false).unwrap();
         assert_eq!(init["result"]["serverInfo"]["name"], "elisa-run");
-        assert!(answer(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}), t, &mut || false).is_none());
-        let list = answer(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), t, &mut || false).unwrap();
+        assert!(answer(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}), None, t, &mut || false).is_none());
+        let list = answer(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), None, t, &mut || false).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["run_code"]);
         // bad input is refused before docker is touched
         for args in [json!({"language": "cobol", "code": "x"}), json!({"language": "python", "code": "  "}), json!({"code": "print(1)"}),
             json!({"language": "python", "code": "import six", "deps": ["six"]}), json!({"language": "bash", "code": "x", "deps": ["jq@1.0.0"]})] {
-            let r = answer(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "run_code", "arguments": args}}), t, &mut || false).unwrap();
+            let r = answer(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "run_code", "arguments": args}}), None, t, &mut || false).unwrap();
             assert_eq!(r["result"]["isError"], true, "{args}");
         }
-        let bad = answer(&json!({"jsonrpc": "2.0", "id": 4, "method": "resources/list"}), t, &mut || false).unwrap();
+        let bad = answer(&json!({"jsonrpc": "2.0", "id": 4, "method": "resources/list"}), None, t, &mut || false).unwrap();
         assert_eq!(bad["error"]["code"], -32601);
     }
 
@@ -664,11 +765,11 @@ mod tests {
 
     #[test]
     fn languages_and_aliases() {
-        assert_eq!(lang("Python3").unwrap().1, "python:3.13-alpine");
+        assert_eq!(lang("Python3").unwrap().0, "python");
         assert_eq!(lang("node").unwrap().0, "javascript");
         assert_eq!(lang("sh").unwrap().0, "bash");
         assert_eq!(lang("rs").unwrap().0, "rust");
-        assert_eq!(lang("golang").unwrap().1, "golang:1.25-alpine");
+        assert_eq!(lang("golang").unwrap().0, "go");
         assert!(lang("ruby").is_none());
     }
 
@@ -693,7 +794,7 @@ mod tests {
 
     #[test]
     fn the_container_is_locked_down() {
-        let a = run_args("elisa-run-1", "python", Duration::from_secs(10), None).join(" ");
+        let a = run_args("elisa-run-1", "python", crate::images::stable("python").image, Duration::from_secs(10), None).join(" ");
         for f in ["--rm", "-i", "--pull never", "--name elisa-run-1", "--network none", "--read-only", "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m",
             "--memory 256m", "--memory-swap 256m", "--cpus 1", "--pids-limit 64", "--user 65534:65534", "--cap-drop ALL",
             "--security-opt no-new-privileges", "-e ELISA_CODE ", "timeout -s KILL 15"] {
@@ -701,10 +802,10 @@ mod tests {
         }
         assert!(!a.contains("-v ") && !a.contains("--volume") && !a.contains("--mount") && !a.contains("--privileged"), "{a}");
         // only rust may execute from /tmp (its compiled binary)
-        let r = run_args("n", "rust", Duration::from_secs(10), None).join(" ");
-        assert!(r.contains("/tmp:rw,exec,") && r.contains("rust:1.91-alpine"), "{r}");
-        let g = run_args("n", "go", Duration::from_secs(10), None).join(" ");
-        assert!(g.contains("/tmp:rw,exec,nosuid,nodev,size=256m") && g.contains("--memory 512m") && g.contains("GOPROXY=off") && g.contains("golang:1.25-alpine"), "{g}");
+        let r = run_args("n", "rust", crate::images::stable("rust").image, Duration::from_secs(10), None).join(" ");
+        assert!(r.contains("/tmp:rw,exec,") && r.contains("rust:1.99-alpine"), "{r}");
+        let g = run_args("n", "go", crate::images::stable("go").image, Duration::from_secs(10), None).join(" ");
+        assert!(g.contains("/tmp:rw,exec,nosuid,nodev,size=256m") && g.contains("--memory 512m") && g.contains("GOPROXY=off") && g.contains("golang:1.27-alpine"), "{g}");
     }
 
     #[test]
@@ -716,6 +817,9 @@ mod tests {
         assert!(t.len() < STDOUT_CHARS + 200);
         let k = Outcome { code: None, stopped: Some("timed out after 10 s".into()), ..Outcome::default() };
         assert_eq!(format(&k), "exit killed · 0.00 s · timed out after 10 s\n(no output)");
+        // the image it ran in, and a note when the project's version is not on the list
+        let n = Outcome { code: Some(0), image: "python:3.15-alpine".into(), note: Some("project asks for Python 3.9 (.python-version); using 3.15".into()), ..Outcome::default() };
+        assert_eq!(format(&n), "exit 0 · 0.00 s · python:3.15-alpine\nnote: project asks for Python 3.9 (.python-version); using 3.15\n(no output)");
         assert_eq!(clamp_timeout(0), Duration::from_secs(1));
         assert_eq!(clamp_timeout(999), Duration::from_secs(MAX_TIMEOUT_S));
     }
@@ -808,7 +912,7 @@ mod tests {
     #[test]
     fn a_run_with_deps_is_still_offline_and_mounts_only_the_cache_read_only() {
         for l in ["python", "javascript", "rust", "go"] {
-            let a = run_args("elisa-run-1", l, Duration::from_secs(10), Some(("elisa-deps-x", "0123456789abcdef")));
+            let a = run_args("elisa-run-1", l, crate::images::stable(l).image, Duration::from_secs(10), Some(("elisa-deps-x", "0123456789abcdef")));
             let j = a.join(" ");
             let net: Vec<&str> = a.windows(2).filter(|w| w[0] == "--network").map(|w| w[1].as_str()).collect();
             assert_eq!(net, ["none"], "{j}");
@@ -817,20 +921,20 @@ mod tests {
             for f in ["--read-only", "--user 65534:65534", "--cap-drop ALL", "--pids-limit 64", "--security-opt no-new-privileges"] { assert!(j.contains(f), "{f}: {j}"); }
             assert!(!a.iter().any(|x| x == "-v" || x == "--volume" || x == "--privileged" || x.starts_with("--network=")), "{j}");
         }
-        let p = run_args("n", "python", Duration::from_secs(10), Some(("v", "k"))).join(" ");
+        let p = run_args("n", "python", crate::images::stable("python").image, Duration::from_secs(10), Some(("v", "k"))).join(" ");
         assert!(p.contains("PYTHONPATH=/deps/k") && p.contains("size=64m"), "{p}");
-        let j = run_args("n", "javascript", Duration::from_secs(10), Some(("v", "k"))).join(" ");
+        let j = run_args("n", "javascript", crate::images::stable("javascript").image, Duration::from_secs(10), Some(("v", "k"))).join(" ");
         assert!(j.contains("NODE_PATH=/deps/k/node_modules"), "{j}");
-        let r = run_args("n", "rust", Duration::from_secs(10), Some(("v", "k"))).join(" ");
+        let r = run_args("n", "rust", crate::images::stable("rust").image, Duration::from_secs(10), Some(("v", "k"))).join(" ");
         assert!(r.contains("cargo run -q --offline --locked") && r.contains("ln -s /deps/k/home/registry ch/registry") && r.contains("size=256m") && r.contains("--memory 256m"), "{r}");
-        let g = run_args("n", "go", Duration::from_secs(10), Some(("v", "k"))).join(" ");
+        let g = run_args("n", "go", crate::images::stable("go").image, Duration::from_secs(10), Some(("v", "k"))).join(" ");
         assert!(g.contains("GOMODCACHE=/deps/k/mod") && g.contains("GOPROXY=off") && g.contains("GOSUMDB=off") && g.contains("go run ."), "{g}");
     }
 
     #[test]
     fn the_fetch_container_has_network_but_no_host_files_and_the_same_limits() {
         for l in ["python", "javascript", "rust", "go"] {
-            let image = lang(l).unwrap().1;
+            let image = crate::images::stable(l).image;
             let a = fetch_args("elisa-fetch-1", l, image, "elisa-deps-x", "0123456789abcdef", Duration::from_secs(60));
             let j = a.join(" ");
             let mounts: Vec<&str> = a.windows(2).filter(|w| w[0] == "--mount").map(|w| w[1].as_str()).collect();

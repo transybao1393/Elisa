@@ -16,6 +16,9 @@ pub mod mcp_web;
 pub mod mcp_docs;
 /// Elisa's code sandbox MCP server (`run_code` in a locked-down container on Colima; config `sandbox`)
 pub mod mcp_run;
+/// the one pinned list of container images Elisa uses (sandbox languages, plugin installers), project version
+/// detection, user-approved downloads (`/sandbox pull`) and their digest pins (`~/.elisa/images.lock`)
+pub mod images;
 /// `elisa --mcp-serve reason`: think / steps / step_done / calc for small models, offered only on multi-step turns
 pub mod mcp_reason;
 /// `elisa --mcp-serve sec`: secrets, dependency advisories (osv.dev), binary and JWT inspection, project folder only
