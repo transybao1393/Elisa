@@ -411,6 +411,9 @@ pub fn is_error_line(l: &str) -> bool {
 
 fn plural(n: usize, w: &str) -> String { format!("{n} {w}{}", if n == 1 { "" } else { "s" }) }
 
+/// A check's summary note when its output carries the shell sandbox's block hint (its exit code is kept as is).
+pub const SANDBOX_NOTE: &str = "(the shell sandbox blocked some of its writes or network access; its result may not mean much)";
+
 /// Runs one check (blocking; Ctrl-C kills it). `max_chars` caps the output sent back to the model.
 pub fn run(c: &Check, cwd: &Path, max_chars: usize) -> Outcome {
     let r = match crate::tools::shell(&c.cmd, cwd, c.timeout_s, OUTPUT_BUF_MAX) {
@@ -424,12 +427,16 @@ pub fn run(c: &Check, cwd: &Path, max_chars: usize) -> Outcome {
     let kept: Vec<&str> = r.out.lines().filter(|l| !noise(l)).collect();
     let mut errs: Vec<&str> = Vec::new();
     for l in kept.iter().copied().filter(|l| is_error_line(l)) { if !errs.contains(&l) { errs.push(l); } }
+    // the shell sandbox blocked something (`shell` appended its hint): a pass stays a pass, but says so
+    let blocked = crate::sandbox::blocked(&r.out);
     if r.code == Some(0) && !r.cancelled {
-        return Outcome { status: CheckStatus::Pass, summary: String::new(), errors: 0, code: Some(0), output: String::new(), signature: String::new(), cancelled: false };
+        let summary = if blocked { SANDBOX_NOTE.to_string() } else { String::new() };
+        return Outcome { status: CheckStatus::Pass, summary, errors: 0, code: Some(0), output: String::new(), signature: String::new(), cancelled: false };
     }
     let summary = if errs.is_empty() {
         r.code.map_or("killed".into(), |c| format!("exit {c}"))
     } else { plural(errs.len(), "error") };
+    let summary = if blocked { format!("{summary} · {SANDBOX_NOTE}") } else { summary };
     let output = trim_output(&kept, &errs, max_chars);
     let sig_src: Vec<&str> = if errs.is_empty() { kept.iter().rev().take(SIG_LINES).rev().copied().collect() } else { errs.iter().take(SIG_LINES).copied().collect() };
     Outcome { status: CheckStatus::Fail, summary, errors: errs.len(), code: r.code, output, signature: signature(&sig_src), cancelled: r.cancelled }

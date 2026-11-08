@@ -429,11 +429,16 @@ fn step_results_are_water_filled_into_the_room_left() {
     assert!(total <= 2000 * 33 / 10, "{total}");
     let big: Vec<usize> = [0, 1, 3].iter().map(|&i| len(&v[i])).collect();
     assert!(big.iter().max().unwrap() - big.iter().min().unwrap() < 40, "{big:?}");
-    match &v[0] { Block::ToolResult { content, .. } => assert!(content.ends_with(" chars]") && content.contains("\n[trimmed "), "{content}"), _ => unreachable!() }
-    // no room at all: each keeps a head + marker, never empty
+    match &v[0] { Block::ToolResult { content, .. } => assert!(content.contains("\n[trimmed ") && content.contains(" chars]"), "{content}"), _ => unreachable!() }
+    // no room at all: each keeps a useful slice (head + marker + tail, ~RESULT_MIN_CHARS), never a stub
     let mut v = vec![r("a", 5000)];
     cap_step_results(&mut v, 0);
-    assert!(len(&v[0]) > 100 && len(&v[0]) < 400);
+    assert!(len(&v[0]) > 800 && len(&v[0]) <= elisa::context::RESULT_MIN_CHARS, "{}", len(&v[0]));
+    // the tail of a command's output (its summary, a count, the error) is kept, not only its head
+    let out: String = (1..=400).map(|i| format!("line {i}\n")).collect::<String>() + "COUNT 378";
+    let mut v = vec![Block::ToolResult { tool_use_id: "a".into(), content: out, is_error: false }];
+    cap_step_results(&mut v, 0);
+    match &v[0] { Block::ToolResult { content, .. } => assert!(content.starts_with("line 1\n") && content.ends_with("COUNT 378") && content.contains("[trimmed "), "{content}"), _ => unreachable!() }
 }
 
 #[test]
@@ -448,7 +453,7 @@ fn cut_read_says_the_window_is_full_not_where_to_go_on() {
         Block::ToolResult { content, .. } => {
             assert!(content.starts_with("1\t") && content.ends_with(READ_CUT), "{content}");
             assert!(!content.contains("next: offset"), "{content}");
-            assert!(content.chars().count() <= 240, "{content}");
+            assert!(content.chars().count() <= elisa::context::RESULT_MIN_CHARS, "{content}");
         }
         _ => unreachable!(),
     }
@@ -458,7 +463,7 @@ fn cut_read_says_the_window_is_full_not_where_to_go_on() {
     // any other result keeps its plain marker
     let mut v = vec![Block::ToolResult { tool_use_id: "a".into(), content: "x\n".repeat(3000), is_error: false }];
     cap_step_results(&mut v, 0);
-    match &v[0] { Block::ToolResult { content, .. } => assert!(content.ends_with(" chars]") && !content.contains(READ_CUT), "{content}"), _ => unreachable!() }
+    match &v[0] { Block::ToolResult { content, .. } => assert!(content.contains(" chars]") && !content.contains(READ_CUT), "{content}"), _ => unreachable!() }
 }
 
 #[test]
@@ -540,4 +545,183 @@ fn a_copied_card_instruction_is_not_shown() {
     assert_eq!((vis.as_str(), card.as_deref()), ("2 + 3 = 5.", Some("goal: add")));
     let (vis, _, broken) = context::split_state("Blue. <=80-token card of what the next step needs:");
     assert_eq!((vis.as_str(), broken), ("Blue.", true));
+}
+
+#[test]
+fn template_placeholders_never_make_a_card() {
+    // uitest 2026-11-08: card #9 kept the template's `keep: must-not-lose facts`
+    let (_, card, broken) = context::split_state("Done.\n<state>\ngoal: search for rust\ndone: …\nnow: ...\nkeep: must-not-lose facts\nnext: open the docs\n</state>");
+    assert!(!broken);
+    assert_eq!(card.as_deref(), Some("goal: search for rust\nnext: open the docs"));
+    // a placeholder item next to a real one: only the real one stays
+    assert_eq!(context::clean_card("keep: must-not-lose facts; ./run.sh builds").as_deref(), Some("keep: ./run.sh builds"));
+    // the whole template copied back (or with the instruction line) is no card at all
+    let (_, card, broken) = context::split_state("Hi.\n<state>\ngoal: …\ndone: …\nnow: …\nkeep: must-not-lose facts\nnext: …\n</state>");
+    assert_eq!((card, broken), (None, true));
+    assert_eq!(context::clean_card("End final replies (not tool steps) with a <=80-token card of what the next step needs:\ngoal:\nnext: -"), None);
+    // free text that is not a template line is kept
+    assert_eq!(context::clean_card("Goal: add --top\nthe tests pass").as_deref(), Some("goal: add --top\nthe tests pass"));
+}
+
+#[test]
+fn summary_notes_drop_instruction_echo_and_template_text() {
+    // the notes the uitest /clear saved (2B model), plus a real line in each section that must survive
+    let junk = "## Goal\nWhat the user said: \"2+2=?\" and \"The conversation above will be erased. Write notes so a fresh session can pick up the work\"\n\n\
+        ## Done\nFinished steps and decisions, with their reasons.\nAnswered 2+2 = 4. REAL-1\n\n\
+        ## Files touched\nOne line per file: path, then what changed.\n\n\
+        ## Current state / next step\n…\n\n\
+        ## Facts to remember\n- The user asked for short answers. REAL-2\n\n\
+        Also known as: name = other words; …";
+    let n = context::clean_notes(junk);
+    assert!(n.contains("REAL-1") && n.contains("REAL-2"), "{n}");
+    for bad in ["will be erased", "Finished steps and decisions", "One line per file", "name = other words", "Also known as", "## Goal", "## Files touched", "## Current state"] {
+        assert!(!n.contains(bad), "{bad:?} kept in:\n{n}");
+    }
+    assert_eq!(n, "## Done\nAnswered 2+2 = 4. REAL-1\n\n## Facts to remember\n- The user asked for short answers. REAL-2");
+    // real aliases stay, template ones go
+    assert_eq!(context::clean_notes("## Facts to remember\ncargo test\nAlso known as: wc = word count; name = other words; …"),
+        "## Facts to remember\ncargo test\nAlso known as: wc = word count");
+    // nothing real: empty (the caller treats that as an unusable summary)
+    assert_eq!(context::clean_notes(context::compact_instructions()), "");
+}
+
+#[test]
+fn new_session_notes_are_background_without_the_old_goal() {
+    let notes = context::with_session_goal("## Done\nadded --top", "search for rust programming language");
+    let bg = context::background_notes(&notes);
+    assert!(bg.starts_with(context::NOTES_BACKGROUND), "{bg}");
+    assert!(bg.contains("added --top") && !bg.contains("search for rust") && !bg.contains(context::GOAL_NOTES), "{bg}");
+    // only the old goal: nothing to carry
+    assert_eq!(context::background_notes(&context::with_session_goal("", "old goal here")), "");
+    let first = context::first_message(Path::new("/p"), Some(&bg), "what is 2+2?");
+    assert!(first.contains(context::NOTES_HEADING) && first.contains(context::NOTES_BACKGROUND) && first.ends_with("## Request\nwhat is 2+2?"));
+}
+
+#[test]
+fn notes_cap_keeps_whole_lines_from_the_top() {
+    let n = "## Goal\n\"add --top\"\n\n## Done\nline one\nline two\n## Facts to remember\ncargo test";
+    let c = context::cap_notes(n, 12);
+    assert!(estimate_tokens(&c) <= 12 && c.starts_with("## Goal\n\"add --top\""), "{c}");
+    assert!(!c.ends_with("## Done") && !c.ends_with("## Facts to remember"), "no heading without its body: {c}");
+    assert_eq!(context::cap_notes(n, 1000), n);
+    assert_eq!(context::cap_notes(n, 0), "");
+}
+
+/// soak 2026-11-08 at 8K: system + tools 2.8K, limit 5.9K. The old fold point (0.65 of the limit = 3.8K) sat barely
+/// above the fixed cost; the new one is the fixed cost plus 0.65 of the room left after it.
+#[test]
+fn the_fold_point_follows_the_fixed_cost() {
+    assert_eq!(context::fold_point(2800, 5898, 0.65), 2800 + 2013);
+    assert_eq!(context::fold_point(1400, 5898, 0.65), 1400 + 2923);
+    // a big window: about the old share
+    assert!(context::fold_point(2800, 192_000, 0.65) > 125_000);
+    // the gain a fold must bring and the notes' share both scale with the room left
+    assert_eq!(context::min_fold_gain(2800, 5898), 387);
+    assert_eq!(context::notes_budget(2800, 5898), 516);
+    assert_eq!(context::notes_budget(1000, 100_000), 1200);
+    assert_eq!(context::notes_budget(5000, 5200), 200);
+    assert!(context::fold_room(2800, 5898, 0.30, 800) >= (5898 - 2800) / 8);
+}
+
+#[test]
+fn a_result_that_does_not_fit_says_so() {
+    let s = context::not_shown("378\n");
+    assert!(s.contains("did not fit") && s.contains("Do not guess") && s.contains("\"378\""), "{s}");
+}
+
+fn ledger_of(cwd: &Path, calls: &[(&str, serde_json::Value)]) -> context::Ledger {
+    let mut l = context::Ledger::default();
+    for (t, i) in calls { l.before(i, cwd); l.record(t, i, cwd); }
+    l
+}
+
+/// soak 2026-11-08: the notes said restock_cost, a --low-only flag and a version bump were done; no edit did them.
+#[test]
+fn done_claims_are_checked_against_the_edit_records() {
+    use serde_json::json;
+    let d = std::env::temp_dir().join(format!("elisa-ledger-{}", std::process::id()));
+    std::fs::create_dir_all(d.join("invtrack")).unwrap();
+    std::fs::write(d.join("invtrack/core.py"), "def low_stock(items):\n    return [i for i in items if i.qty < i.reorder_level]\n").unwrap();
+    let edit = json!({"path": d.join("invtrack/core.py").display().to_string(), "old": "i.qty < i.reorder_level", "new": "i.qty <= i.reorder_level"});
+    let l = ledger_of(&d, &[("edit", edit.clone())]);
+    // the edit really happens after `before`
+    std::fs::write(d.join("invtrack/core.py"), "def low_stock(items):\n    return [i for i in items if i.qty <= i.reorder_level]\n").unwrap();
+    let now = |p: &str| std::fs::read_to_string(d.join(p)).ok();
+    assert_eq!(l.paths(), ["invtrack/core.py"], "relative to the project");
+    let notes = "## Done\n- Fixed low_stock in invtrack/core.py (< to <=). REAL-1\n- Added restock_cost(items) to invtrack/core.py.\n\
+        - Added a --low-only flag to invtrack/report.py.\n- Bumped __version__ to 0.3.2.\n- Read README.md: codename BLUE HERON. REAL-2\n\n\
+        ## Files touched\n- invtrack/core.py: low_stock uses <= REAL-3\n- No files were touched in this session.\n- README.md: added usage\n\
+        - invtrack/core.py: `restock_cost` function was added.";
+    let v = context::verify_claims(notes, &l, &now);
+    for keep in ["REAL-1", "REAL-2", "REAL-3"] { assert!(v.contains(keep), "{keep} dropped:\n{v}"); }
+    for gone in ["restock_cost", "--low-only", "0.3.2", "No files were touched"] { assert!(!v.contains(gone), "{gone} kept:\n{v}"); }
+    assert!(!v.contains("README.md: added usage"), "a file Elisa did not change is not listed: {v}");
+    // with no records at all, such a line is marked instead
+    assert!(context::verify_claims("## Files touched\n- README.md: added usage", &context::Ledger::default(), &now).contains(context::UNVERIFIED));
+    // a paragraph keeps its backed sentences only
+    let v = context::verify_claims("## Done\nRan the tests. The model updated README.md with a usage section. It fixed low_stock (< to <=).", &l, &now);
+    assert_eq!(v, "## Done\nRan the tests. It fixed low_stock (< to <=).");
+    // card items too; nothing changed at all: a claim with nothing to check is marked
+    let v = context::verify_claims("done: add restock_cost; ran the tests", &l, &now);
+    assert_eq!(v, "done: ran the tests");
+    let empty = context::Ledger::default();
+    let v = context::verify_claims("## Done\n- Updated the docs.", &empty, &now);
+    assert_eq!(v, format!("## Done\n- Updated the docs. {}", context::UNVERIFIED));
+    // Elisa's own section
+    assert_eq!(l.section().unwrap(), format!("{}\n- invtrack/core.py: edited 1×", context::FILES_NOTES));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// soak 2026-11-08: /clear replaced the notes with one turn's summary; the codename, the owner and the fix were gone.
+#[test]
+fn notes_merge_keeps_earlier_facts_and_drops_repeats() {
+    let old = "## Done\n- Fixed low_stock (< to <=).\n\n## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n\n## Current state / next step\nold next step";
+    let new = "## Goal\n\"search for copper wire suppliers\"\n\n## Done\n- Searched the web for copper wire.\n- Fixed low_stock (< to <=).\n\n## Current state / next step\nnew next step\n\nAlso known as: user, Elisa, system, macos, 2026-11-08; wc = word count";
+    let m = context::merge_notes(Some(old), new);
+    assert!(m.contains("BLUE HERON") && m.contains("Searched the web") && m.contains("new next step"), "{m}");
+    assert!(!m.contains("old next step"), "current state is replaced: {m}");
+    assert_eq!(m.matches("Fixed low_stock").count(), 1, "{m}");
+    assert!(m.ends_with("Also known as: wc = word count"), "trivial aliases dropped: {m}");
+    // the done list comes before the facts, the request quote after them
+    assert!(m.find("## Done").unwrap() < m.find("## Facts").unwrap() && m.find("## Facts").unwrap() < m.find("## Goal").unwrap(), "{m}");
+    // a bullet repeated 3-4 times is kept once; one contained in a longer one goes too
+    let rep = "## Done\n- ran the tests\n- ran the tests\n- Ran the tests.\n- added total_value to core.py\n- added total_value to core.py with a test";
+    assert_eq!(context::tidy_notes(rep), "## Done\n- ran the tests\n- added total_value to core.py with a test");
+    // Elisa's file records merge by path, the newer line wins
+    let a = format!("{}\n- a.py: edited 1×\n- b.py: edited 2×", context::FILES_NOTES);
+    let b = format!("{}\n- a.py: edited 3×\n- c.py: written (new file)", context::FILES_NOTES);
+    let m = context::merge_notes(Some(&a), &b);
+    assert!(m.contains("a.py: edited 3×") && m.contains("b.py: edited 2×") && m.contains("c.py: written") && !m.contains("a.py: edited 1×"), "{m}");
+}
+
+#[test]
+fn notes_cap_drops_by_priority_not_position() {
+    let n = format!("## Goal\n\"{}\"\n\n{}\n- core.py: edited 1×\n\n## Done\n- old item one\n- old item two\n- newest item\n\n\
+        ## Current state / next step\nrun the tests next\n\n## Facts to remember\n- codename BLUE HERON\n\n## Files touched\n- core.py: something\n\nAlso known as: wc = word count",
+        "a very long request quote ".repeat(8), context::FILES_NOTES);
+    let c = context::cap_notes_priority(&n, 60);
+    assert!(estimate_tokens(&c) <= 60, "{c}");
+    assert!(c.contains("core.py: edited 1×") && c.contains("newest item") && c.contains("run the tests next"), "{c}");
+    assert!(!c.contains("a very long request") && !c.contains("Also known as") && !c.contains("## Files touched"), "{c}");
+    // tighter: the done list loses its oldest item first, Elisa's file records stay
+    let c = context::cap_notes_priority(&n, 30);
+    assert!(c.contains("core.py: edited 1×") && c.contains("newest item") && !c.contains("old item one"), "the oldest done item goes first: {c}");
+    assert_eq!(context::cap_notes_priority(&n, 10_000), context::tidy_notes(&n));
+    // a long done list never starves the facts and the next step (8K live run: the facts were gone)
+    let done: String = (0..40).map(|i| format!("- done item {i} with a few more words\n")).collect();
+    let n = format!("## Done\n{done}\n## Current state / next step\nNEXT-STEP\n\n## Facts to remember\n- FACT codename BLUE HERON");
+    let c = context::cap_notes_priority(&n, 120);
+    assert!(c.contains("NEXT-STEP") && c.contains("FACT codename") && c.contains("done item 39") && !c.contains("done item 0 "), "{c}");
+}
+
+#[test]
+fn small_talk_and_plain_questions_set_no_session_goal() {
+    use elisa::context::next_goal;
+    for t in ["hi Elisa! how are you today?", "thanks!", "hello again :)", "good morning", "ok great", "what is the capital of Japan?",
+        "Hi! Can you remind me what this project is about?"] {
+        assert_eq!(next_goal(None, t), None, "{t}");
+    }
+    // a greeting in front of a request is not part of the goal
+    assert_eq!(next_goal(None, "Hi Elisa, fix low_stock in invtrack/core.py").as_deref(), Some("fix low_stock in invtrack/core.py"));
+    assert!(!context::is_small_talk("fix the tests"));
 }

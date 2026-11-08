@@ -134,7 +134,10 @@ impl Stats {
 pub fn append(dir: &Path, r: &RequestMetrics) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let p = dir.join(FILE);
-    let line = serde_json::to_string(r).map_err(|e| e.to_string())?;
+    // on disk: the prompt never keeps a secret (redacted on the value, so the JSON stays valid)
+    let mut v = serde_json::to_value(r).map_err(|e| e.to_string())?;
+    crate::secrets::redact_json(&mut v);
+    let line = v.to_string();
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
     writeln!(f, "{line}").map_err(|e| format!("{}: {e}", p.display()))?;
     Ok(p)

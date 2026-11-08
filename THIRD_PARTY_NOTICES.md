@@ -128,6 +128,62 @@ Build-time only: `cc` (MIT OR Apache-2.0) compiles the grammars' C code. tree-si
 elisa lock file moved `cc` from 1.10.0 to 1.2.67 (it was already a build dependency of `ring`). No crate in this
 set has a license other than MIT / Apache-2.0.
 
+Document crates in [elisa/](elisa/Cargo.toml) (added 2026-11-08 for `elisa/src/mcp_docs.rs`, the built-in documents
+MCP server; versions pinned with `=`, default features). Pure Rust, no C code. The direct dependencies and the crates
+they bring in that carry the document parsing:
+
+| Crate | Version | License | Copyright | Source |
+|---|---|---|---|---|
+| pdf-extract | 0.12.1 | MIT | Jeff Muizelaar (no LICENSE file in the crate) | <https://github.com/jrmuizel/pdf-extract> |
+| lopdf (via pdf-extract, no default features) | 0.42.0 | MIT | Copyright (c) 2016 Junfeng Liu | <https://github.com/J-F-Liu/lopdf> |
+| adobe-cmap-parser, type1-encoding-parser (via pdf-extract) | 0.4.1, 0.1.1 | MIT | Jeff Muizelaar (no LICENSE file in the crate) | <https://github.com/jrmuizel> |
+| cff-parser (via pdf-extract) | 0.2.0 | MIT OR Apache-2.0 | its authors (LICENSE-MIT / LICENSE-APACHE) | <https://crates.io/crates/cff-parser> |
+| postscript (via pdf-extract) | 0.14.1 | Apache-2.0 OR MIT | Copyright 2015–2022 The postscript Developers | <https://github.com/bodoni/postscript> |
+| pom (via the cmap / type1 parsers) | 1.1.0 | MIT | Copyright (c) 2016 Junfeng Liu | <https://github.com/J-F-Liu/pom> |
+| nom (via lopdf) | 8.0.0 | MIT | Copyright (c) 2014-2019 Geoffroy Couprie | <https://github.com/rust-bakery/nom> |
+| ecb (via lopdf) | 0.1.2 | MIT | Copyright (c) magic-akari | <https://github.com/RustCrypto/block-modes> |
+| calamine | 0.38.0 | MIT | Copyright (c) 2016 Johann Tuffe | <https://github.com/tafia/calamine> |
+| quick-xml (via calamine) | 0.42.0 | MIT | Copyright (c) 2016 Johann Tuffe | <https://github.com/tafia/quick-xml> |
+| zip (via calamine, `deflate` only) | 9.4.2 | MIT | Copyright (c) 2014 Mathijs van de Nes | <https://github.com/zip-rs/zip2> |
+
+The other crates they add are the usual `MIT OR Apache-2.0` set (RustCrypto aes / cbc / md-5 / sha2 for PDF
+decryption, euclid, flate2, codepage, atoi_simd, fast-float2, rand, …) plus these permissive ones: encoding_rs 0.8
+`(Apache-2.0 OR MIT) AND BSD-3-Clause` (WHATWG encoding data), unicode-properties 0.1 `(MIT OR Apache-2.0) AND
+Unicode-3.0`, constant_time_eq 0.6 `CC0-1.0 OR MIT-0 OR Apache-2.0`, miniz_oxide 0.9 `MIT OR Zlib OR Apache-2.0`,
+zopfli 0.8 `Apache-2.0`, nix 0.31 `MIT`, zlib-rs 0.6 `Zlib` (already listed above). No copyleft license. Release
+binary growth (arm64): about 2.4 MB (21.9 MB → 24.4 MB).
+
+Hashing in [elisa/](elisa/Cargo.toml) (added 2026-11-08 for `elisa/src/pins.rs`, MCP tool-list pinning, and
+`elisa/src/audit.rs`, the audit log's hash chain; pinned with `=`). Already in the lock graph via lopdf above, so no
+new crates and no binary growth to speak of:
+
+| Crate | Version | License | Copyright | Source |
+|---|---|---|---|---|
+| sha2 | 0.10.9 | MIT OR Apache-2.0 | Copyright (c) 2006-2009 Graydon Hoare, 2009-2013 Mozilla Foundation, 2016 Artyom Pavlov (LICENSE-MIT) | <https://github.com/RustCrypto/hashes> |
+| digest, block-buffer, crypto-common, generic-array, typenum, cpufeatures (via sha2) | 0.10.7, 0.10.4, 0.1.7, 0.14.7, 1.x, 0.2.17 | MIT OR Apache-2.0 (generic-array: MIT) | their authors | <https://github.com/RustCrypto> |
+
+Expression crate in [elisa/](elisa/Cargo.toml) (added 2026-11-08 for `calc` in `elisa/src/mcp_reason.rs`, the
+built-in reasoning server; pinned with `=`, no default features, no dependencies of its own; pure Rust):
+
+| Crate | Version | License | Copyright | Source |
+|---|---|---|---|---|
+| evalexpr | 11.3.1 | MIT | Copyright (c) 2019 Sebastian Schmidt | <https://github.com/ISibboI/evalexpr> |
+
+Pinned on purpose: 11.3.1 is evalexpr's last MIT release; 12.0.0 and later (from 2024-10-17) are `AGPL-3.0-only`,
+a copyleft license that must not enter this proprietary build. Do not raise the pin without checking the license.
+
+Security crates in [elisa/](elisa/Cargo.toml) (added 2026-11-08 for `elisa/src/mcp_sec.rs`, the built-in security MCP
+server; pinned with `=`, minimal features; pure Rust, about 0.5 MB of release binary with the server's own code).
+
+| Crate | Version | License | Copyright | Source |
+|---|---|---|---|---|
+| goblin | 0.10.7 | MIT | Copyright (c) m4b 2016-2024 | <https://github.com/m4b/goblin> |
+| scroll, scroll_derive (via goblin) | 0.13.0, 0.13.2 | MIT | Copyright (c) m4b 2016 | <https://github.com/m4b/scroll> |
+| plain (via goblin) | 0.2.3 | MIT OR Apache-2.0 | Copyright (c) 2017 Plain contributors | <https://github.com/randomites/plain> |
+
+yara-x (malware scanning, with wasmtime / cranelift) was removed on 2026-11-08: it is no longer a dependency, optional
+or not. It may return once the ratatui upgrade allows yara-x ≥ 1.19.
+
 ## 3. Swift packages
 
 [app/Package.swift](app/Package.swift) has no package dependencies (Apple system frameworks only: SwiftUI, AppKit, IOKit).

@@ -23,7 +23,7 @@ pub static CANCEL: AtomicBool = AtomicBool::new(false);
 pub static AT_PROMPT: AtomicBool = AtomicBool::new(false);
 pub static ASKING: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "usage: elisa [-p PROMPT] [--yes] [--continue] [--provider NAME] [--base-url U] [--model M] [--max-ctx N] [--cwd DIR] [--no-character] [--companion] [--serve-jsonl] [--no-checks] [--theme dark|light] [--demo-states [STATE]] [--version] [-h]";
+const USAGE: &str = "usage: elisa [-p PROMPT] [--yes] [--continue] [--provider NAME] [--base-url U [--type T]] [--model M] [--max-ctx N] [--cwd DIR] [--no-character] [--companion] [--serve-jsonl] [--no-checks] [--theme dark|light] [--demo-states [STATE]] [--version] [-h]";
 const COMPACT_SYSTEM: &str = "You write short, concrete session notes for a coding agent.";
 const COMPACT_OUT: usize = 800;
 const TOOL_PREAMBLE: usize = 240;
@@ -45,6 +45,10 @@ const COMPACT_HOT_BYTES: u64 = 4 << 20;
 const PINNED_CAP: usize = 150;
 /// smallest max_tokens a request is sent with (a near-full window still gets room to answer)
 const MIN_OUT: usize = 256;
+/// messages the relevance gate looks back over (`recent_text`)
+const RECENT_MSGS: usize = 6;
+/// system + tools above this share (percent) of the usable context gets a startup warning
+const FIXED_WARN_PCT: usize = 30;
 /// share of the limit a big step's results leave free for the turn's later steps (small results still append whole
 /// there, so a full window does not force a rewrite one step later)
 const STEP_TAIL: usize = 8;
@@ -130,6 +134,7 @@ pub fn parse_args() -> Result<Args, i32> {
             "--base-url" => val("--base-url").map(|v| a.base_url = Some(v)),
             "--model" => val("--model").map(|v| a.model = Some(v)),
             "--provider" => val("--provider").map(|v| a.provider = Some(v)),
+            "--type" => val("--type").and_then(|v| if ["streamdense", "anthropic", "openai"].contains(&v.as_str()) { a.kind = Some(v); Ok(()) } else { Err(format!("bad --type: {v} (streamdense | anthropic | openai)")) }),
             "--max-ctx" => val("--max-ctx").and_then(|v| v.parse().map(|n| a.max_ctx = Some(n)).map_err(|_| format!("bad --max-ctx: {v}"))),
             "--cwd" => val("--cwd").map(|v| a.cwd = Some(PathBuf::from(v))),
             "--no-character" => { a.no_character = true; Ok(()) }
@@ -176,12 +181,17 @@ pub fn run_session(args: Args, fe: &mut dyn Frontend) -> i32 {
         },
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
-    // an explicit --base-url (also the demo gateway) means that server, with no saved connection or its key
-    let forced = args.provider.clone().or_else(|| args.base_url.as_ref().map(|_| crate::provider::NONE.to_string()));
+    // --base-url: that server. With --type (also the demo gateway) that kind of server with config.toml's settings and
+    // no saved connection; without, the active connection's kind, model and size stay (Config::point_at)
+    let kind = args.base_url.as_ref().and(args.kind.as_deref());
+    let forced = args.provider.clone().or_else(|| kind.map(|_| crate::provider::NONE.to_string()));
     let mut cfg = match Config::load_as(&cwd, forced.as_deref()) { Ok(c) => c, Err(e) => { fe.error(&e); return 2; } };
-    if let Some(u) = args.base_url.clone() { cfg.base_url = u; }
+    if let Some(u) = args.base_url.clone() { cfg.point_at(&u, kind); }
     if let Some(m) = args.model.clone() { cfg.model = m; }
     if args.max_ctx.is_some() { cfg.max_ctx = args.max_ctx; }
+    // no model configured: say so once and send nothing (Elisa never picks one)
+    let no_model = cfg.model.trim().is_empty();
+    if no_model && args.prompt.is_some() { fe.error(crate::api::NO_MODEL); return 2; }
     let mut client = Client::new(&cfg);
     client.set_project(&cwd);
     let mut max_ctx = cfg.max_ctx.or_else(|| client.server_max_ctx()).unwrap_or(200_000);
@@ -202,16 +212,15 @@ pub fn run_session(args: Args, fe: &mut dyn Frontend) -> i32 {
         s.fe.info(&format!("Ollama: native API, window {} tokens · {}", s.max_ctx, caps.join(", ")));
     }
     s.vision = crate::provider::vision(&s.cfg.transport, ollama.as_deref(), s.cfg.vision);
-    if let Some(w) = &s.tctx.web {
-        let via = if w.engine == crate::web::SEARXNG { format!("SearXNG at {}", w.searxng) } else { "DuckDuckGo".into() };
-        s.fe.info(&format!("web: on · search via {via} · web_search and web_fetch send queries and urls off this machine"));
-    }
     s.checks_off = args.no_checks;
     s.open_memory();
     let mut resumed = None;
     if args.cont {
         if let Some(h) = s.store.load_last_session() { resumed = Some(h.len()); s.history = h; }
     }
+    // only a continued session carries the last state card and works on its notes; a new one starts clean
+    // (the card's goal / next step are that session's task) and gets the notes as background
+    if resumed.is_some() { s.carry_card(); s.notes_bg = false; }
     match args.prompt {
         Some(p) => {
             match (args.cont, resumed) {
@@ -219,12 +228,15 @@ pub fn run_session(args: Args, fe: &mut dyn Frontend) -> i32 {
                 (true, None) => s.fe.info("no saved session to continue"),
                 _ => {}
             }
+            s.budget_warning();
             let code = s.run_print(p);
             s.end_memory();
             code
         }
         None => {
             s.banner(resumed);
+            if no_model { s.fe.error(crate::api::NO_MODEL); }
+            s.budget_warning();
             if let Some(id) = s.card_id { s.fe.info(&format!("continuing from state card #{id}")); }
             if args.cont && resumed.is_none() { s.fe.info("no saved session to continue"); }
             s.run_repl();
@@ -254,10 +266,15 @@ struct Session<'f> {
     vision: bool,
     /// pictures that came with the input line just read: they go into this turn's user message
     attach: Vec<Block>,
+    /// MCP servers plugged into this session (config `[mcp.NAME]` + the built-in `web`): their tools sit next to Elisa's
+    mcp: crate::mcp_host::Host,
     tools: Vec<ToolDef>,
     tools_tokens: usize,
     project: Option<String>,
     notes: Option<String>,
+    /// the notes are background from an earlier session (a new session, or after /clear or /reset), not this
+    /// session's task: the first message marks them so and leaves their old session goal out (`context::background_notes`)
+    notes_bg: bool,
     system: String,
     system_tokens: usize,
     history: Vec<Message>,
@@ -330,6 +347,18 @@ struct Session<'f> {
     /// the gateway's prefill-only warm-up after a fold (config `warm`): WARM_UNKNOWN until /health or the first try
     /// says; a background thread sets it from the answer
     warm: Arc<AtomicU8>,
+    /// the reasoning tools (`think` / `steps` / `step_done` / `calc`, `mcp_reason.rs`) are in this turn's request:
+    /// decided once at turn start (`reason_turn`), so the tool list never changes mid-turn
+    reason_on: bool,
+    /// the relevance gate's choice for this turn (`mcp_reason::gate`, config `gate_tools`): (`docs_*`, `sec_*`) offered
+    gate: (bool, bool),
+    /// what Elisa's own tools changed this session (`context::Ledger`): the notes' file list and the check of a
+    /// summary's "done" claims
+    ledger: context::Ledger,
+    /// the audit log (`audit.rs`; config `audit`): off = records nothing
+    audit: crate::audit::Log,
+    /// how the user answered the approval of the call in progress (None: no one was asked), for the audit log
+    answer: Option<&'static str>,
 }
 
 struct ReqRun { ts: u64, t0: Instant, prompt: String }
@@ -354,22 +383,58 @@ impl<'f> Session<'f> {
 
     fn new(fe: &'f mut dyn Frontend, cfg: Config, client: Client, cwd: PathBuf, max_ctx: usize, interactive: bool, yes: bool) -> Session<'f> {
         let store = Store::new(&cwd);
-        let web = (!cfg.web.is_empty()).then(|| crate::web::WebCfg { engine: cfg.web.clone(), searxng: cfg.searxng_url.clone() });
-        let tctx = ToolCtx { cwd: cwd.clone(), max_chars: cfg.tool_output_max_chars, bash_timeout_s: cfg.bash_timeout_s, ast_guard: cfg.ast_guard, web };
+        let tctx = ToolCtx { cwd: cwd.clone(), max_chars: cfg.tool_output_max_chars, bash_timeout_s: cfg.bash_timeout_s, ast_guard: cfg.ast_guard };
+        crate::sandbox::set_mode(crate::sandbox::Mode::parse(&cfg.shell_sandbox).unwrap_or(crate::sandbox::Mode::platform_default()));
+        // what config loading skipped or ignored (a bad [mcp.NAME], a bad `web` value): one line each, nothing when clean
+        for n in &cfg.notes { fe.info(n); }
+        // the MCP servers: the configured ones, and Elisa's own web server first unless it is off or replaced
+        let mut servers = cfg.mcp.clone();
+        let web_on = !cfg.web.is_empty() && cfg.web != "off" && !cfg.mcp_off.iter().any(|n| n == "web");
+        let web_in = web_on && !servers.iter().any(|c| c.name == "web");
+        if web_in { servers.insert(0, crate::mcp_host::builtin_web(&cfg.web, &cfg.searxng_url, &cfg.brave_api_key)); }
+        // the documents server (`docs_pdf` / `docs_sheet`), right after the web server, unless `docs = "off"` or replaced
+        let docs_on = cfg.docs == "on" && !cfg.mcp_off.iter().any(|n| n == "docs");
+        let docs_in = docs_on && !servers.iter().any(|c| c.name == "docs");
+        if docs_in { servers.insert(usize::from(web_in), crate::mcp_host::builtin_docs(&cwd, cfg.tool_output_max_chars)); }
+        // the security server (`sec_*`), after the documents server, unless `security = "off"` or replaced
+        let sec_on = cfg.security == "on" && !cfg.mcp_off.iter().any(|n| n == "sec");
+        if sec_on && !servers.iter().any(|c| c.name == "sec") {
+            servers.insert(usize::from(web_in) + usize::from(docs_in), crate::mcp_host::builtin_sec(&cwd, cfg.tool_output_max_chars));
+        }
+        // the code sandbox (`run_code`): only when the user switched it on (`sandbox = "colima"`)
+        let run_on = cfg.sandbox == "colima" && !cfg.mcp_off.iter().any(|n| n == "run");
+        if run_on && !servers.iter().any(|c| c.name == "run") { servers.push(crate::mcp_host::builtin_run(cfg.sandbox_timeout_s)); }
+        // the reasoning tools for small models, last, unless `reason = "off"` or replaced (offered per turn: `reason_turn`)
+        let reason_srv = cfg.reason != "off" && !cfg.mcp_off.iter().any(|n| n == crate::mcp_reason::NAME);
+        if reason_srv && !servers.iter().any(|c| c.name == crate::mcp_reason::NAME) { servers.push(crate::mcp_host::builtin_reason()); }
+        let own: Vec<String> = tools::defs_for(true).into_iter().map(|d| d.name).collect();
+        let (mut mcp, mcp_notes) = crate::mcp_host::Host::start(&servers, &|n| own.iter().any(|o| o == n));
+        for n in &mcp_notes { fe.info(n); }
+        // the audit log (servers started, from here on every tool call) and the tool-list pins of the servers that
+        // are not Elisa's own (`pins.rs`): a changed list warns, and that server asks on every call until /trust
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let audit = match &home { Some(h) if cfg.audit == "on" => crate::audit::Log::open(h, &cwd), _ => crate::audit::Log::default() };
+        for n in &mcp_notes { audit.note("server_start", &[("outcome", "error"), ("detail", n)]); }
+        mcp.audit_to(&audit);
+        if let Some(h) = &home {
+            for (warn, n) in mcp.check_pins(&crate::pins::path_in(h)) { if warn { fe.error(&n) } else { fe.info(&n) } }
+        }
         let (project, notes, always) = (store.load_project(), store.load_notes(), store.load_allowed());
         let watch = Watcher::new(&cfg.base_url, &cwd.display().to_string());
         if let Some(p) = fe.watcher_push() { watch.set_push(p); }
         if cfg.transport != crate::provider::Transport::Gateway { watch.disable(); }
         let mut s = Session {
-            fe, cfg, client, store, tctx, cwd, max_ctx, vision: false, attach: Vec::new(), tools: Vec::new(), tools_tokens: 0, project, notes,
+            fe, cfg, client, store, tctx, cwd, max_ctx, vision: false, attach: Vec::new(), mcp, tools: Vec::new(), tools_tokens: 0, project, notes, notes_bg: true,
             system: String::new(), system_tokens: 0, history: Vec::new(), real: None, calib: None, input: String::new(), interactive, yolo: yes, always,
             mem: None, turn_no: 0, folded: 0, fold_ids: Vec::new(), fold_retry_at: 0, digest_only: false, in_turn: false, folded_this_turn: false, tool_lines: Vec::new(), unsent: false,
             recall_slow: false, save_slow: false, index_rate: None, unindexed: 0, watch,
             card: None, card_id: None, card_ex: None, exchanges: 0, new_card: None, card_broken: false, checks_off: false, outside_mode: outside::Mode::Ask, outside_ok: Vec::new(), ast_stats: AstStats::default(), cards: 0,
             req: None, stats: metrics::Stats::default(),
             card_log: Vec::new(), goal: None, user_req: String::new(), warm: Arc::new(AtomicU8::new(WARM_UNKNOWN)),
+            reason_on: false, gate: (false, false), ledger: context::Ledger::default(), audit, answer: None,
         };
         s.outside_mode = outside::Mode::parse(&s.cfg.outside).unwrap_or(outside::Mode::Ask);
+        if s.cfg.gate_tools == "off" { s.gate = (true, true); }
         s.rebuild_system();
         s
     }
@@ -378,13 +443,61 @@ impl<'f> Session<'f> {
     /// the code prompt and the full tool set on every request (no chat/code split since 2026-11-01).
     fn rebuild_system(&mut self) {
         (self.system, self.tools) = (context::system_prompt(&self.cwd, self.cfg.system_prompt_file.as_deref(), self.project.as_deref(), None), tools::defs_for(self.cfg.ast));
-        if self.tctx.web.is_some() { self.tools.extend(tools::web_defs()); }
+        // stable tools first (Elisa's own, then every MCP server that is always offered); the per-turn ones after them,
+        // in a fixed order (`docs`, `sec`, then the reasoning tools), so a flip only changes the end of the list
+        let defs = self.mcp.defs();
+        let m = &self.mcp;
+        let gated = |name: &str| m.reason_tool(name) || m.gated_server(name).is_some();
+        self.tools.extend(defs.iter().filter(|t| !gated(&t.name)).cloned());
+        for (i, srv) in crate::mcp_reason::GATED.iter().enumerate() {
+            if [self.gate.0, self.gate.1][i] { self.tools.extend(defs.iter().filter(|t| m.gated_server(&t.name) == Some(*srv)).cloned()); }
+        }
+        // the reasoning tools only on a turn that wants them (`reason_turn`; the list stays fixed within a turn)
+        if self.reason_on { self.tools.extend(defs.iter().filter(|t| m.reason_tool(&t.name)).cloned()); }
         // config `ast = false`: no syntax-tree tools, so no prompt line about them (fixed per session: byte-stable)
         if !self.cfg.ast { self.system = self.system.lines().filter(|l| !l.contains("`outline`")).map(|l| format!("{l}\n")).collect(); }
+        // one line on `<untrusted>` fences, only when a tool can return outside text (`untrusted.rs`)
+        if self.tools.iter().any(|t| self.untrusted_source(&t.name, &serde_json::Value::Null).is_some()) {
+            if !self.system.ends_with('\n') { self.system.push('\n'); }
+            self.system.push_str(crate::untrusted::SYSTEM_LINE);
+            self.system.push('\n');
+        }
         // + the chat template's tool preamble (Qwen: ~236 tokens, measured with count_tokens)
         self.tools_tokens = estimate_tokens(&serde_json::to_string(&self.tools).unwrap_or_default()) + TOOL_PREAMBLE;
         self.real = None;
         self.system_tokens = estimate_tokens(&self.system);
+    }
+
+    /// Whether this session's requests leave the machine: a cloud connection, or no connection and a non-loopback
+    /// `base_url` (then `redact = "remote"` hides secrets from the model).
+    fn model_leaves(&self) -> bool {
+        self.cfg.leaves.is_some() || (self.cfg.provider.is_empty() && !crate::provider::is_local(&self.cfg.base_url))
+    }
+
+    /// The `<untrusted>` fence source for a result of tool `name`, None when it is trusted (`untrusted::source`).
+    fn untrusted_source(&self, name: &str, input: &serde_json::Value) -> Option<String> {
+        let server = self.mcp.server_of(name);
+        let user = server.is_some_and(|s| self.cfg.mcp.iter().any(|c| c.name == s));
+        crate::untrusted::source(name, server, user, input)
+    }
+
+    /// Tool output on its way to the model: secrets hidden (config `redact`, `secrets.rs`) and outside text fenced
+    /// (`untrusted.rs`). The user's own display (`tool_done`) shows the output as it came.
+    fn guard_output(&mut self, name: &str, input: &serde_json::Value, content: String) -> String {
+        // whatever the mode: a secret seen here is hidden wherever it shows up again on disk (`secrets::Scrubber`)
+        crate::secrets::learn(&content);
+        let mode = crate::secrets::Mode::parse(&self.cfg.redact).unwrap_or(crate::secrets::Mode::Remote);
+        let content = if mode.applies(self.model_leaves()) {
+            let (r, n) = crate::secrets::redact(&content);
+            if n > 0 { self.fe.info(&format!("[{} hidden from the model]", crate::secrets::count_words(n))); }
+            r
+        } else { content };
+        let Some(src) = self.untrusted_source(name, input) else { return content };
+        let (fenced, hit) = crate::untrusted::fence(&src, &content);
+        if let Some(h) = hit {
+            self.fe.info(&format!("[{name}: text that looks like a prompt injection (\"{h}\"); marked for the model as data]"));
+        }
+        fenced
     }
 
     fn fixed(&self) -> usize { self.system_tokens + self.tools_tokens }
@@ -410,6 +523,23 @@ impl<'f> Session<'f> {
     fn reserve(&self) -> usize { self.cfg.max_output.min(self.max_ctx / 4) + self.client.reasoning_room().min(self.max_ctx / 8) }
     /// Prompt budget: max_ctx minus the output reserve and the safety margin (`context::ctx_margin`, 3%).
     fn limit(&self) -> usize { self.max_ctx.saturating_sub(self.reserve() + context::ctx_margin(self.max_ctx)) }
+
+    /// Once at startup: a warning when system + tools take more than FIXED_WARN_PCT of the usable context on a plain
+    /// turn, naming the biggest servers (soak 2026-11-08: 2.8K of 5.9K at 8K, so the conversation had ~3K and folded
+    /// before nearly every turn).
+    fn budget_warning(&mut self) {
+        let (fixed, limit) = (self.fixed(), self.limit());
+        if limit == 0 || fixed * 100 <= limit * FIXED_WARN_PCT { return; }
+        let own: Vec<&ToolDef> = self.tools.iter().filter(|t| !self.mcp.owns(&t.name)).collect();
+        let mut parts: Vec<(String, usize)> = self.mcp.costs().into_iter()
+            .filter(|(srv, _)| self.tools.iter().any(|t| self.mcp.server_of(&t.name) == Some(srv.as_str()))).collect();
+        parts.push(("Elisa's own tools".into(), estimate_tokens(&serde_json::to_string(&own).unwrap_or_default())));
+        parts.sort_by_key(|p| std::cmp::Reverse(p.1));
+        let top: Vec<String> = parts.iter().take(3).map(|(n, t)| format!("{n} {}", ui::k(*t))).collect();
+        self.fe.info(&format!("context: system + tools take {} of the {} usable tokens ({}%) before any conversation; biggest: {} · \
+            a larger max_ctx, or fewer servers (web / sandbox = \"off\", [mcp.NAME] enabled = false), leaves more room",
+            ui::k(fixed), ui::k(limit), fixed * 100 / limit, top.join(", ")));
+    }
 
     fn banner(&mut self, resumed: Option<usize>) {
         let b = Banner {
@@ -491,10 +621,13 @@ impl<'f> Session<'f> {
             "/exit" | "/quit" => return false,
             "/clear" | "/compact" => {
                 if self.history.is_empty() { self.fe.info("history is empty; notes unchanged"); return true; }
-                let before = self.estimate();
+                // the text estimate, like the size after (a server count against an estimate would compare apples
+                // with pears)
+                let before = self.fixed() + estimate_messages(&self.history);
                 // same progress job as the automatic fold ("summarizing …"): the status line shows it and input pauses
                 let turns = self.history.iter().filter(|m| m.role == Role::User && m.content.iter().any(|b| matches!(b, Block::Text { .. }))).count();
-                let (label, t0) = (format!("summarizing {turns} turns ({})", ui::k(before)), Instant::now());
+                let earlier = if self.notes.is_some() { " + earlier notes" } else { "" };
+                let (label, t0) = (format!("summarizing {turns} turn{} ({}){earlier}", if turns == 1 { "" } else { "s" }, ui::k(before)), Instant::now());
                 let prog = |frac: f32, done: Option<String>| Progress { label: label.clone(), frac: Some(frac), elapsed_s: t0.elapsed().as_secs_f64(), done };
                 self.fe.progress(Some(&prog(0.0, None)));
                 let r = self.summarise("[summarising…]");
@@ -502,23 +635,41 @@ impl<'f> Session<'f> {
                 self.fe.progress(Some(&prog(1.0, Some(done))));
                 match r {
                     Ok(n) => {
+                        let old = self.notes.clone();
+                        // merged into the earlier notes (the folds' summaries and cards stay), its claims checked
+                        // and the files changed this session taken from Elisa's own records (soak: /clear replaced
+                        // the notes with one turn's summary that said "No files were touched" after 4 edits)
+                        let n = self.finish_notes(context::merge_notes(old.as_deref(), &self.verified(&n)));
                         self.mem_note(&n, usize::MAX);
-                        if cmd == "/clear" {
+                        // /clear is a fresh start: the notes become background and the card goes (the notes carry it)
+                        let clear = cmd == "/clear";
+                        if clear {
                             self.new_memory_session();
                             // the pre-clear conversation stays in its own session file (resumable)
                             context::new_session();
                             self.goal = None;
+                            (self.card, self.card_id, self.card_ex) = (None, None, None);
+                            self.ledger = context::Ledger::default();
                         }
                         self.card_log.clear();
-                        self.set_notes(Some(n));
                         self.history.clear();
-                        let notes = self.notes.clone().unwrap_or_default();
-                        self.fe.notes_saved(&notes);
-                        self.watch_note("fold", &notes);
-                        if cmd == "/clear" {
-                            self.fe.info(&format!("[cleared: {} → {} tokens; notes saved to .elisa/notes.md]", ui::k(before), ui::k(self.estimate())));
-                        } else {
-                            self.fe.compacted(before, self.estimate());
+                        self.set_notes(Some(n));
+                        self.notes_bg = clear;
+                        // /clear must come out smaller; /compact keeps the whole summary (it is the task's memory)
+                        let after = if clear { self.shrink_notes(before, old.clone()) } else { self.estimate() };
+                        if let Some(notes) = self.notes.clone() {
+                            self.fe.notes_saved(&notes);
+                            self.watch_note("fold", &notes);
+                        }
+                        // `compacted` carries the new context size: the status bars show it now, not at the next reply
+                        self.fe.compacted(before, after);
+                        if clear {
+                            let kept = match &self.notes {
+                                None => "no notes kept: the conversation was shorter than any summary",
+                                Some(n) if old.as_ref() == Some(n) => "earlier notes kept: the summary was longer than the conversation",
+                                Some(_) => "notes saved to .elisa/notes.md",
+                            };
+                            self.fe.info(&format!("[cleared: {} → {} tokens; {kept}]", ui::k(before), ui::k(after)));
                         }
                     }
                     Err(e) => self.fe.error(&format!("summary failed: {e}. Old notes kept, history kept (use /reset to wipe without a summary).")),
@@ -529,6 +680,7 @@ impl<'f> Session<'f> {
                 self.history.clear(); self.real = None; self.fold_reset();
                 self.drop_card();
                 self.goal = None;
+                self.notes_bg = true;
                 self.fe.info("history and state card emptied (notes kept)");
             }
             "/context" => {
@@ -536,10 +688,17 @@ impl<'f> Session<'f> {
                 let msg = format!(
                     "system {} · tools {} · history {} ({} msgs) · total {} / limit {} (ctx {} - output {}) · fold at {}",
                     ui::k(self.system_tokens), ui::k(self.tools_tokens), ui::k(h), self.history.len(), ui::k(self.estimate()),
-                    ui::k(self.limit()), ui::k(self.max_ctx), ui::k(self.reserve()),
-                    ui::k((self.cfg.fold_at as f64 * self.limit() as f64) as usize));
+                    ui::k(self.limit()), ui::k(self.max_ctx), ui::k(self.reserve()), ui::k(self.fold_point()));
                 if let Some(l) = self.ast_stats.line() { self.fe.info(&l); }
                 self.fe.info(&msg);
+                if self.cfg.gate_tools == "auto" && self.mcp.lines().iter().any(|l| l.starts_with("mcp docs:") || l.starts_with("mcp sec:")) {
+                    self.fe.info(&format!("documents tools {} · security tools {} this turn (gate_tools = \"auto\": only on turns about them)",
+                        if self.gate.0 { "offered" } else { "not offered" }, if self.gate.1 { "offered" } else { "not offered" }));
+                }
+                if self.mcp.reason_tool("think") {
+                    self.fe.info(&format!("reasoning tools (think, steps, step_done, calc): {} this turn (reason = \"{}\")",
+                        if self.reason_on { "offered" } else { "not offered" }, self.cfg.reason));
+                }
                 let probe = [Message::user_text(".")];
                 let count = |m: &[Message]| self.client.count_tokens(&Request { system: &self.system, tools: &self.tools, messages: m, max_tokens: 1 });
                 let msg = match (count(&probe), if self.history.is_empty() { Ok(0) } else { count(&self.history) }) {
@@ -558,6 +717,20 @@ impl<'f> Session<'f> {
                     self.fe.info(&s.join("\n\n"));
                 }
             },
+            "/trust" => {
+                let name = line[cmd.len()..].trim();
+                if name.is_empty() {
+                    let u = self.mcp.untrusted_servers();
+                    self.fe.info(&if u.is_empty() { "every MCP server's tool list matches its pin (~/.elisa/mcp-pins.json)".to_string() }
+                        else { format!("tool list changed since it was pinned: {} · /trust NAME accepts the new list", u.join(", ")) });
+                } else {
+                    match self.mcp.trust(name) {
+                        Ok(m) => { self.audit.note("trust", &[("server", name), ("outcome", "ok")]); self.fe.info(&m); }
+                        Err(e) => self.fe.error(&e),
+                    }
+                }
+            }
+            "/audit" => self.audit_command(line[cmd.len()..].trim()),
             "/allow" => {
                 if line[cmd.len()..].trim() == "clear" {
                     self.always.clear();
@@ -566,9 +739,11 @@ impl<'f> Session<'f> {
                         Err(e) => self.fe.error(&format!("could not clear .elisa/allow: {e}")),
                     }
                 } else {
-                    let mut v: Vec<&str> = self.always.iter().map(String::as_str).collect();
+                    // MCP keys (`mcp:web`) read as "MCP server web"
+                    let show = |k: &str| match k.strip_prefix(tools::MCP_KEY) { Some(srv) => format!("MCP server {srv}"), None => k.to_string() };
+                    let mut v: Vec<String> = self.always.iter().map(|k| show(k)).collect();
                     v.sort_unstable();
-                    let auto = self.cfg.auto_approve.join(", ");
+                    let auto = self.cfg.auto_approve.iter().map(|k| show(k)).collect::<Vec<_>>().join(", ");
                     self.fe.info(&if v.is_empty() { format!("no tools always allowed in this project (never ask: {auto})") }
                         else { format!("always allowed in this project: {} (never ask: {auto}) · /allow clear to reset", v.join(", ")) });
                     let granted: Vec<String> = self.outside_ok.iter().map(|(p, w)| format!("{}{}", p.display(), if *w { " (read + write)" } else { " (read)" })).collect();
@@ -601,6 +776,9 @@ impl<'f> Session<'f> {
                         self.fe.info(&format!("resumed \"{}\": {} messages restored (~{} tokens)", list[i].title, h.len(), ui::k(estimate_messages(&h))));
                         self.history = h;
                         self.real = None;
+                        // back to that work: its card and notes are the task again
+                        self.carry_card();
+                        self.notes_bg = false;
                     }
                     None => self.fe.error(&format!("could not load {}", list[i].path.display())),
                 }
@@ -608,7 +786,7 @@ impl<'f> Session<'f> {
             "/pin" => {
                 let fact = line[cmd.len()..].trim();
                 if fact.is_empty() { self.fe.info("usage: /pin <fact>   e.g. /pin the release branch is trunk"); return true; }
-                let r = self.mem.as_mut().map(|m| m.db.pin_fact(m.session, fact));
+                let r = self.mem.as_mut().map(|m| m.db.pin_fact(m.session, &crate::secrets::redact(fact).0));
                 match r {
                     None => self.fe.error("memory is off: nothing to pin into"),
                     Some(Ok(id)) => { self.unindexed += 1; self.fe.info(&format!("pinned fact #{id}: {fact} (carried in [state] from the next fresh context)")); }
@@ -662,13 +840,74 @@ impl<'f> Session<'f> {
         self.stats.add(m);
     }
 
-    fn set_notes(&mut self, n: Option<String>) {
+    /// After /clear (history empty, new notes set): the context must come out smaller than `before`. Notes
+    /// longer than the conversation they replace (uitest: 2.5K → 2.9K after three short turns) are cut to whole lines
+    /// under it; if even that does not fit, the earlier notes stay. Returns the new context estimate.
+    fn shrink_notes(&mut self, before: usize, old: Option<String>) -> usize {
+        let (bg, after) = (self.notes_bg, self.estimate());
+        if after < before { return after; }
+        let n = self.notes.clone().unwrap_or_default();
+        let over = after - before + 1 + before / 50;
+        // by priority: Elisa's file records, decisions and open tasks are the last lines to go
+        let cut = context::cap_notes_priority(&n, estimate_tokens(&n).saturating_sub(over));
+        self.set_notes((!cut.is_empty()).then_some(cut));
+        self.notes_bg = bg;
+        if self.estimate() >= before {
+            self.set_notes(old);
+            self.notes_bg = bg;
+        }
+        self.estimate()
+    }
+
+    fn set_notes(&mut self, n: Option<String>) { self.put_notes(n, true); }
+
+    /// The notes in use from now on, the session goal on top; `save`: also to `.elisa/notes.md` (a fold tries them
+    /// first and saves only the version it keeps).
+    fn put_notes(&mut self, n: Option<String>, save: bool) {
+        self.notes_bg = false;
         // the session goal rides on top of the notes (a fold summary's `## Goal` is the newest request)
         let n = match (n, self.goal.as_deref()) { (Some(t), Some(g)) => Some(context::with_session_goal(&t, g)), (n, _) => n };
-        let r = match &n { Some(t) => self.store.save_notes(t), None => self.store.clear_notes() };
-        if let Err(e) = r { self.fe.error(&format!("notes: {e}")); }
+        if save {
+            let r = match &n { Some(t) => self.store.save_notes(t), None => self.store.clear_notes() };
+            if let Err(e) = r { self.fe.error(&format!("notes: {e}")); }
+        }
         self.notes = n;
         self.rebuild_system();
+    }
+
+    /// New notes text (a summary, a digest, state cards) with its "done / changed" claims checked against Elisa's own
+    /// edit records (`context::verify_claims`): a claim naming code no edit wrote is dropped.
+    fn verified(&self, new: &str) -> String {
+        let cwd = self.cwd.clone();
+        context::verify_claims(new, &self.ledger, &move |p: &str| std::fs::read_to_string(cwd.join(p)).ok())
+    }
+
+    /// Merged notes as they are kept: Elisa's own list of the files changed this session merged in (ground truth),
+    /// duplicates gone, cut by priority to the notes' share of the window (`context::notes_budget`).
+    fn finish_notes(&self, merged: String) -> String {
+        let merged = match self.ledger.section() { Some(sec) => context::merge_notes(Some(&merged), &sec), None => merged };
+        context::cap_notes_priority(&merged, self.notes_budget())
+    }
+
+    /// The prompt size where a between-turns fold starts (`context::fold_point`: the fixed cost plus fold_at of the
+    /// room left after it).
+    fn fold_point(&self) -> usize { context::fold_point(self.fixed(), self.limit(), self.cfg.fold_at) }
+    fn notes_budget(&self) -> usize { context::notes_budget(self.fixed(), self.limit()) }
+    fn min_gain(&self) -> usize { context::min_fold_gain(self.fixed(), self.limit()) }
+
+    /// What a between-turns fold could free at most (tokens): the history before the last request and the shrinkable
+    /// part of the kept exchange, minus what the notes would grow by (up to their share of the window).
+    fn fold_gain(&self) -> usize {
+        let mut h = self.history.clone();
+        let last = h.iter().rposition(is_request).unwrap_or(0);
+        let now = estimate_messages(&h);
+        context::shrink_all_results(&mut h);
+        let kept = estimate_messages(&h[last..]);
+        if last == 0 { return now.saturating_sub(kept); }
+        let notes_now = self.notes.as_deref().map_or(0, estimate_tokens);
+        let notes_after = (notes_now + COMPACT_OUT / 2).min(self.notes_budget().max(notes_now));
+        let header = estimate_tokens(&self.first(""));
+        now.saturating_sub(kept + header + notes_after - notes_now)
     }
 
     /// Summary of the whole history (plus old notes), as new notes. First in context: same system + tools + history
@@ -687,30 +926,34 @@ impl<'f> Session<'f> {
             let r = self.client.send(&req, &CANCEL, &mut |_| {})?;
             if r.stop_reason == "cancelled" { return Err("cancelled".into()); }
             let tool = r.content.iter().any(|b| matches!(b, Block::ToolUse { .. }));
-            let n = texts(&Message::new(Role::Assistant, r.content)).trim().to_string();
+            let n = summary_text(r.content);
             if !tool && !n.is_empty() { return Ok(n); }
             self.fe.info("[in-context summary unusable; retrying from a transcript]");
         }
         let budget = self.max_ctx.saturating_sub(out + self.client.reasoning_room() + 64 + estimate_tokens(COMPACT_SYSTEM)) * 85 / 100;
-        let msgs = [context::compact_request(&self.history, self.notes.as_deref(), budget)];
+        // the earlier notes are merged by Elisa afterwards (`context::merge_notes`), not left to the model
+        let msgs = [context::compact_request(&self.history, None, budget)];
         let req = Request { system: COMPACT_SYSTEM, tools: &[], messages: &msgs, max_tokens: out };
         self.fe.waiting();
         let r = self.client.send(&req, &CANCEL, &mut |_| {})?;
         if r.stop_reason == "cancelled" { return Err("cancelled".into()); }
-        let n = texts(&Message::new(Role::Assistant, r.content)).trim().to_string();
+        let n = summary_text(r.content);
         if n.is_empty() { Err("empty summary".into()) } else { Ok(n) }
     }
 
-    /// The turn-boundary fold (after a reply, the cheap place): when the window reaches fold_at of the usable budget
-    /// (real usage when known), or after fold_max_turns turns. After a failed fold, wait until the window grows
-    /// another 10% of the budget.
+    /// The turn-boundary fold (after a reply, the cheap place): when the window reaches the fold point (the fixed
+    /// cost plus fold_at of the room left after it, `context::fold_point`; real usage when known), or after
+    /// fold_max_turns turns. Never when it could not free a meaningful share of the room (`fold_gain` under
+    /// `min_gain`: soak 2026-11-08 folded before almost every turn at 8K, some folds growing the prompt). After a
+    /// failed or skipped fold, wait until the window grows by that share again.
     fn maybe_fold(&mut self) {
         if self.history.len() < 2 { return; } // only the request: nothing to fold
-        let (limit, est) = (self.limit(), self.estimate());
-        let at = (self.cfg.fold_at as f64 * limit as f64) as usize;
-        let by_tokens = est >= at.max(self.fold_retry_at);
+        let est = self.estimate();
+        let by_tokens = est >= self.fold_point().max(self.fold_retry_at);
         let by_turns = self.cfg.fold_max_turns > 0 && self.turn_no - self.folded >= self.cfg.fold_max_turns && !self.in_turn;
-        if by_tokens || by_turns { self.fold(by_turns && !by_tokens); }
+        if !(by_tokens || by_turns) { return; }
+        if !by_turns && self.fold_gain() < self.min_gain() { self.fold_retry_at = est + self.min_gain(); return; }
+        self.fold(by_turns && !by_tokens);
     }
 
     /// Before each request of a turn. Within a turn the history is append-only (a sent message never changes: the
@@ -744,13 +987,39 @@ impl<'f> Session<'f> {
             if need <= tail / 4 { room } else { room.saturating_sub(tail).max(room.min(tail / 4)) }
         };
         if need <= allowed(self) { return; }
-        if allowed(self) < context::min_step_tokens(results) && !self.folded_this_turn && self.history.len() >= 2 {
+        // every result keeps a useful slice (head + tail, RESULT_MIN_CHARS): older history makes room first, never
+        // a result cut to nothing (soak 2026-11-08: 47 results "trimmed to fit (0 tokens left)" were re-requested or
+        // answered with invented numbers)
+        let min = context::min_step_tokens(results);
+        if allowed(self) < min && self.history.len() >= 2 && !self.folded_this_turn {
             self.folded_this_turn = true;
             self.fold(false);
         }
-        let room = allowed(self);
+        // when the room is under the minimum slice, the reply's output gives way first (down to MIN_OUT)
+        let hard = |s: &Self| s.max_ctx.saturating_sub(s.est_safe() + context::ctx_margin(s.max_ctx) + MIN_OUT + 64 + MSG_OVERHEAD_TOKENS);
+        if allowed(self) < min && hard(self) < min && self.history.len() >= 2 {
+            // still short: this turn's earlier results become one line each (a rewrite, but the new result is what
+            // the next step needs)
+            let cap = self.turn_cap(&self.history).min(self.history.len());
+            let before = self.estimate();
+            let mut h = self.history.clone();
+            context::shrink_all_results(&mut h[cap..]);
+            if estimate_messages(&h) < estimate_messages(&self.history) { self.history = h; self.real = None; self.shrunk(before); }
+        }
+        let room = match allowed(self) { r if r >= min => r, _ => hard(self).min(min) };
+        if room < min {
+            // not even the minimum slice fits: said plainly instead of a stub the model would fill in
+            let mut n = 0;
+            for b in results.iter_mut() {
+                if let Block::ToolResult { content, .. } = b {
+                    if content.chars().count() > context::RESULT_MIN_CHARS / 4 { *content = context::not_shown(content); n += 1; }
+                }
+            }
+            if n > 0 { self.fe.info(&format!("[{n} tool result{} not shown: too big for the context even after a fold; the model was told so]", if n == 1 { "" } else { "s" })); }
+            return;
+        }
         let n = context::cap_step_results(results, room);
-        if n > 0 { self.fe.info(&format!("[{n} tool result{} trimmed to fit the context ({} tokens left)]", if n == 1 { "" } else { "s" }, ui::k(room))); }
+        if n > 0 { self.fe.info(&format!("[{n} tool result{} trimmed to fit the context (head and tail kept, ~{} tokens)]", if n == 1 { "" } else { "s" }, ui::k(room))); }
     }
 
     /// After a fold: when the kept current turn is still over the limit, its newest tool results are cut to fit, so
@@ -772,8 +1041,51 @@ impl<'f> Session<'f> {
         msgs.iter().rposition(|m| m.role == Role::User && m.content.iter().any(|b| matches!(b, Block::Text { text } if !text.starts_with(context::NUDGE_PREFIX)))).unwrap_or(0)
     }
 
+    /// Turn start: are the reasoning tools in this turn's requests? A cheap check of the user's words, no model call
+    /// (`mcp_reason::decide`; a follow-up like "continue" keeps the last choice). The tool list changes only when the
+    /// choice flips, since a different list re-reads the whole prompt (the tools sit before the history in the
+    /// template, so the server's prefix cache is lost once). The server's per-turn caps start again.
+    fn reason_turn(&mut self, input: &str) {
+        let mode = crate::mcp_reason::Mode::parse(&self.cfg.reason).unwrap_or(crate::mcp_reason::Mode::Auto);
+        let body = context::request_body(input);
+        let on = crate::mcp_reason::decide(mode, body, self.reason_on);
+        // the same check, whatever `reason` is: a simple turn ("hi", "2+2=?") asks the model not to reason and gets a
+        // smaller output cap (config `think_simple`; a follow-up like "ok" keeps the last turn's choice)
+        let simple = crate::mcp_reason::wanted(body).map_or(self.client.simple(), |multi| !multi);
+        self.client.set_simple(simple && self.cfg.think_simple == "off");
+        self.mcp.new_turn();
+        // the documents and security servers: only on turns about them (config `gate_tools`), same once-per-turn rule
+        let gate = crate::mcp_reason::gate(self.cfg.gate_tools == "off", body, &self.recent_text(), self.gate);
+        if on != self.reason_on || gate != self.gate {
+            (self.reason_on, self.gate) = (on, gate);
+            self.rebuild_system();
+        }
+    }
+
+    /// Text of the recent context (the last few messages: words, tool calls and the head of each result) for the
+    /// relevance gate: a document listed or read there keeps the documents tools on.
+    fn recent_text(&self) -> String {
+        let mut s = String::new();
+        for m in self.history.iter().rev().take(RECENT_MSGS) {
+            for b in &m.content {
+                match b {
+                    Block::Text { text } => s.push_str(context::request_body(text)),
+                    Block::ToolUse { input, .. } => s.push_str(&input.to_string()),
+                    Block::ToolResult { content, .. } => s.extend(content.chars().take(2000)),
+                    Block::Image { .. } => {}
+                }
+                s.push('\n');
+            }
+        }
+        s
+    }
+
     /// One user turn; records the user text and the final assistant reply in memory.
     fn turn(&mut self, input: String) -> TurnEnd {
+        if self.cfg.model.trim().is_empty() { self.unsent = true; return TurnEnd::Failed(crate::api::NO_MODEL.into()); }
+        // a secret the user typed is hidden wherever it shows up later on disk, the model's restatement included
+        crate::secrets::learn(&input);
+        self.reason_turn(&input);
         self.tool_lines.clear();
         self.unsent = false;
         (self.new_card, self.card_broken) = (None, false);
@@ -804,7 +1116,7 @@ impl<'f> Session<'f> {
         if !lines.is_empty() { self.fe.recalled(&lines); }
 
         let text = if self.history.is_empty() {
-            context::first_message_full(&self.cwd, self.notes.as_deref(), self.state_block().as_deref(), &lines, &input)
+            context::first_message_full(&self.cwd, self.first_notes().as_deref(), self.state_block().as_deref(), &lines, &input)
         } else {
             context::with_memory(&lines, &input)
         };
@@ -821,6 +1133,13 @@ impl<'f> Session<'f> {
         // one correction per turn when a reply writes a tool call as text
         let mut nudged = false;
         let mut repeat = Repeat::default();
+        // repeated identical calls, short cycles, steps without progress (`loop_guard.rs`)
+        let mut guard = crate::loop_guard::Guard::default();
+        // a reply with no visible text (only its state card): asked once more, with this nudge after the history for
+        // that one request (it never enters the history, so the next requests' prefix is unchanged)
+        let mut empty_retry: Option<Message> = None;
+        let mut retried = false;
+        let mut stashed_card: Option<String> = None;
         for _ in 0..self.cfg.max_steps.max(1) {
             if !self.mid_turn_fold() {
                 // run2 call 30: sent anyway, 8,199 tokens against 8,192, and the server returned nothing
@@ -830,25 +1149,42 @@ impl<'f> Session<'f> {
             }
             CANCEL.store(false, Ordering::SeqCst);
             let max_tokens = self.cfg.max_output.min(self.max_ctx.saturating_sub(self.est_safe() + context::ctx_margin(self.max_ctx) + 64)).max(MIN_OUT);
+            // a simple turn where the model does not reason: a smaller cap (`Client::simple_cap`)
+            let max_tokens = self.client.simple_cap().map_or(max_tokens, |c| max_tokens.min(c));
             let interactive = self.interactive;
             self.fe.waiting();
             let fe = &mut *self.fe;
             let mut on_text = |t: &str| if interactive { fe.text_delta(t); };
-            let req = Request { system: &self.system, tools: &self.tools, messages: &self.history, max_tokens };
+            let retry_msgs: Vec<Message>;
+            let retrying = empty_retry.is_some();
+            let messages: &[Message] = match empty_retry.take() {
+                Some(n) => { retry_msgs = self.history.iter().cloned().chain([n]).collect(); &retry_msgs }
+                None => &self.history,
+            };
+            let req = Request { system: &self.system, tools: &self.tools, messages, max_tokens };
             self.client.set_kind("agent");
             let res = self.client.send(&req, &CANCEL, &mut on_text);
-            let reply = match res {
+            let mut reply = match res {
                 Ok(r) => r,
                 Err(e) => {
                     if first { self.history.pop(); self.unsent = true; } else { self.history.push(Message::assistant_text("[request failed]")); }
-                    return TurnEnd::Failed(format!("API error: {e}"));
+                    return TurnEnd::Failed(api_error_line(&e));
                 }
             };
             first = false;
-            // Anthropic usage: input_tokens excludes the cached (reused) part
-            let ctx_used = reply.usage.input_tokens + reply.usage.cache_read_input_tokens + reply.usage.output_tokens.saturating_sub(reply.usage.reasoning_tokens);
             let prompt_real = reply.usage.input_tokens + reply.usage.cache_read_input_tokens;
-            if prompt_real > 0 { self.calib = Some((prompt_real, self.fixed() + estimate_messages(&self.history))); }
+            // a cancelled (Esc) or unreported reply has no usage: the partial output's estimate stands in for it
+            if prompt_real == 0 && reply.usage.output_tokens == 0 {
+                reply.usage.output_tokens = estimate_messages(&[Message::new(Role::Assistant, reply.content.clone())]).saturating_sub(MSG_OVERHEAD_TOKENS);
+            }
+            // Anthropic usage: input_tokens excludes the cached (reused) part. Without it the context is the estimate
+            // of the request just sent plus that output (uitest: ctx_used 0 after Esc reset the app's ctx meter)
+            let ctx_used = if prompt_real > 0 {
+                prompt_real + reply.usage.output_tokens.saturating_sub(reply.usage.reasoning_tokens)
+            } else {
+                self.estimate() + reply.usage.output_tokens
+            };
+            if prompt_real > 0 && !retrying { self.calib = Some((prompt_real, self.fixed() + estimate_messages(&self.history))); }
             self.fe.reply_done(&ui::status(&reply, ctx_used, self.max_ctx));
             let Reply { content, stop_reason, id, usage, .. } = reply;
             let reasoning = usage.reasoning_tokens;
@@ -863,9 +1199,23 @@ impl<'f> Session<'f> {
             if !run_tools {
                 // the state card never enters history (append-only, prefix stays valid): only the visible text is kept
                 let (vis, card, broken) = context::split_state(&texts(&Message { role: Role::Assistant, content, ..Default::default() }));
+                let card = card.or_else(|| stashed_card.take());
                 (self.new_card, self.card_broken) = (card, broken);
                 // the reply showed words (not only the "[max_tokens]" placeholder below)
                 let wrote = !vis.trim().is_empty();
+                // nothing for the user to read (QA N3: qwen3-vl:2b after the no-think prefill answered "thanks" with
+                // only a state card): ask once more, any provider, then say so rather than show nothing
+                let normal_end = cut.is_none() && stop_reason != "cancelled" && stop_reason != "max_tokens";
+                if !wrote && normal_end && !retried {
+                    retried = true;
+                    stashed_card = self.new_card.take();
+                    empty_retry = Some(Message::user_text(EMPTY_REPLY_NUDGE));
+                    self.fe.info("[the reply had no text for you, only its state card; asking the model once more]");
+                    continue;
+                }
+                if !wrote && normal_end {
+                    self.fe.info("[no answer: the model wrote no text for you twice; ask again or rephrase]");
+                }
                 let mut content: Vec<Block> = if vis.is_empty() { Vec::new() } else { vec![Block::Text { text: vis }] };
                 if let Some(c) = &cut { content.push(Block::Text { text: format!("[cut off at the {max_tokens}-token output limit: `{c}` did not run]") }); }
                 if content.is_empty() {
@@ -926,19 +1276,65 @@ impl<'f> Session<'f> {
                     ("cancelled by user".to_string(), true)
                 } else {
                     let summary = tools::summary(name, input);
+                    // only a tool this request offered may run (Elisa's own + the MCP servers', as the reasoning
+                    // gate filtered them): anything else is refused before any approval box (security s1: an
+                    // approval for `sec_malware`, which this build does not have)
+                    let offered = self.tools.iter().any(|t| t.name == *name);
+                    let verdict = guard.check(name, input, !self.mcp.owns(name));
                     self.fe.tool_start(&summary);
-                    self.fe.tool_detail(name, input, &self.cwd);
-                    let (content, is_error) = match self.approve(name, input, &summary) {
-                        Err(why) => { self.fe.tool_done(&why, true); (why, true) }
-                        Ok(()) => {
-                            let write = tools::access(name) == Access::Write;
-                            // the file before the change: which symbols it touched narrows the test check
-                            let before = if write && self.cfg.ast_targeted_checks { checks::before(&self.cwd, input) } else { None };
-                            let o = tools::run(name, input, &self.tctx);
-                            if !o.is_error && write { checks.edited(&self.cwd, input, before); }
-                            if !o.is_error { self.ast_stats.see(name, input, &o.content, &self.tctx); }
-                            self.fe.tool_done(&o.content, o.is_error);
-                            (o.content, o.is_error)
+                    let (content, is_error) = if !offered && self.mcp.gated_server(name).is_some() {
+                        // a documents / security tool the relevance gate left out (the model saw a PDF in a listing
+                        // mid-turn): not run now, but offered from the next request on (one tool-list change)
+                        let srv = self.mcp.gated_server(name).unwrap_or("");
+                        if srv == "docs" { self.gate.0 = true } else { self.gate.1 = true }
+                        self.rebuild_system();
+                        let why = format!("`{name}` was not offered on this request (the {srv} tools come only when the request is about them); it is offered from the next request on: call it again if you need it.");
+                        self.audit_tool("denial", name, &summary, &[("outcome", "denied"), ("answer", "policy"), ("reason", "gated_tool")]);
+                        self.fe.tool_done(&why, true);
+                        (why, true)
+                    } else if !offered {
+                        let why = unknown_tool_text(name, &self.tools, self.mcp.reason_tool(name));
+                        self.audit_tool("denial", name, &summary, &[("outcome", "denied"), ("answer", "policy"), ("reason", "unknown_tool")]);
+                        self.fe.tool_done(&why, true);
+                        (why, true)
+                    } else if let crate::loop_guard::Verdict::Block(why) = verdict {
+                        self.audit_tool("denial", name, &summary, &[("outcome", "denied"), ("answer", "policy"), ("reason", "repeated_call")]);
+                        self.fe.tool_done(&why, true);
+                        (why, true)
+                    } else {
+                        self.fe.tool_detail(name, input, &self.cwd);
+                        self.answer = None;
+                        match self.approve(name, input, &summary) {
+                            Err(why) => {
+                                let answer = self.answer.take().unwrap_or("policy");
+                                self.audit_tool("denial", name, &summary, &[("outcome", "denied"), ("answer", answer), ("detail", &why)]);
+                                self.fe.tool_done(&why, true);
+                                (why, true)
+                            }
+                            Ok(()) => {
+                                let answer = self.answer.take().unwrap_or("auto");
+                                self.audit_tool("approval", name, &summary, &[("answer", answer)]);
+                                let write = tools::access(name) == Access::Write;
+                                // the file before the change: which symbols it touched narrows the test check
+                                let before = if write && self.cfg.ast_targeted_checks { checks::before(&self.cwd, input) } else { None };
+                                if write && !self.mcp.owns(name) { self.ledger.before(input, &self.cwd); }
+                                let o = if self.mcp.owns(name) {
+                                    self.mcp.call(name, input, &CANCEL, self.cfg.tool_output_max_chars)
+                                } else { tools::run(name, input, &self.tctx) };
+                                if !o.is_error && write { checks.edited(&self.cwd, input, before); }
+                                // Elisa's own record of what changed (the notes' file list; checks a summary's claims)
+                                if !o.is_error && !self.mcp.owns(name) { self.ledger.record(name, input, &self.cwd); }
+                                // an edit whose old and new text are the same changed nothing (chat s3b looped on one)
+                                let changed = name != "edit" || input.get("old") != input.get("new");
+                                guard.ran(name, input, write, !o.is_error, changed);
+                                if !self.mcp.owns(name) { guard.result(name, input, &o.content, o.is_error); }
+                                if !o.is_error { self.ast_stats.see(name, input, &o.content, &self.tctx); }
+                                self.audit_tool("tool_call", name, &summary, &[("outcome", if o.is_error { "error" } else { "ok" })]);
+                                // a restarted MCP server that listed other tools than its pin (`pins.rs`)
+                                for n in self.mcp.take_notes() { self.fe.error(&n); }
+                                self.fe.tool_done(&o.content, o.is_error);
+                                (self.guard_output(name, input, o.content), o.is_error)
+                            }
                         }
                     };
                     self.tool_lines.push(tool_line(&summary, &content, is_error));
@@ -948,6 +1344,21 @@ impl<'f> Session<'f> {
                 let content = if n >= REPEAT_MAX { format!("{content}\n{}", repeat_note(n)) } else { content };
                 results.push(Block::ToolResult { tool_use_id: id.clone(), content, is_error });
             }
+            // the loop guard's word on this step: a note on its last result, or the turn's stop (below)
+            let guard_stop = match guard.step_done() {
+                crate::loop_guard::After::Fine => None,
+                crate::loop_guard::After::Note(n) => {
+                    if let Some(Block::ToolResult { content, .. }) = results.last_mut() { content.push('\n'); content.push_str(&n); }
+                    self.fe.info(&format!("[loop guard: {}]", n.trim_start_matches("[elisa: ").trim_end_matches(']')));
+                    None
+                }
+                crate::loop_guard::After::Stop(why) => {
+                    if let Some(Block::ToolResult { content, .. }) = results.last_mut() {
+                        content.push_str("\n[elisa: the turn was stopped because the same calls kept coming back. Do not repeat them; change the approach or report what blocks you.]");
+                    }
+                    Some(why)
+                }
+            };
             self.fit_step_results(&mut results);
             // after the fit: what the model really got is what makes a read small (the cut comes after `see`)
             for ((_, name, input), r) in calls.iter().zip(&results) {
@@ -963,6 +1374,11 @@ impl<'f> Session<'f> {
                 // the same call and the same result again: the loop is not getting anywhere (Test 2026-11-01 ran one
                 // failing command ~15 times until the context was full). Stop; the note above tells the model why.
                 let why = repeat.why();
+                self.history.push(Message::assistant_text(format!("[stopped: {why}]")));
+                self.fe.info(&format!("[stopped: {why}; say how to proceed]"));
+                return TurnEnd::Stopped;
+            }
+            if let Some(why) = guard_stop {
                 self.history.push(Message::assistant_text(format!("[stopped: {why}]")));
                 self.fe.info(&format!("[stopped: {why}; say how to proceed]"));
                 return TurnEnd::Stopped;
@@ -1002,7 +1418,8 @@ impl<'f> Session<'f> {
                 return Gate::End(TurnEnd::Stopped);
             }
             match o.status {
-                CheckStatus::Pass => self.check_ev(&c.name, CheckStatus::Pass, cr.round, set.rounds, String::new()),
+                // a pass whose writes the shell sandbox blocked carries a note (`checks::SANDBOX_NOTE`)
+                CheckStatus::Pass => self.check_ev(&c.name, CheckStatus::Pass, cr.round, set.rounds, o.summary.clone()),
                 CheckStatus::Timeout => {
                     let rest = if c.stage == checks::Stage::Test { "skipped (slow tests)" } else { "remaining checks skipped" };
                     self.check_ev(&c.name, CheckStatus::Timeout, cr.round, set.rounds, format!("{} · {rest}", o.summary));
@@ -1054,13 +1471,21 @@ impl<'f> Session<'f> {
                 db.compact_every = 0;
                 self.index_rate = std::fs::read_to_string(self.cfg.memory_dir.join(RATE_FILE)).ok().and_then(|s| s.trim().parse().ok()).filter(|r: &f64| *r > 0.0);
                 let session = db.begin_session(&project);
-                // a card /reset or /forget dropped does not come back in a new session
-                let reset = self.store.card_reset();
-                if let Some((id, text)) = db.latest_card(&project).filter(|(id, _)| reset.is_none_or(|r| *id > r)) { self.card = Some(text); self.card_id = Some(id); }
+                // the last card is carried only into a continued session (`carry_card`)
                 self.mem = Some(Mem { db, session, project });
             }
             Err(e) => self.fe.error(&format!("memory off: {}: {e}", self.cfg.memory_dir.display())),
         }
+    }
+
+    /// `--continue` / `/resume`: the project's latest state card becomes current again (cleaned of template text; a
+    /// card /reset or /forget dropped does not come back). A new session never calls this.
+    fn carry_card(&mut self) {
+        if self.card.is_some() { return; }
+        let reset = self.store.card_reset();
+        let Some(m) = self.mem.as_ref() else { return };
+        let Some((id, text)) = m.db.latest_card(&m.project).filter(|(id, _)| reset.is_none_or(|r| *id > r)) else { return };
+        if let Some(c) = context::clean_card(&text) { (self.card, self.card_id) = (Some(c), Some(id)); }
     }
 
     /// Runs `f` on the store with elisa-mem's progress shown live (`compacting memory i/n`, `indexing N memories`).
@@ -1178,7 +1603,7 @@ impl<'f> Session<'f> {
     fn record(&mut self, role: MRole, text: &str) -> Option<u64> {
         self.turn_no += 1;
         let m = self.mem.as_mut()?;
-        match m.db.add_turn(m.session, role, text) {
+        match m.db.add_turn(m.session, role, &crate::secrets::redact(text).0) {
             Ok(id) => { self.fold_ids.push(id); self.unindexed += 1; Some(id) }
             Err(e) => { self.fe.error(&format!("memory: {e}")); None }
         }
@@ -1186,7 +1611,14 @@ impl<'f> Session<'f> {
 
     /// First message of a fresh history: cwd/OS/date + notes + [state] (latest card + pinned facts) + `input`.
     fn first(&self, input: &str) -> String {
-        context::first_message_with(&self.cwd, self.notes.as_deref(), self.state_block().as_deref(), input)
+        context::first_message_with(&self.cwd, self.first_notes().as_deref(), self.state_block().as_deref(), input)
+    }
+
+    /// The notes as a first message carries them: as they are while they are this session's own, marked as background
+    /// (without the earlier session goal) in a new session and after /clear or /reset.
+    fn first_notes(&self) -> Option<String> {
+        let n = self.notes.as_deref()?;
+        Some(if self.notes_bg { context::background_notes(n) } else { n.to_string() })
     }
 
     /// The `[state]` body: the latest state card, then this project's pinned facts (newest first within
@@ -1243,7 +1675,7 @@ impl<'f> Session<'f> {
         let prev = self.card_id;
         let mut saved = None;
         if let Some(m) = self.mem.as_mut() {
-            match m.db.add_card(m.session, &card, prev, ids) {
+            match m.db.add_card(m.session, &crate::secrets::redact(&card).0, prev, ids) {
                 Ok(id) => { self.card_id = Some(id); saved = Some(id); self.unindexed += 1; }
                 Err(e) => self.fe.error(&format!("memory: {e}")),
             }
@@ -1288,7 +1720,7 @@ impl<'f> Session<'f> {
         let n = n.min(self.turn_no - self.folded);
         let k = n.min(self.fold_ids.len());
         if let Some(m) = self.mem.as_mut() {
-            match m.db.add_note(m.session, notes, &self.fold_ids[..k]) {
+            match m.db.add_note(m.session, &crate::secrets::redact(notes).0, &self.fold_ids[..k]) {
                 Ok(_) => self.unindexed += 1,
                 Err(e) => self.fe.error(&format!("memory: {e}")),
             }
@@ -1423,8 +1855,8 @@ impl<'f> Session<'f> {
         let out = COMPACT_OUT.min(self.cfg.max_output);
         // room for the kept tail: fold_to of the budget minus the new notes (<= `out` tokens) or the fresh card
         let fresh = self.card.is_some() && self.card_id.is_some() && self.card_ex.is_some_and(|ex| self.exchanges - ex < 2);
-        let new_text = if fresh { self.card.as_deref().map_or(0, estimate_tokens) } else { out };
-        let room = ((self.cfg.fold_to as f64 * self.limit() as f64) as usize).saturating_sub(new_text);
+        let new_text = if fresh { self.card.as_deref().map_or(0, estimate_tokens) } else { out.min(self.notes_budget()) };
+        let room = context::fold_room(self.fixed(), self.limit(), self.cfg.fold_to, new_text);
         let cap = self.turn_cap(&hist);
         let mut start = hist.len();
         while start > 0 && estimate_messages(&hist[start - 1..]) <= room { start -= 1; }
@@ -1444,7 +1876,7 @@ impl<'f> Session<'f> {
                 self.shrunk(before);
             }
             let est = self.estimate();
-            if est as f64 >= self.cfg.fold_at as f64 * self.limit() as f64 { self.fold_retry_at = est + self.limit() / 10; }
+            if est >= self.fold_point() { self.fold_retry_at = est + self.min_gain(); }
             return;
         }
         // turns in hist[..start]: 2 per user text, minus the reply when it is not folded too
@@ -1462,11 +1894,16 @@ impl<'f> Session<'f> {
                 self.fe.progress(Some(&p(None)));
                 let rest = hist.split_off(start);
                 let kept = rest.len();
-                // the folded turns' decisions / open / done items go to the notes from their cards (no model call)
-                let merged = context::merge_card_notes(self.notes.as_deref(), &std::mem::take(&mut self.card_log));
-                self.set_notes(Some(merged));
+                // the folded turns' decisions / open / done items go to the notes from their cards (no model call),
+                // each card's "done" claims checked against Elisa's edit records first
+                let cards: Vec<String> = self.card_log.iter().map(|c| self.verified(c)).collect();
+                let merged = self.finish_notes(context::merge_card_notes(self.notes.as_deref(), &cards));
+                if !self.commit_fold(merged, rest, "[earlier turns are carried by the state card above]", before) {
+                    self.fe.progress(Some(&p(Some("fold skipped: it would not make the context smaller".into()))));
+                    return;
+                }
+                self.card_log.clear();
                 self.mark_folded(nf);
-                self.rebuild_history(rest, "[earlier turns are carried by the state card above]");
                 self.save();
                 self.index_pending(None);
                 self.compact_if_big();
@@ -1483,13 +1920,14 @@ impl<'f> Session<'f> {
         // and writes nothing: such a model folds to a digest straight away
         if self.digest_only || self.client.reasoning_room() > 0 {
             let why = if self.digest_only { "the model's summaries ran out on reasoning" } else { "a reasoning model's summary is slow" };
-            let n = context::digest(&hist[..start], self.notes.as_deref(), digest_chars);
+            let n = context::digest(&hist[..start], None, digest_chars);
             return self.fold_finish(n, hist, start, nf, before, prog(1.0, Some(format!("folded with a short digest ({why})"))));
         }
         // 15% under the estimate: the summary request itself never goes over the context (transcripts of code and
         // JSON tokenize denser than the 3.3 chars/token estimate)
         let budget = self.max_ctx.saturating_sub(out + self.client.reasoning_room() + 64 + estimate_tokens(COMPACT_SYSTEM)) * 85 / 100;
-        let msgs = [context::compact_request(&hist[..start], self.notes.as_deref(), budget)];
+        // the earlier notes are merged by Elisa afterwards (`context::merge_notes`), not left to the model
+        let msgs = [context::compact_request(&hist[..start], None, budget)];
         let req = Request { system: COMPACT_SYSTEM, tools: &[], messages: &msgs, max_tokens: out };
         CANCEL.store(false, Ordering::SeqCst);
         let (client, fe) = (&self.client, &mut *self.fe);
@@ -1514,7 +1952,7 @@ impl<'f> Session<'f> {
             Ok(r) if r.stop_reason == "cancelled" => Err("cancelled".to_string()),
             Ok(r) => {
                 let why = if r.usage.reasoning_tokens > 0 && r.stop_reason == "max_tokens" { format!("the model reasoned for {} tokens and ran out before writing it", r.usage.reasoning_tokens) } else { "empty summary".into() };
-                Some(texts(&Message::new(Role::Assistant, r.content)).trim().to_string()).filter(|n| !n.is_empty()).ok_or(why)
+                Some(summary_text(r.content)).filter(|n| !n.is_empty()).ok_or(why)
             }
             Err(e) => Err(e),
         };
@@ -1529,7 +1967,7 @@ impl<'f> Session<'f> {
                 // the history is still folded, with a digest for notes: kept as it was, the window filled up, the
                 // summary was tried again (76 s on a small local model) before every request, and replies were cut
                 self.digest_only |= e.starts_with("the model reasoned");
-                let n = context::digest(&hist[..start], self.notes.as_deref(), digest_chars);
+                let n = context::digest(&hist[..start], None, digest_chars);
                 return self.fold_finish(n, hist, start, nf, before, prog(1.0, Some(format!("summary failed: {e} · folded with a short digest"))));
             }
         };
@@ -1537,15 +1975,20 @@ impl<'f> Session<'f> {
         self.fold_finish(n, hist, start, nf, before, p);
     }
 
-    /// The end of a summary fold: `n` becomes the notes and `hist[start..]` the history.
+    /// The end of a summary fold: `n` (its claims checked, merged into the earlier notes) becomes the notes and
+    /// `hist[start..]` the history, when that makes the prompt smaller (`commit_fold`).
     fn fold_finish(&mut self, n: String, mut hist: Vec<Message>, start: usize, nf: usize, before: usize, mut p: Progress) {
+        let n = self.finish_notes(context::merge_notes(self.notes.as_deref(), &self.verified(&n)));
+        let rest = hist.split_off(start);
+        if !self.commit_fold(n.clone(), rest, "[earlier turns are summarised in the notes above]", before) {
+            p.done = Some("fold skipped: it would not make the context smaller".into());
+            self.fe.progress(Some(&p));
+            return;
+        }
         // a digest is only the turns' own lines, which memory already has: saved again, it came back as a recalled
         // "memory" of the same words
-        if p.done.is_none() { self.mem_note(&n, nf); }
+        if p.done.is_none() { self.mem_note(&n, nf); } else { self.mark_folded(nf); }
         self.card_log.clear();
-        self.set_notes(Some(n.clone()));
-        let rest = hist.split_off(start);
-        self.rebuild_history(rest, "[earlier turns are summarised in the notes above]");
         self.save();
         self.index_pending(None);
         self.compact_if_big();
@@ -1557,9 +2000,44 @@ impl<'f> Session<'f> {
         self.fe.progress(Some(&p));
     }
 
+    /// A fold's result put in place: `notes` and the history `[first message] + rest`, only when that makes the
+    /// prompt smaller than `before` (soak 2026-11-08: 6 of 40 folds made it bigger, 3842 → 3907 …). Over it, the notes
+    /// are cut by priority to fit first; when even that does not do it, everything stays as it was, the retry waits
+    /// for the window to grow, and false comes back. The notes are saved only when the fold is kept.
+    fn commit_fold(&mut self, notes: String, rest: Vec<Message>, generic: &str, before: usize) -> bool {
+        let saved = (self.history.clone(), self.notes.clone(), self.notes_bg, self.real);
+        // text estimates on both sides (`before` may be the server's count)
+        let base = self.fixed() + estimate_messages(&self.history);
+        let try_with = |s: &mut Self, n: &str| {
+            s.put_notes(Some(n.to_string()), false);
+            s.rebuild_history(rest.clone(), generic);
+            s.estimate()
+        };
+        let mut after = try_with(self, &notes);
+        if after >= base {
+            let over = after + 1 - base + self.min_gain() / 4;
+            let cut = context::cap_notes_priority(&notes, estimate_tokens(&notes).saturating_sub(over));
+            if !cut.is_empty() { after = try_with(self, &cut); }
+        }
+        if after >= base {
+            (self.history, self.notes, self.notes_bg, self.real) = saved;
+            self.rebuild_system();
+            self.real = None;
+            self.fold_retry_at = before + self.min_gain();
+            return false;
+        }
+        if let Some(n) = &self.notes { if let Err(e) = self.store.save_notes(n) { self.fe.error(&format!("notes: {e}")); } }
+        true
+    }
+
     /// May this tool call run? A call that reaches outside the project folder goes through `approve_outside` first
     /// (its own rules: never the per-project always-allow list, never `--yes` for writes).
     fn approve(&mut self, name: &str, input: &serde_json::Value, summary: &str) -> Result<(), String> {
+        // a file-tool call that cannot change anything (URL path, old == new, old not found, binary file) fails
+        // before anyone is asked (`tools::precheck`); MCP tools are their servers' business
+        if !self.mcp.owns(name) {
+            if let Err(e) = tools::precheck(name, input, &self.tctx) { self.answer = Some("invalid"); return Err(e); }
+        }
         if let Some(o) = outside::check(name, input, &self.cwd) { return self.approve_outside(name, summary, &o); }
         self.approve_inside(name, summary)
     }
@@ -1587,7 +2065,8 @@ impl<'f> Session<'f> {
                 if o.write() { "" } else { "; outside = \"read-ok\" allows outside reads" }));
         }
         let a = self.fe.approve_outside(name, summary, o);
-        if CANCEL.load(Ordering::SeqCst) { return Err("cancelled by user".into()); }
+        self.answer = Some(answer_word(&a));
+        if CANCEL.load(Ordering::SeqCst) { self.answer = Some("cancelled"); return Err("cancelled by user".into()); }
         match a {
             Approval::Yes => Ok(()),
             Approval::Always => {
@@ -1598,33 +2077,80 @@ impl<'f> Session<'f> {
                 self.fe.info(&format!("allowed for this session ({}): {list}", if o.write() { "read + write" } else { "read" }));
                 Ok(())
             }
-            Approval::No => Err(format!("denied by user ({what} outside the project folder: {list})")),
+            Approval::No => Err(format!("denied by user ({what} outside the project folder: {list}): {NO_RETRY}")),
+        }
+    }
+
+    /// one audit line about a tool call: its tool, its MCP server (if any) and its summary, plus `fields`
+    fn audit_tool(&self, event: &str, name: &str, summary: &str, fields: &[(&str, &str)]) {
+        if !self.audit.on() { return; }
+        let server = self.mcp.server_of(name).unwrap_or("").to_string();
+        let mut f: Vec<(&str, &str)> = vec![("tool", name), ("server", &server), ("summary", summary)];
+        f.extend_from_slice(fields);
+        self.audit.note(event, &f);
+    }
+
+    /// `/audit [N]`: the last N (20) entries of this project's audit log, and whether its hash chain holds
+    fn audit_command(&mut self, arg: &str) {
+        let Some(path) = self.audit.path().map(std::path::Path::to_path_buf) else { self.fe.info("the audit log is off (config audit = \"off\")"); return };
+        if !path.exists() { self.fe.info(&format!("audit log empty ({})", path.display())); return; }
+        let n = arg.parse::<usize>().unwrap_or(20).max(1);
+        let lines = crate::audit::last(&path, n);
+        if !lines.is_empty() { self.fe.info(&lines.join("\n")); }
+        match crate::audit::verify(&path) {
+            Ok(k) => self.fe.info(&format!("chain ok ({k} entries) · {}", path.display())),
+            Err((l, why)) => self.fe.error(&format!("chain broken at line {l}: {why} · {}", path.display())),
         }
     }
 
     fn approve_inside(&mut self, name: &str, summary: &str) -> Result<(), String> {
-        // outline / read_symbol go with `read`, edit_symbol with `edit`
-        let key = tools::approval_name(name);
-        // web access was consented to when it was turned on for the connection: its calls do not ask
-        if self.tctx.web.is_some() && matches!(name, "web_search" | "web_fetch") { return Ok(()); }
-        if self.yolo || self.always.contains(key) || self.cfg.auto_approve.iter().any(|a| a == key || a == name) { return Ok(()); }
-        if !self.interactive {
-            return if tools::access(name) == Access::ReadOnly { Ok(()) } else { Err("denied (non-interactive; use --yes)".into()) };
+        // outline / read_symbol go with `read`, edit_symbol with `edit`; an MCP tool goes with its server (`web`)
+        // MCP keys live in their own namespace (`mcp:web`), so a server named like one of Elisa's tools can never
+        // share its always-allow / auto_approve entry; auto_approve matches MCP tools only by `mcp:SERVER`
+        // the built-in reasoning tools (think, steps, step_done, calc) have no side effects: never asked
+        if self.mcp.reason_tool(name) { return Ok(()); }
+        let server = self.mcp.server_of(name).map(String::from);
+        let key = match &server { Some(s) => tools::mcp_key(s), None => tools::approval_name(name).to_string() };
+        let key = key.as_str();
+        // a server whose tool list changed since it was pinned (`pins.rs`): no always-allow, no --yes, until /trust
+        let untrusted = server.as_deref().is_some_and(|s| self.mcp.untrusted(s));
+        if untrusted && !self.interactive {
+            let s = server.as_deref().unwrap_or("");
+            return Err(format!("denied: MCP server {s}'s tool list changed since it was pinned, so each call needs a person to approve it; \
+                check the server, then /trust {s} in an interactive session"));
         }
-        let a = self.fe.approve(name, summary);
-        if CANCEL.load(Ordering::SeqCst) { return Err("cancelled by user".into()); }
+        if !untrusted && (self.yolo || self.always.contains(key) || self.cfg.auto_approve.iter().any(|a| a == key || (server.is_none() && a == name))) { return Ok(()); }
+        if !self.interactive {
+            // nobody to ask: local reads run; MCP tools (the web too) are denied like a write
+            return if tools::access(name) == Access::ReadOnly && server.is_none() { Ok(()) } else { Err("denied (non-interactive; use --yes)".into()) };
+        }
+        let a = self.fe.approve(name, summary, server.as_deref());
+        self.answer = Some(answer_word(&a));
+        if CANCEL.load(Ordering::SeqCst) { self.answer = Some("cancelled"); return Err("cancelled by user".into()); }
         match a {
             Approval::Yes => Ok(()),
+            Approval::Always if untrusted => {
+                self.fe.info(&format!("allowed once: \"always\" stays off for MCP server {} until /trust {0}", server.as_deref().unwrap_or("")));
+                Ok(())
+            }
             Approval::Always => {
                 // kept per project (.elisa/allow), so a restart does not ask again
                 self.always.insert(key.to_string());
                 if let Err(e) = self.store.save_allowed(&self.always) { self.fe.error(&format!("could not save always-allow for {name}: {e}")); }
                 Ok(())
             }
-            Approval::No => Err("denied by user".into()),
+            Approval::No => Err(format!("denied by user: {NO_RETRY}")),
         }
     }
 }
+
+/// an approval answer as the audit log writes it
+fn answer_word(a: &Approval) -> &'static str {
+    match a { Approval::Yes => "yes", Approval::Always => "always", Approval::No => "no" }
+}
+
+/// added to a denial so the model does not ask again for the same thing
+const NO_RETRY: &str = "do not call this tool again for this request; answer without it or ask the user";
 
 /// Tokens the model read through outline / read_symbol, against what reading those files whole would have cost
 /// (each file counted once per session; a directory outline counts on the outline side only). Shown by /context.
@@ -1643,10 +2169,21 @@ impl AstStats {
     }
     fn line(&self) -> Option<String> {
         if self.calls == 0 { return None; }
-        let ratio = if self.tokens > 0 && self.whole > 0 { format!(" · {:.1}x fewer", self.whole as f64 / self.tokens as f64) } else { String::new() };
-        Some(format!("ast: outline + read_symbol {} calls · {} tokens vs {} for reading those {} files whole{ratio}",
-            self.calls, ui::k(self.tokens), ui::k(self.whole), self.files.len()))
+        Some(ast_line(self.calls, self.tokens, self.whole, self.files.len()))
     }
+}
+
+/// The /context line on the syntax-tree tools: their tokens against reading the same files whole, and which side is
+/// cheaper (uitest: "181 tokens vs 30 … 0.2x fewer" said fewer for 6x more).
+fn ast_line(calls: usize, tokens: usize, whole: usize, files: usize) -> String {
+    let what = if files == 1 { "that file".to_string() } else { format!("those {files} files") };
+    let ratio = match (tokens, whole) {
+        (0, _) | (_, 0) => String::new(),
+        (t, w) if w >= t => format!(" · {:.1}x fewer tokens", w as f64 / t as f64),
+        (t, w) => format!(" · {:.1}x more tokens (small files: reading them whole is cheaper)", t as f64 / w as f64),
+    };
+    format!("ast: outline + read_symbol {calls} call{} · {} tokens vs {} for reading {what} whole{ratio}",
+        if calls == 1 { "" } else { "s" }, ui::k(tokens), ui::k(whole))
 }
 
 /// Check-before-done state within one user turn.
@@ -1728,6 +2265,42 @@ fn repeat_note(n: usize) -> String {
         Do not run it again unchanged: change the approach, or report what blocks you.]")
 }
 
+/// A failed model call as one line for the user: what happened and what to do (the server's words, cut short).
+fn api_error_line(e: &str) -> String {
+    let short = context::one_line(e, 200);
+    let code = e.strip_prefix("HTTP ").and_then(|r| r.get(..3)).and_then(|c| c.parse::<u16>().ok());
+    match code {
+        Some(401 | 403) => format!("the model server refused the request ({short}): check the connection's API key"),
+        _ if crate::api::transient(e) && (e.contains("invalid character") || e.contains("JSON input") || e.contains("tool call")) =>
+            format!("the model wrote a malformed tool call and the server could not read it, twice ({short}); ask again, or more simply"),
+        Some(500..=599) => format!("the model server failed, twice ({short}); try again in a moment"),
+        _ => format!("API error: {short}"),
+    }
+}
+
+/// The error a call to a tool this request did not offer gets: what to do instead and a few names that exist (those
+/// that look like it first: `sec_malware` → `sec_secrets`, …). `reason` = a reasoning tool the gate left out this turn.
+/// The one-time retry after a reply with no visible text (`agent_loop`); sent for that request only.
+const EMPTY_REPLY_NUDGE: &str = "[elisa] Your last reply had no text for the user, only the <state> card. Answer the user's \
+    message in one plain sentence first; the <state> card goes after it.";
+
+fn unknown_tool_text(name: &str, offered: &[ToolDef], reason: bool) -> String {
+    const SHOW: usize = 6;
+    let stem = |s: &str| s.split('_').next().unwrap_or(s).to_lowercase();
+    let lname = name.to_lowercase();
+    let like = |t: &str| { let t = t.to_lowercase(); stem(&t) == stem(&lname) || t.contains(&lname) || lname.contains(&t) };
+    let mut names: Vec<&str> = offered.iter().map(|t| t.name.as_str()).filter(|t| like(t)).collect();
+    names.extend(offered.iter().map(|t| t.name.as_str()).filter(|t| !like(t)));
+    let more = names.len().saturating_sub(SHOW);
+    names.truncate(SHOW);
+    let list = format!("{}{}", names.join(", "), if more > 0 { format!(" (+{more} more)") } else { String::new() });
+    if reason {
+        format!("`{name}` is not offered on this turn: answer directly or use one of: {list}")
+    } else {
+        format!("unknown tool `{name}`: no tool by that name in this session (not built in or not switched on); nothing ran. Available: {list}")
+    }
+}
+
 /// `[edit src/a.rs]`, `[bash cargo test → exit 0]`, `[write x → denied by user]`
 fn tool_line(summary: &str, output: &str, is_error: bool) -> String {
     let s = context::one_line(summary, 100);
@@ -1747,6 +2320,13 @@ fn texts(m: &Message) -> String {
     m.content.iter().filter_map(|b| match b { Block::Text { text } => Some(text.as_str()), _ => None }).collect::<Vec<_>>().join("")
 }
 
+/// A summary reply as notes: without a `<state>` card the model added out of habit, the summarizer's own
+/// instructions and template text (`context::clean_notes`). Empty = unusable.
+fn summary_text(content: Vec<Block>) -> String {
+    let raw = texts(&Message::new(Role::Assistant, content));
+    context::clean_notes(&context::split_state(&raw).0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1763,7 +2343,7 @@ mod tests {
         fn reply_done(&mut self, _: &Status) {}
         fn tool_start(&mut self, _: &str) {}
         fn tool_done(&mut self, _: &str, _: bool) {}
-        fn approve(&mut self, _: &str, _: &str) -> Approval { Approval::No }
+        fn approve(&mut self, _: &str, _: &str, _: Option<&str>) -> Approval { Approval::No }
         fn info(&mut self, _: &str) {}
         fn error(&mut self, _: &str) {}
         fn notes_saved(&mut self, _: &str) {}
@@ -1818,6 +2398,27 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_call_reads_as_one_clear_line() {
+        let l = api_error_line("HTTP 500: invalid character '}' after object key (tried twice)");
+        assert!(l.starts_with("the model wrote a malformed tool call"), "{l}");
+        assert!(api_error_line("HTTP 502: bad gateway (tried twice)").starts_with("the model server failed, twice"));
+        assert!(api_error_line("HTTP 401: invalid x-api-key").contains("API key"));
+        assert_eq!(api_error_line("request failed: connection refused"), "API error: request failed: connection refused");
+        assert!(!api_error_line(&"x".repeat(1000)).contains('\n'));
+    }
+
+    #[test]
+    fn an_unknown_tool_gets_a_short_error_with_names_like_it_first() {
+        let d = |n: &str| ToolDef { name: n.into(), description: String::new(), input_schema: serde_json::json!({}) };
+        let offered: Vec<ToolDef> = ["read", "write", "edit", "bash", "grep", "glob", "web_search", "sec_secrets", "sec_deps"].iter().map(|n| d(n)).collect();
+        let t = unknown_tool_text("sec_malware", &offered, false);
+        assert!(t.starts_with("unknown tool `sec_malware`"), "{t}");
+        assert!(t.contains("Available: sec_secrets, sec_deps, read, write, edit, bash (+3 more)"), "{t}");
+        let t = unknown_tool_text("think", &offered, true);
+        assert!(t.contains("not offered on this turn"), "{t}");
+    }
+
+    #[test]
     fn repeat_streak_needs_same_call_and_same_result() {
         let mut r = Repeat::default();
         let a = serde_json::json!({"command": "make test"});
@@ -1831,6 +2432,14 @@ mod tests {
         assert_eq!(r.see("bash", &a, "fail 2", true), REPEAT_MAX);
         assert_eq!((r.max, r.what.as_str()), (REPEAT_MAX, "bash make test"));
         assert!(repeat_note(3).contains("3 times in a row"));
+    }
+
+    #[test]
+    fn ast_line_says_which_side_is_cheaper() {
+        // uitest: "181 tokens vs 30 for reading those 1 files whole · 0.2x fewer"
+        assert_eq!(ast_line(3, 181, 30, 1), "ast: outline + read_symbol 3 calls · 181 tokens vs 30 for reading that file whole · 6.0x more tokens (small files: reading them whole is cheaper)");
+        assert_eq!(ast_line(1, 200, 2400, 2), "ast: outline + read_symbol 1 call · 200 tokens vs 2.4K for reading those 2 files whole · 12.0x fewer tokens");
+        assert_eq!(ast_line(2, 50, 0, 0), "ast: outline + read_symbol 2 calls · 50 tokens vs 0 for reading those 0 files whole");
     }
 
     #[test]

@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::io::Read;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,12 +21,10 @@ pub struct ToolCtx {
     pub bash_timeout_s: u64,
     /// config `ast_guard`: refuse a write / edit that adds parse errors to a supported code file
     pub ast_guard: bool,
-    /// web access (`web_search`, `web_fetch`); None = off
-    pub web: Option<crate::web::WebCfg>,
 }
 
 impl Default for ToolCtx {
-    fn default() -> Self { ToolCtx { cwd: PathBuf::from("."), max_chars: 6000, bash_timeout_s: 120, ast_guard: true, web: None } }
+    fn default() -> Self { ToolCtx { cwd: PathBuf::from("."), max_chars: 6000, bash_timeout_s: 120, ast_guard: true } }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,25 +87,29 @@ pub fn defs_for(ast: bool) -> Vec<ToolDef> {
     v
 }
 
-/// `web_search` and `web_fetch`, added after the others when the connection turns web access on (fixed for the session)
-pub fn web_defs() -> Vec<ToolDef> {
-    vec![
-        def("web_search", "Search the web; returns the top results (title, url, snippet). For facts not in the project.",
-            json!({"query": s()}), &["query"]),
-        def("web_fetch", "Read a public web page as plain text (http/https), e.g. a url from web_search.",
-            json!({"url": s()}), &["url"]),
-    ]
-}
 
 /// The name an approval rule is kept under: outline / read_symbol are read-only like `read`, edit_symbol asks like
-/// `edit` (an "always" for one covers the other; `auto_approve = ["read"]` covers outline and read_symbol).
+/// `edit` (an "always" for one covers the other; `auto_approve = ["read"]` covers outline and read_symbol);
+/// an MCP tool goes under `mcp:SERVER` instead (`mcp_key`; `repl.rs` approve_inside).
 pub fn approval_name(name: &str) -> &str {
     match name { "outline" | "read_symbol" => "read", "edit_symbol" => "edit", n => n }
 }
 
+/// the prefix of an MCP server's approval key in `.elisa/allow` and `auto_approve`
+pub const MCP_KEY: &str = "mcp:";
+
+/// An MCP server's approval key (`mcp:web`): its own namespace, so it never equals one of Elisa's tool keys.
+pub fn mcp_key(server: &str) -> String { format!("{MCP_KEY}{server}") }
+
+/// Names an MCP server may not take: Elisa's own tools and approval names (a server called `edit` must not look
+/// like Elisa's `edit` anywhere: approvals, notes, tool lists).
+pub fn reserved_server_name(name: &str) -> bool {
+    defs_for(true).iter().any(|d| d.name == name || approval_name(&d.name) == name)
+}
+
 pub fn access(name: &str) -> Access {
     match name {
-        "read" | "glob" | "grep" | "outline" | "read_symbol" | "web_search" | "web_fetch" => Access::ReadOnly,
+        "read" | "glob" | "grep" | "outline" | "read_symbol" => Access::ReadOnly,
         "write" | "edit" | "edit_symbol" => Access::Write,
         _ => Access::Exec,
     }
@@ -133,9 +135,23 @@ pub fn summary(name: &str, input: &Value) -> String {
             format!("bash {t}")
         }
         "glob" | "grep" => format!("{name} {}", sv(input, "pattern")),
-        "web_search" => format!("{name} {}", sv(input, "query")),
+        "web_search" => format!("{name} \u{201c}{}\u{201d}", sv(input, "query")),
         "web_fetch" => format!("{name} {}", sv(input, "url")),
-        _ => name.to_string(),
+        // the sandbox: the language and the code's first non-empty line (and how many more there are)
+        "run_code" => {
+            let code = sv(input, "code");
+            let first = code.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+            let mut t: String = first.chars().take(80).collect();
+            if first.chars().count() > 80 { t.push('…'); }
+            let more = code.lines().filter(|l| !l.trim().is_empty()).count().saturating_sub(1);
+            let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
+            format!("{name} {}: {t}{more}", sv(input, "language"))
+        }
+        // an MCP tool: its name and its first text argument
+        _ => match input.as_object().and_then(|o| o.values().find_map(|v| v.as_str())) {
+            Some(v) => { let v: String = v.chars().take(100).collect(); format!("{name} {v}") }
+            None => name.to_string(),
+        },
     }
 }
 
@@ -150,11 +166,6 @@ pub fn run(name: &str, input: &Value, ctx: &ToolCtx) -> ToolOutput {
         "outline" => outline(input, ctx),
         "read_symbol" => read_symbol(input, ctx),
         "edit_symbol" => edit_symbol(input, ctx),
-        "web_search" | "web_fetch" => match &ctx.web {
-            None => Err("web access is off for this connection".into()),
-            Some(w) if name == "web_search" => arg(input, "query").and_then(|q| crate::web::search(q, w)),
-            Some(_) => arg(input, "url").and_then(crate::web::fetch),
-        },
         _ => Err(format!("unknown tool: {name}")),
     };
     match r {
@@ -213,11 +224,11 @@ fn is_binary(b: &[u8]) -> bool { b[..b.len().min(8192)].contains(&0) }
 fn is_padding(l: &str) -> bool { l.chars().all(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ',')) }
 
 fn read(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
-    let p = arg(input, "path")?;
+    let p = file_path_arg(input)?;
     let path = resolve(ctx, p);
-    if path.is_dir() { return Err(format!("{p} is a directory")); }
+    if path.is_dir() { return Err(dir_error(p)); }
     let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {p}: {e}"))?;
-    if is_binary(&bytes) { return Err(format!("{p} is a binary file")); }
+    if is_binary(&bytes) { return Err(binary_read_error(p)); }
     let text = String::from_utf8_lossy(&bytes);
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
@@ -246,10 +257,25 @@ fn read(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
     Ok(out)
 }
 
+/// `read` on a directory: what to use instead
+fn dir_error(p: &str) -> String {
+    let base = p.trim_end_matches('/');
+    format!("{p} is a directory, not a file: use glob to list it (pattern `{}/*`, or `**/*` with path `{p}`) or outline for its code", if base.is_empty() { "." } else { base })
+}
+
+/// `read` on a binary file: the same whatever offset / limit, so the loop guard treats every later read of the path
+/// as a repeat (`loop_guard.rs`)
+pub const BINARY_READ: &str = "is a binary file: read shows text only, and no offset / limit changes that.";
+
+fn binary_read_error(p: &str) -> String {
+    format!("{p} {BINARY_READ} Use docs_sheet for a spreadsheet (xlsx, xls, ods), docs_pdf for a PDF, or bash `file {p}` to see what it is.")
+}
+
 fn write(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
-    let p = arg(input, "path")?;
+    let p = file_path_arg(input)?;
     let content = arg(input, "content")?;
     let path = resolve(ctx, p);
+    not_binary(&path, p, "write")?;
     if ctx.ast_guard {
         let old = std::fs::read_to_string(&path).ok();
         ast::guard(&path, p, old.as_deref(), content)?;
@@ -262,22 +288,85 @@ fn write(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
     Ok(format!("wrote {} lines to {p}{}", content.lines().count(), dup_note(ctx, &path, p, &before)))
 }
 
-fn edit(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
-    let p = arg(input, "path")?;
+/// An edit worked out without writing anything: (path, old text, new text, replacements). Every reason it cannot
+/// change the file is an error here, so `precheck` refuses it before anyone is asked to approve it.
+fn edit_plan(input: &Value, ctx: &ToolCtx) -> Result<(PathBuf, String, String, usize), String> {
+    let p = file_path_arg(input)?;
     let old = arg(input, "old")?;
     let new = arg(input, "new")?;
     if old.is_empty() { return Err("old must not be empty".into()); }
+    if old == new { return Err(format!("no change: old and new are the same text; {p} was not edited")); }
     let path = resolve(ctx, p);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {p}: {e}"))?;
+    if path.is_dir() { return Err(format!("{p} is a directory: edit changes one file")); }
+    let text = text_file(&path, p, "edit")?;
     let n = text.matches(old).count();
     let all = flag(input, "all");
-    if n == 0 { return Err(format!("old not found in {p}")); }
+    if n == 0 { return Err(format!("old not found in {p}; read the file and copy the exact text (whitespace included)")); }
     if n > 1 && !all { return Err(format!("old matches {n} times in {p}; add context or set all=true")); }
     let out = if all { text.replace(old, new) } else { text.replacen(old, new, 1) };
+    Ok((path, text, out, n))
+}
+
+fn edit(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
+    let (path, text, out, n) = edit_plan(input, ctx)?;
+    let p = arg(input, "path")?;
     if ctx.ast_guard { ast::guard(&path, p, Some(&text), &out)?; }
     let before = dups_of(ctx, &path, p);
     std::fs::write(&path, out).map_err(|e| format!("cannot write {p}: {e}"))?;
     Ok(format!("edited {p} ({n} replacement{}){}", if n == 1 { "" } else { "s" }, dup_note(ctx, &path, p, &before)))
+}
+
+/// `scheme://…` (https://, file://, ssh://): a URL, not a file path. `write https://x/y` would otherwise create
+/// `https:/x/y` inside the project.
+pub fn looks_like_url(p: &str) -> bool {
+    let Some(i) = p.find("://") else { return false };
+    let scheme = &p[..i];
+    !scheme.is_empty() && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+/// The `path` argument of a file tool; a URL is refused (with a pointer to web_fetch).
+fn file_path_arg(input: &Value) -> Result<&str, String> {
+    let p = arg(input, "path")?;
+    if looks_like_url(p) {
+        return Err(format!("{p} is a URL, not a file path: file tools take a path inside the project (use web_fetch to read a web page)"));
+    }
+    Ok(p)
+}
+
+/// A file write / edit may change: missing (write creates it) or UTF-8 text without NUL bytes.
+fn not_binary(path: &Path, p: &str, tool: &str) -> Result<(), String> {
+    if !path.is_file() { return Ok(()); }
+    text_file(path, p, tool).map(|_| ())
+}
+
+/// The file's text; a binary file (NUL bytes) or one that is not UTF-8 is an error naming `tool`.
+fn text_file(path: &Path, p: &str, tool: &str) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {p}: {e}"))?;
+    if is_binary(&bytes) { return Err(format!("{p} is a binary file: {tool} only changes text files")); }
+    String::from_utf8(bytes).map_err(|_| format!("{p} is not UTF-8 text: {tool} only changes text files"))
+}
+
+/// Before approval: a call of one of Elisa's file tools that cannot do anything useful fails here, so nobody is asked
+/// to approve it (a URL as a path; an edit whose old text is missing or the same as new; an edit / write on a binary
+/// file; an edit_symbol that changes nothing or names no symbol). Ok for every other tool and call: the run itself
+/// still checks everything. A path outside the project gets only the URL check: its contents are not looked at
+/// before the outside-the-project approval (an "old not found" would otherwise tell what an unapproved file holds).
+pub fn precheck(name: &str, input: &Value, ctx: &ToolCtx) -> Result<(), String> {
+    if matches!(name, "read" | "outline" | "read_symbol" | "write" | "edit" | "edit_symbol") {
+        file_path_arg(input)?;
+        if crate::outside::check(name, input, &ctx.cwd).is_some() { return Ok(()); }
+    }
+    match name {
+        "read" | "outline" | "read_symbol" => file_path_arg(input).map(|_| ()),
+        "write" => {
+            let p = file_path_arg(input)?;
+            not_binary(&resolve(ctx, p), p, "write")
+        }
+        "edit" => edit_plan(input, ctx).map(|_| ()),
+        "edit_symbol" => edit_symbol_plan(input, ctx).map(|_| ()),
+        _ => Ok(()),
+    }
 }
 
 /// With the parse guard on: what a supported code file defines twice now (`ast::duplicates`), named by `p`.
@@ -371,8 +460,10 @@ fn read_symbol(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
     Ok(out.trim_end().to_string())
 }
 
-fn edit_symbol(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
-    let p = arg(input, "path")?;
+/// An edit_symbol worked out without writing: (path, old text, new text, the symbol, the action). Errors for every
+/// call that cannot change the file (used by `precheck` too).
+fn edit_symbol_plan(input: &Value, ctx: &ToolCtx) -> Result<(PathBuf, String, String, ast::Sym, ast::Action), String> {
+    let p = file_path_arg(input)?;
     let name = arg(input, "name")?;
     let action = ast::Action::parse(opt_str(input, "action").unwrap_or(""))?;
     let source = input.get("source").and_then(Value::as_str).unwrap_or("");
@@ -382,6 +473,13 @@ fn edit_symbol(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
     let y = ast::find(&o, name, line_arg(input)).map_err(|e| format!("{p}: {e}"))?;
     let out = ast::apply(&text, y, action, source);
     if out == text { return Err(format!("no change: the new source of {} is the same", y.path)); }
+    let y = y.clone();
+    Ok((path, text, out, y, action))
+}
+
+fn edit_symbol(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
+    let (path, text, out, y, action) = edit_symbol_plan(input, ctx)?;
+    let p = arg(input, "path")?;
     if ctx.ast_guard { ast::guard(&path, p, Some(&text), &out)?; }
     let before = dups_of(ctx, &path, p);
     std::fs::write(&path, &out).map_err(|e| format!("cannot write {p}: {e}"))?;
@@ -453,8 +551,10 @@ pub(crate) struct Shell {
 /// Runs `cmd` with zsh in its own process group; the whole group is killed on timeout or Ctrl-C (`repl::CANCEL`).
 /// Output beyond `buf_max` bytes is dropped (the run continues). Shared by the bash tool and the edit checks.
 pub(crate) fn shell(cmd: &str, cwd: &Path, timeout_s: u64, buf_max: usize) -> Result<Shell, String> {
-    let mut c = Command::new("/bin/zsh");
-    c.arg("-c").arg(cmd).current_dir(cwd)
+    // under the shell sandbox (src/sandbox.rs, config `shell_sandbox`) unless it is off
+    let mode = crate::sandbox::mode();
+    let mut c = crate::sandbox::Policy::new(mode, cwd).command(cmd)?;
+    c.current_dir(cwd)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { c.pre_exec(|| if libc::setpgid(0, 0) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }); }
     let mut child = c.spawn().map_err(|e| format!("cannot start zsh: {e}"))?;
@@ -508,7 +608,11 @@ pub(crate) fn shell(cmd: &str, cwd: &Path, timeout_s: u64, buf_max: usize) -> Re
     let bytes = buf.lock().map(|b| b.clone()).unwrap_or_default();
     let mut out = String::from_utf8_lossy(&bytes).into_owned();
     if !out.is_empty() && !out.ends_with('\n') { out.push('\n'); }
-    Ok(Shell { out, code: status.and_then(|s| s.code()), signal: status.and_then(|s| s.signal()), timed_out, cancelled })
+    let code = status.and_then(|s| s.code());
+    // a quiet strict-mode failure of a network tool (`curl -s`: exit 6, no output) gets the hint too
+    let h = crate::sandbox::hint(mode, &out).or_else(|| if timed_out || cancelled { None } else { crate::sandbox::quiet_network_hint(mode, cmd, &out, code) });
+    if let Some(h) = h { out.push_str(h); out.push('\n'); }
+    Ok(Shell { out, code, signal: status.and_then(|s| s.signal()), timed_out, cancelled })
 }
 
 /// Glob → anchored regex. `**/` matches zero or more dirs; a pattern without `/` matches at any depth.
@@ -549,9 +653,34 @@ fn rel_slash(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
 }
 
+/// A glob call's (directory, pattern). A pattern that starts at `/` or `~/` names its own directory: its literal
+/// leading part becomes the directory (`/etc/ssh/*.conf` → `/etc/ssh`, `*.conf`; a literal path with no wildcard
+/// lists that directory, or matches that one file), so the outside-the-project rules see it (`outside::check`) and an
+/// absolute pattern inside the project works. Otherwise `path` (default ".") and the pattern as given.
+pub fn glob_args(input: &Value) -> (String, String) {
+    let pat = sv(input, "pattern").trim();
+    let home = || std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let abs = if let Some(r) = pat.strip_prefix("~/") { format!("{}/{r}", home().trim_end_matches('/')) }
+        else if pat == "~" { home() } else if pat.starts_with('/') { pat.to_string() } else {
+            return (opt_str(input, "path").unwrap_or(".").to_string(), pat.to_string());
+        };
+    let parts: Vec<&str> = abs.split('/').collect();
+    let wild = parts.iter().position(|c| c.contains(['*', '?', '{', '['])).unwrap_or(parts.len());
+    let base = parts[..wild].join("/");
+    let base = if base.is_empty() { "/".to_string() } else { base };
+    if wild < parts.len() { return (base, parts[wild..].join("/")); }
+    let bp = Path::new(&base);
+    match (bp.is_dir(), bp.parent(), bp.file_name()) {
+        (false, Some(dir), Some(f)) => (dir.to_string_lossy().into_owned(), f.to_string_lossy().into_owned()),
+        _ => (base, "*".into()),
+    }
+}
+
 fn glob(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
-    let re = glob_re(arg(input, "pattern")?)?;
-    let root = resolve(ctx, opt_str(input, "path").unwrap_or("."));
+    arg(input, "pattern")?;
+    let (dir, pat) = glob_args(input);
+    let re = glob_re(&pat)?;
+    let root = resolve(ctx, &dir);
     if !root.is_dir() { return Err(format!("not a directory: {}", root.display())); }
     let mut hits: Vec<String> = walk(&root)
         .filter(|e| re.is_match(&rel_slash(&root, e.path())))
@@ -588,7 +717,7 @@ fn grep(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
         let name = rel(ctx, &f);
         for (i, line) in text.lines().enumerate() {
             if !re.is_match(line) { continue; }
-            if n == GREP_MAX { out.push_str(&format!("[stopped at {GREP_MAX} matches]")); break 'files; }
+            if n == GREP_MAX { out.push_str(&format!("[stopped at {GREP_MAX} matches: there are more; narrow the pattern, path or glob]")); break 'files; }
             let t = line.trim();
             let t: String = if t.chars().count() > 200 { t.chars().take(200).chain("…".chars()).collect() } else { t.into() };
             out.push_str(&format!("{name}:{}: {t}\n", i + 1));

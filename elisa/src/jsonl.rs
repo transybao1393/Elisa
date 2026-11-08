@@ -12,7 +12,10 @@
 //! - `waiting` {} — a model request started (thinking until the first delta)
 //! - `thinking` {text} — the model's reasoning as it streams (not kept in the history; only models that reason)
 //! - `delta` {text} — reply text (the model's `<state>…</state>` card is removed, see `card`)
-//! - `reply_done` {tok_s, ttft_s, ctx_used, max_ctx, reused, output_tokens} — one model reply finished
+//! - `reply_done` {tok_s, ttft_s, ctx_used, max_ctx, reused, output_tokens} — one model reply finished. `tok_s` is
+//!   the decode rate, or `null` when the reply had no decode window (a tool-call-only reply, or under 0.2 s of decode:
+//!   show "—", never 0.0); then `ttft_s` is the whole request time. `ctx_used` is the context now (prompt + reply); a
+//!   cancelled reply (Esc) that the server reported no usage for carries Elisa's estimate instead of 0
 //! - `tool_start` {name, summary}; `tool_detail` {name, target, detail?}; `tool_done` {is_error, note, red, preview, more, output}
 //!   `detail` = {kind: "edit"|"rewrite"|"new file", path, add, del, lines: [{k: ctx|del|add|gap|note, o?, n?, t}]}
 //!   | {kind: "read", path, a, b} | {kind: "cmd", text}
@@ -24,9 +27,13 @@
 //!   reaches outside the project folder (src/outside.rs), with `access` ("read" | "write" | "bash"), `access_word`
 //!   ("read" | "write" | "run (may write)"), `paths` (the resolved outside paths) and `line` (`outside the project ·
 //!   write · /a/b`); its answers mean yes = allow once, always = allow these paths for this session (never saved),
-//!   no = deny. A plain approval has `outside: false`.
+//!   no = deny. A plain approval has `outside: false`. `server` (string, optional): present only when the tool
+//!   belongs to an MCP server (`{"type":"approve","tool":"fake_greet","summary":"…","outside":false,"server":"fake"}`);
+//!   then always = always allow every tool of that server in this project (saved as `mcp:fake` in `.elisa/allow`).
+//!   Absent for Elisa's own tools.
 //! - `pick` {sessions: [{title, n_msgs, ts}]} — blocking: answer with `pick` below
-//! - `info` {text}, `error` {text}, `notes` {text}, `compacted` {from, to}, `progress` {label, frac, elapsed_s, done} | {clear: true},
+//! - `info` {text}, `error` {text}, `notes` {text}, `compacted` {from, to} (the context shrank — a fold, /compact or
+//!   /clear: `to` is the context size now, so the ctx meter shows it right away instead of at the next reply), `progress` {label, frac, elapsed_s, done} | {clear: true},
 //!   `recalled` {hits}, `card` {text, n?} (n = the card number: its memory id as /state shows `card #n`, or with
 //!   memory off its count in this run; additive v1 field), `watch` {domain, confidence, line?, audit?}, `full` {title, text}
 //! - `shade` {state, verb, target, tone, pop, theme, face} — what Shade shows, sent when it changes (the same controller
@@ -75,7 +82,7 @@ const CARE: &[(&str, &str)] = &[("/water", "water"), ("/feed", "food"), ("/food"
 pub enum Ev {
     Banner(Banner), User(String), Waiting, Delta(String), Done(Status), ToolStart(String),
     Detail { name: String, target: Option<String>, detail: Option<Value> },
-    ToolDone(String, bool), Approve(String, String, Option<Outside>, Sender<Approval>), Info(String), Error(String), Notes(String),
+    ToolDone(String, bool), Approve { tool: String, summary: String, outside: Option<Outside>, server: Option<String>, tx: Sender<Approval> }, Info(String), Error(String), Notes(String),
     Compacted(usize, usize), Progress(Option<Progress>), Recalled(Vec<String>), Card(String, Option<u64>), Watch(WatchUpdate),
     WatchView(Option<WatcherView>), Full(String, String), Check(CheckEvent), Pick(Vec<SessionInfo>, Sender<Option<usize>>),
     Input(Sender<Option<String>>), TurnDone, Exit(i32),
@@ -133,9 +140,11 @@ impl Frontend for JsonlFrontend {
         self.send(Ev::Detail { name: n.into(), target: crate::tui::act_target(n, i, cwd), detail });
     }
     fn tool_done(&mut self, o: &str, e: bool) { self.send(Ev::ToolDone(o.into(), e)) }
-    fn approve(&mut self, tool: &str, summary: &str) -> Approval { self.ask(|t| Ev::Approve(tool.into(), summary.into(), None, t), Approval::No) }
+    fn approve(&mut self, tool: &str, summary: &str, server: Option<&str>) -> Approval {
+        self.ask(|tx| Ev::Approve { tool: tool.into(), summary: summary.into(), outside: None, server: server.map(String::from), tx }, Approval::No)
+    }
     fn approve_outside(&mut self, tool: &str, summary: &str, o: &Outside) -> Approval {
-        self.ask(|t| Ev::Approve(tool.into(), summary.into(), Some(o.clone()), t), Approval::No)
+        self.ask(|tx| Ev::Approve { tool: tool.into(), summary: summary.into(), outside: Some(o.clone()), server: None, tx }, Approval::No)
     }
     fn info(&mut self, s: &str) { self.send(Ev::Info(s.into())) }
     fn error(&mut self, s: &str) { self.send(Ev::Error(s.into())) }
@@ -169,13 +178,16 @@ pub fn event(kind: &str, fields: Value) -> String {
 }
 
 /// the `approve` event's fields: {tool, summary, outside: false} or, for a call outside the project folder,
-/// {tool, summary, outside: true, access: "read"|"write"|"bash", access_word, paths: [resolved path, …], line}
-pub fn approve_json(tool: &str, summary: &str, o: Option<&Outside>) -> Value {
-    match o {
+/// {tool, summary, outside: true, access: "read"|"write"|"bash", access_word, paths: [resolved path, …], line};
+/// plus `server` (the MCP server's name) only when the tool belongs to an MCP server
+pub fn approve_json(tool: &str, summary: &str, o: Option<&Outside>, server: Option<&str>) -> Value {
+    let mut v = match o {
         None => json!({"tool": tool, "summary": summary, "outside": false}),
         Some(o) => json!({"tool": tool, "summary": summary, "outside": true, "access": o.access, "access_word": o.access_word(),
             "paths": o.paths, "line": o.line()}),
-    }
+    };
+    if let Some(s) = server { v["server"] = json!(s); }
+    v
 }
 
 /// the `check` event's fields
@@ -259,7 +271,7 @@ pub(crate) fn detail_json(d: &crate::tui::Detail) -> Value {
 /// the short note under a finished tool row (`118 lines`, `exit 0 · test result: ok`), red or not, and up to 3
 /// preview lines of a command's output plus how many more there were
 pub fn tool_note(name: &str, o: &str, err: bool) -> (String, bool, Vec<String>, usize) {
-    let first = || o.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(if err { "failed" } else { "(no output)" }).to_string();
+    let first = || first_note(o).unwrap_or_else(|| (if err { "failed" } else { "(no output)" }).to_string());
     if err && o.starts_with("denied") { return ("denied".into(), true, vec![], 0); }
     if err && o.starts_with("cancelled") { return ("interrupted".into(), true, vec![], 0); }
     let plural = |n: usize, s: &str| format!("{n} {s}{}", if n == 1 { "" } else if s.ends_with('h') { "es" } else { "s" });
@@ -286,17 +298,58 @@ pub fn tool_note(name: &str, o: &str, err: bool) -> (String, bool, Vec<String>, 
         "glob" if o == "no files found" => "0 files".into(),
         "glob" => plural(o.lines().filter(|l| !l.starts_with('[')).count(), "file"),
         "grep" if o == "no matches" => "0 matches".into(),
+        // at the cap the count is a floor, not the total
+        "grep" if o.lines().any(|l| l.starts_with("[stopped")) => format!("{}+ matches (capped)", o.lines().filter(|l| !l.starts_with("[stopped")).count()),
         "grep" => plural(o.lines().filter(|l| !l.starts_with("[stopped")).count(), "match"),
         _ => first(),
     };
     (note, false, vec![], 0)
 }
 
+/// The one-line note for a result with no tool-specific note (MCP tools and the rest): for JSON (an MCP server's
+/// pretty-printed answer, whose first line is only "{" — QA 2026-11-08) its first scalar fields (`timezone: Asia/Tokyo
+/// · datetime: 2026-11-08T19:46:00+09:00`) or its item count; else the first line with a letter or digit.
+pub fn first_note(o: &str) -> Option<String> {
+    let t = o.trim();
+    if t.starts_with('{') || t.starts_with('[') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
+            if let Some(n) = json_note(&v) { return Some(n); }
+        }
+    }
+    let l = o.lines().map(str::trim).find(|l| l.chars().any(char::is_alphanumeric))?;
+    Some(if l.chars().count() > 160 { format!("{}…", l.chars().take(160).collect::<String>()) } else { l.to_string() })
+}
+
+fn json_note(v: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    let scalar = |v: &Value| -> Option<String> {
+        let s = match v { Value::String(s) => s.trim().replace(['\n', '\r', '\t'], " "), Value::Number(n) => n.to_string(), Value::Bool(b) => b.to_string(), _ => return None };
+        if s.is_empty() { return None; }
+        Some(if s.chars().count() > 40 { format!("{}…", s.chars().take(40).collect::<String>()) } else { s })
+    };
+    match v {
+        Value::Object(m) => {
+            let parts: Vec<String> = m.iter().filter_map(|(k, v)| scalar(v).map(|s| format!("{k}: {s}"))).take(2).collect();
+            if !parts.is_empty() { return Some(parts.join(" · ")); }
+            // only nested values: the first object or list inside
+            m.values().find_map(json_note).or_else(|| Some(format!("{} field{}", m.len(), if m.len() == 1 { "" } else { "s" })))
+        }
+        Value::Array(a) if a.is_empty() => Some("0 items".into()),
+        Value::Array(a) => Some(format!("{} item{}{}", a.len(), if a.len() == 1 { "" } else { "s" },
+            json_note(&a[0]).or_else(|| scalar(&a[0])).map(|n| format!(" · {n}")).unwrap_or_default())),
+        _ => scalar(v),
+    }
+}
+
 fn cap(s: &str, n: usize) -> String {
     if s.len() <= n { return s.to_string(); }
     let mut i = n;
     while !s.is_char_boundary(i) { i -= 1; }
-    format!("{}\n[… {} more chars]", &s[..i], s.len() - i)
+    // a paging hint near the end (docs: `[output cut at the size limit; next: pages="2-11"]`, then the untrusted
+    // fence's closing tag) stays visible
+    let hint = s[i..].trim_end().rsplit('\n').take(3).find(|l| l.contains("next:") && l.len() < 300)
+        .map_or(String::new(), |l| format!("\n{}", l.trim()));
+    format!("{}\n[… {} more chars]{hint}", &s[..i], s.len() - i)
 }
 
 /// The main loop: owns stdout, Shade and the pending blocking calls.
@@ -462,12 +515,12 @@ impl<W: Write> Server<W> {
                 self.shade.tool_done(now, failed, &o);
                 self.emit("tool_done", json!({"is_error": e, "note": note, "red": red, "preview": preview, "more": more, "output": cap(&o, OUT_MAX)}));
             }
-            Ev::Approve(t, s, o, tx) => {
+            Ev::Approve { tool: t, summary: s, outside: o, server, tx } => {
                 if self.quitting { let _ = tx.send(Approval::No); return None; }
                 self.sh(ShEv::Permission);
                 self.shade_frame();
                 self.approve = Some(tx);
-                self.emit("approve", approve_json(&t, &s, o.as_ref()));
+                self.emit("approve", approve_json(&t, &s, o.as_ref(), server.as_deref()));
             }
             Ev::Info(s) => self.emit("info", json!({"text": s})),
             Ev::Error(s) => {
@@ -551,7 +604,12 @@ pub fn run(mut args: Args) -> i32 {
     let _ = out.flush();
     if args.demo.take().is_some() {
         match crate::demo_gateway::start() {
-            Ok(url) => args.base_url = Some(url),
+            Ok(url) => {
+                args.base_url = Some(url);
+                args.kind = Some(crate::provider::STREAMDENSE.into());
+                // the scripted gateway ignores the name; the session still needs one to send
+                args.model.get_or_insert_with(|| "demo".into());
+            }
             Err(e) => { let _ = out.write_all(event("error", json!({"text": format!("demo gateway: {e}")})).as_bytes()); return 2; }
         }
         if args.cwd.is_none() {
@@ -610,6 +668,13 @@ pub fn run(mut args: Args) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approve_carries_server_only_for_mcp_tools() {
+        assert_eq!(approve_json("fake_greet", "fake_greet {}", None, Some("fake")),
+            json!({"tool": "fake_greet", "summary": "fake_greet {}", "outside": false, "server": "fake"}));
+        assert!(approve_json("bash", "bash ls", None, None).get("server").is_none());
+    }
 
     #[test]
     fn a_send_with_images_round_trips_and_is_checked() {
@@ -686,6 +751,30 @@ mod tests {
         assert_eq!(tool_note("bash", "cancelled by user", true).0, "interrupted");
         assert_eq!(tool_note("read", "1\ta\n2\tb\n[lines 1-2 of 9]", false).0, "lines 1–2 of 9");
         assert_eq!(tool_note("grep", "a.rs:1: x\nb.rs:2: y", false).0, "2 matches");
+        assert_eq!(tool_note("grep", "a.rs:1: x\nb.rs:2: y\n[stopped at 2 matches: there are more]", false).0, "2+ matches (capped)");
+    }
+
+    #[test]
+    fn mcp_json_results_get_a_real_note() {
+        // QA 2026-11-08: the time server's pretty JSON showed only "{"
+        let time = "{\n  \"timezone\": \"Asia/Tokyo\",\n  \"datetime\": \"2026-11-08T19:46:00+09:00\",\n  \"is_dst\": false\n}";
+        assert_eq!(tool_note("time_get_current_time", time, false).0, "timezone: Asia/Tokyo · datetime: 2026-11-08T19:46:00+09:00");
+        assert_eq!(tool_note("x", "{\n  \"result\": {\n    \"count\": 3\n  }\n}", false).0, "count: 3");
+        assert_eq!(tool_note("x", "[\n  {\"name\": \"a\"},\n  {\"name\": \"b\"}\n]", false).0, "2 items · name: a");
+        assert_eq!(tool_note("x", "[]", false).0, "0 items");
+        // not JSON (or cut): the first line with a letter or digit
+        assert_eq!(tool_note("x", "{\n  \"cut\": \"abc", false).0, "\"cut\": \"abc");
+        assert_eq!(tool_note("x", "---\n\n  Page Title: Example Domain\n", false).0, "Page Title: Example Domain");
+        assert_eq!(tool_note("x", "{\n}", false).0, "0 fields");
+        assert_eq!(tool_note("x", "", false).0, "(no output)");
+        assert_eq!(tool_note("x", "{", true).0, "failed");
+    }
+
+    #[test]
+    fn cap_keeps_a_paging_hint() {
+        let long = format!("{}\n[output cut at the size limit; next: pages=\"2-11\"]\n</untrusted>\n", "x".repeat(50));
+        assert_eq!(cap(&long, 10), format!("{}\n[… {} more chars]\n[output cut at the size limit; next: pages=\"2-11\"]", "x".repeat(10), long.len() - 10));
+        assert_eq!(cap("abcdefgh", 4), "abcd\n[… 4 more chars]");
     }
 
     #[test]

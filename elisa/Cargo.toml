@@ -15,6 +15,9 @@ libc = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"
 elisa-mem = { path = "mem" }
+# calc tool of the reasoning server (src/mcp_reason.rs): pinned to the last MIT release (12.x and later are AGPL-3.0);
+# no default features, no dependencies; licence in ../THIRD_PARTY_NOTICES.md
+evalexpr = { version = "=11.3.1", default-features = false }
 # syntax trees (src/ast.rs): MIT core + MIT grammars, pinned; licences in ../THIRD_PARTY_NOTICES.md
 tree-sitter = "=0.27.1"
 tree-sitter-rust = { version = "=0.24.2", optional = true }
@@ -24,6 +27,15 @@ tree-sitter-typescript = { version = "=0.23.2", optional = true }
 tree-sitter-javascript = { version = "=0.25.0", optional = true }
 tree-sitter-bash = { version = "=0.25.1", optional = true }
 tree-sitter-sequel = { version = "=0.3.11", optional = true }
+# documents MCP server (src/mcp_docs.rs): PDF text and spreadsheets, pure Rust, MIT, pinned; licences in ../THIRD_PARTY_NOTICES.md
+pdf-extract = "=0.12.1"
+calamine = "=0.38.0"
+# security MCP server (src/mcp_sec.rs): goblin (MIT) reads Mach-O / ELF / PE headers; pinned, minimal features;
+# licence in ../THIRD_PARTY_NOTICES.md
+goblin = { version = "=0.10.7", default-features = false, features = ["std", "elf32", "elf64", "mach32", "mach64", "pe32", "pe64", "te"] }
+# MCP tool-list pins (src/pins.rs) and the audit log's hash chain (src/audit.rs): RustCrypto, MIT OR Apache-2.0,
+# pinned (already in the lock graph via lopdf); licence in ../THIRD_PARTY_NOTICES.md
+sha2 = "=0.10.9"
 
 # One feature per grammar (all on by default). The parse tables are most of the binary growth (release, arm64):
 # swift ~4.1 MB, typescript+tsx ~2.8 MB, sql ~2.4 MB, bash ~1.4 MB, rust ~1.1 MB, python ~0.5 MB, javascript ~0.4 MB.

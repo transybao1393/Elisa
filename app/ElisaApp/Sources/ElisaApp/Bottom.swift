@@ -207,19 +207,29 @@ struct PermissionBox: View {
 
     var body: some View {
         let a = m.approval ?? Approval(tool: "", summary: "")
-        let word = ["bash": "Run", "edit": "Edit", "write": "Write"][a.tool] ?? a.tool.capitalized
-        let what = a.summary.hasPrefix(a.tool + " ") ? String(a.summary.dropFirst(a.tool.count + 1)) : a.summary
-        let tool = a.tool == "bash" ? "Bash" : a.tool.capitalized
+        // web calls read as a sentence: "Allow Elisa to search the web for “…”?" / "Allow Elisa to open the web page …?"
+        // (Elisa's built-in web server; an older core sends no server, so fall back to the exact tool names)
+        let webTool = a.tool == "web_search" || a.tool == "web_fetch"
+        let web = webTool && (a.server == nil || a.server == "web")
+        // any other MCP tool: "Allow MCP server fake to run greet …?" — "always" covers the whole server
+        let mcp = !web ? a.server : nil
+        let what = a.summary == a.tool && mcp != nil ? ""
+            : a.summary.hasPrefix(a.tool + " ") ? String(a.summary.dropFirst(a.tool.count + 1)) : a.summary
+        let word = titleWord(a, web: web, mcp: mcp)
+        let tool = a.tool == "bash" ? "Bash" : web ? "web access" : mcp ?? a.tool.capitalized
         let opts = a.outside ? ["Yes, once", "Yes, allow these paths for this session", "No"]
+            : mcp != nil ? ["Yes", "Yes, always allow everything from \(tool) in this project", "No"]
             : ["Yes", "Yes, always allow \(tool) in this project", "No"]
+        let note = mcp.map { "MCP server \($0)" } ?? tool
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                (Text("Allow \(word) ").font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg)
+                (Text("Allow \(word)\(what.isEmpty ? "" : " ")").font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg)
                  + Text(what).font(Fonts.mono(14, .medium)).foregroundStyle(p.code)
                  + Text("?").font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg))
                     .lineLimit(2)
                 Spacer()
-                Text(a.outside ? "\(tool) · outside \(m.title)" : "\(tool) · in \(m.title)").font(Fonts.mono(11.5))
+                Text(web ? (a.tool == "web_search" ? "the query leaves this Mac" : "the page is fetched from the internet")
+                     : a.outside ? "\(note) · outside \(m.title)" : "\(note) · in \(m.title)").font(Fonts.mono(11.5))
                     .foregroundStyle(a.outside ? p.warn : p.fg2).lineLimit(1)
             }
             if a.outside {
@@ -275,6 +285,16 @@ struct PermissionBox: View {
             }
             return .handled
         }
+    }
+
+    /// the words after "Allow" in the title (the summary argument follows in the code colour)
+    private func titleWord(_ a: Approval, web: Bool, mcp: String?) -> String {
+        if web { return a.tool == "web_search" ? "Elisa to search the web for" : "Elisa to open the web page" }
+        if let srv = mcp {
+            let bare = a.tool.hasPrefix(srv + "_") && a.tool.count > srv.count + 1 ? String(a.tool.dropFirst(srv.count + 1)) : a.tool
+            return "MCP server \(srv) to run \(bare)"
+        }
+        return ["bash": "Run", "edit": "Edit", "write": "Write"][a.tool] ?? a.tool.capitalized
     }
 
     private func optText(_ s: String, tool: String) -> Text {
@@ -385,7 +405,7 @@ struct MetaRows: View {
                 (Text("ctx ") + Text("\(k(s.ctxUsed))/\(k(maxC)) ").foregroundStyle(p.tx)
                  + Text(String(repeating: "█", count: filled)).foregroundStyle(c) + Text(String(repeating: "░", count: 10 - filled)).foregroundStyle(p.gut)
                  + Text(" \(pct)%").foregroundStyle(c))
-                (Text(String(format: "%.1f", s.tokS)).foregroundStyle(p.tx) + Text(" tok/s · ttft ") + Text(dur(s.ttft)).foregroundStyle(p.tx)
+                (Text(s.tokSText).foregroundStyle(p.tx) + Text(" tok/s · ttft ") + Text(dur(s.ttft)).foregroundStyle(p.tx)
                  + Text(" · reused ") + Text(k(s.reused)).foregroundStyle(p.tx) + Text(" · Σ in \(k(m.sumIn)) · out \(k(m.sumOut))"))
             } else if m.maxCtx > 0 {
                 Text("ctx –/\(k(m.maxCtx)) · no reply yet")

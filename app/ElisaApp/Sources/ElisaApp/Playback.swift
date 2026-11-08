@@ -22,13 +22,20 @@
 //   @outside once|session|deny   the answer to the next outside-the-project permission box of the prompt above
 //                         (allow once / allow these paths for this session / deny). An outside box with no line left
 //                         is denied and logged as `playback: … FINDING: outside-folder request …`
+//   @answer yes|always|no   the answer to the next plain permission box of the prompt above (repeat the line for
+//                         later boxes, in order); boxes with no line left are answered yes, as before
+//   @esc S                press Esc S seconds after the prompt above is sent (once; cancels the request / tool, and
+//                         an open permission box is answered no, as the key does)
 //
 // JSON lines are accepted too (one object per line, mixed freely with the lines above):
 //   {"prompt": "TEXT"}  {"cmd": "/stats"}   typed and sent (also {"type": "prompt"|"cmd", "text": "TEXT"})
 //   {"outside": "once"|"session"|"deny"}   the next outside permission box's answer (as @outside)
+//   {"answer": "yes"|"always"|"no"}   the next plain permission box's answer (as @answer)   {"esc": S}   (as @esc)
 //   {"pause": S}  {"scroll": true}  {"edits": true}   (also {"type": "pause"|"scroll"|"edits", ...};
 //   pause takes "s" or "seconds" too)
 // Every action is logged to stdout as `playback: +T.Ts <what>` (T = seconds since the playback started).
+// While a script plays the app holds a user-initiated activity (no App Nap, no idle sleep), so timers keep running
+// when the display idles or the window is in the background; it ends when the playback stops.
 import AppKit
 import SwiftUI
 
@@ -72,6 +79,8 @@ final class Playback {
         guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { print("playback: cannot read \(file)"); return }
         steps = Self.parse(text)
         outs = Self.outsideAnswers
+        answers = Self.plainAnswers
+        escs = Self.escAfter
         final = Self.finalStart(steps, marks: Self.finalMarks)
         self.fromFinal = fromFinal
         rng = SplitMix(seed: seed)
@@ -84,6 +93,7 @@ final class Playback {
         model.playbackStop = { [weak self] in self?.stop("stopped by you (■ stop playback / ctrl-.)") }
         turns = steps.filter { if case .say = $0 { return true }; return false }.count
         model.playbackLine = "playback · starting"
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Elisa --script playback")
         task = Task { @MainActor in
             await self.pause(delay)
             await self.play()
@@ -94,6 +104,14 @@ final class Playback {
     /// step index of a prompt -> its scripted answers to outside-the-project permission boxes, in order
     nonisolated(unsafe) static var outsideAnswers: [Int: [String]] = [:]
     private var outs: [Int: [String]] = [:]
+    /// step index of a prompt -> its scripted answers to plain permission boxes ("yes" | "always" | "no"), in order
+    nonisolated(unsafe) static var plainAnswers: [Int: [String]] = [:]
+    private var answers: [Int: [String]] = [:]
+    /// step index of a prompt -> seconds after sending it to press Esc
+    nonisolated(unsafe) static var escAfter: [Int: Double] = [:]
+    private var escs: [Int: Double] = [:]
+    /// the App Nap / idle sleep assertion held while the script plays
+    private var activity: NSObjectProtocol?
     /// outside-the-project requests the script had no answer for (denied), counted for the end line
     private var findings = 0
 
@@ -108,7 +126,19 @@ final class Playback {
     static func parse(_ text: String) -> [Step] {
         finalMarks = []
         outsideAnswers = [:]
+        plainAnswers = [:]
+        escAfter = [:]
         var out: [Step] = []
+        func answer(_ w: String) {
+            let w = w.trimmingCharacters(in: .whitespaces).lowercased()
+            let a = w.hasPrefix("a") || w.hasPrefix("s") ? "always" : w.hasPrefix("n") || w.hasPrefix("d") ? "no" : "yes"
+            guard case .say? = out.last else { print("playback: @answer with no prompt above: skipped"); return }
+            plainAnswers[out.count - 1, default: []].append(a)
+        }
+        func esc(_ secs: Double?) {
+            guard case .say? = out.last else { print("playback: @esc with no prompt above: skipped"); return }
+            escAfter[out.count - 1] = max(0, secs ?? 2)
+        }
         func outside(_ w: String) {
             let w = w.trimmingCharacters(in: .whitespaces).lowercased()
             let a = w.hasPrefix("s") || w.hasPrefix("a") ? "session" : w.hasPrefix("o") || w.hasPrefix("y") ? "once" : "deny"
@@ -119,13 +149,15 @@ final class Playback {
             let l = raw.trimmingCharacters(in: .whitespaces)
             if l.isEmpty || l.hasPrefix("#") { continue }
             if l.hasPrefix("{"), let d = l.data(using: .utf8), let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] {
-                let type = j["type"] as? String ?? ["prompt", "cmd", "outside", "pause", "scroll", "edits"].first { j[$0] != nil } ?? ""
+                let type = j["type"] as? String ?? ["prompt", "cmd", "outside", "answer", "esc", "pause", "scroll", "edits"].first { j[$0] != nil } ?? ""
                 let str = { (k: String) in j[k] as? String }
                 let num = { (k: String) in (j[k] as? NSNumber)?.doubleValue }
                 switch type {
                 case "prompt", "cmd":
                     if let t = str(type) ?? str("text") { out.append(.say(t)) }
                 case "outside": outside(str("outside") ?? str("answer") ?? "deny")
+                case "answer": answer(str("answer") ?? str("text") ?? "yes")
+                case "esc": esc(num("esc") ?? num("s") ?? num("seconds"))
                 case "pause": out.append(.wait(num("pause") ?? num("s") ?? num("seconds") ?? 5))
                 case "scroll": out.append(.scroll)
                 case "edits": out.append(.edits)
@@ -135,6 +167,8 @@ final class Playback {
             }
             if l.hasPrefix("@plan") || l.hasPrefix("@test") { print("playback: planning is gone, skipped: \(l.prefix(60))"); continue }
             if l.hasPrefix("@outside") { outside(String(l.dropFirst(8))) }
+            else if l.hasPrefix("@answer") { answer(String(l.dropFirst(7))) }
+            else if l == "@esc" || l.hasPrefix("@esc ") { esc(Double(l.dropFirst(4).trimmingCharacters(in: .whitespaces))) }
             else if l == "@scroll" { out.append(.scroll) }
             else if l == "@edits" { out.append(.edits) }
             else if l == "@final" { out.append(.wait(0)); finalMarks.append(out.count - 1) }
@@ -148,6 +182,7 @@ final class Playback {
         guard !stopped else { return }
         stopped = true
         task?.cancel()
+        if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
         log("stopped: \(why)" + (findings > 0 ? " · \(findings) outside-folder finding(s)" : ""))
         m?.playbackLine = nil
         m?.playbackStop = nil
@@ -186,6 +221,8 @@ final class Playback {
             }
             let s = steps[i]
             let stepOuts = outs[i] ?? []
+            let stepAnswers = answers[i] ?? []
+            let stepEsc = escs[i]
             i += 1
             switch s {
             case .wait(let d): log("wait \(d)s"); await pause(d)
@@ -200,7 +237,7 @@ final class Playback {
                 guard live else { return }
                 enter(t)
                 log("sent [\(i)/\(steps.count)] \(t.prefix(80))")
-                await waitTurn(outs: stepOuts)
+                await waitTurn(outs: stepOuts, answers: stepAnswers, esc: stepEsc)
                 guard live else { return }
                 await read()
             }
@@ -237,13 +274,21 @@ final class Playback {
     }
 
     /// until the turn is over (elisa idle again, nothing queued); permission boxes are answered on the way
-    private func waitTurn(outs: [String] = []) async {
+    private func waitTurn(outs: [String] = [], answers: [String] = [], esc: Double? = nil) async {
         guard let m else { return }
         var outs = outs
+        var answers = answers
+        var esc = esc
         var sawBusy = false
         var idleSince: Date?
         let sent = Date()
         while live {
+            if let e = esc, Date().timeIntervalSince(sent) >= e {
+                esc = nil
+                log(String(format: "esc after %.1fs", Date().timeIntervalSince(sent)))
+                m.interrupt()
+                sawBusy = true; idleSince = nil
+            }
             if m.approval != nil {
                 let a = m.approval!
                 await pause(r(1.2, 3.5))
@@ -264,8 +309,9 @@ final class Playback {
                     sawBusy = true; idleSince = nil
                     continue
                 }
-                log("permission \(a.summary.prefix(60)) -> yes")
-                m.answer(0)
+                let ans = answers.isEmpty ? "yes" : answers.removeFirst()
+                log("permission \(a.summary.prefix(60)) -> \(ans)")
+                m.answer(ans == "always" ? 1 : ans == "no" ? 2 : 0)
                 sawBusy = true; idleSince = nil
                 continue
             }

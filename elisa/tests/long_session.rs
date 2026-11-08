@@ -253,7 +253,7 @@ fn run(d: &Path, url: &str, stdin: &str) -> Out {
     let home = d.join("_home");
     std::fs::create_dir_all(&home).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_elisa"));
-    cmd.args(["--yes", "--base-url", url, "--max-ctx", &MAX_CTX.to_string(), "--cwd"]).arg(d).current_dir(d).env("HOME", &home)
+    cmd.args(["--yes", "--model", "test-m", "--base-url", url, "--max-ctx", &MAX_CTX.to_string(), "--cwd"]).arg(d).current_dir(d).env("HOME", &home)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (k, _) in std::env::vars() { if k.starts_with("ELISA_") || k.starts_with("ANTHROPIC_") { cmd.env_remove(&k); } }
     let mut child = cmd.spawn().unwrap();
@@ -392,12 +392,28 @@ fn print_rows(title: &str, rows: &[Row]) {
     }
 }
 
-/// System + tools of every agent request byte-identical to the first one (all runs).
+/// System + tools of every agent request byte-identical to the first one (all runs). One intended exception: the
+/// built-in reasoning tools (think / steps / step_done / calc, `mcp_reason.rs`) are offered only on turns whose request
+/// looks like a multi-step task, decided once at turn start. So: the tools without them never change, and the reasoning
+/// tools may appear or go only on the first request of a user turn (last message a user text, not tool results),
+/// never mid-turn, where a change would throw away the prompt cache inside the agent loop.
 fn assert_stable_prefix(reqs: &[&Rec]) {
-    let (s0, t0) = (reqs[0].body["system"].to_string(), reqs[0].body["tools"].to_string());
+    const REASON: [&str; 4] = ["think", "steps", "step_done", "calc"];
+    let split = |r: &Rec| -> (String, bool) {
+        let all = r.body["tools"].as_array().cloned().unwrap_or_default();
+        let on = all.iter().any(|t| t["name"] == "think");
+        let rest: Vec<Value> = all.into_iter().filter(|t| !REASON.iter().any(|n| t["name"] == *n)).collect();
+        (serde_json::to_string(&rest).unwrap(), on)
+    };
+    let turn_start = |r: &Rec| msgs(&r.body).last().is_some_and(|m| m["role"] == "user" && m["content"][0]["type"] == "text");
+    let s0 = reqs[0].body["system"].to_string();
+    let (t0, mut on) = split(reqs[0]);
     for (i, r) in reqs.iter().enumerate() {
         assert_eq!(r.body["system"].to_string(), s0, "agent request {i}: system changed");
-        assert_eq!(r.body["tools"].to_string(), t0, "agent request {i}: tools changed");
+        let (t, now) = split(r);
+        assert_eq!(t, t0, "agent request {i}: tools changed");
+        assert!(now == on || turn_start(r), "agent request {i}: reasoning tools changed mid-turn");
+        on = now;
     }
 }
 
@@ -550,9 +566,11 @@ fn long_session_context_and_memory() {
     both.extend(a2.iter());
     assert_stable_prefix(&both);
     assert_budget(&log2);
-    // the new session starts with run 1's notes and its last card, nothing of run 1's raw history
+    // the new session starts with run 1's notes as background, without run 1's last card (its goal / next step were
+    // that session's task: uitest 2026-11-08) and nothing of run 1's raw history
     let w01 = whole(r01);
-    assert!(w01.contains("## Notes from earlier sessions") && w01.contains("[state]"), "{w01}");
+    assert!(w01.contains("## Notes from earlier sessions") && w01.contains(elisa::context::NOTES_BACKGROUND), "{w01}");
+    assert!(!w01.contains("next: tests for --top"), "run 1's state card reached a new session: {w01}");
     assert!(!w01.contains("Q31-R") && !w01.contains("big3 sample line"), "raw run-1 history leaked into a new session");
     // after /clear: notes (with the /clear summary), no raw pre-clear history (R02's tool output and reply)
     let w03 = whole(r03);
@@ -743,7 +761,7 @@ fn small_results_late_in_a_turn_keep_the_history_append_only() {
     let d = project("append");
     let mut steps: Vec<Step> = vec![read("data/big1.txt"), read("data/big2.txt")];
     for k in 0..8 {
-        steps.push(if k % 2 == 0 { Step::Tool("bash", json!({"command": "echo False"})) }
+        steps.push(if k % 2 == 0 { Step::Tool("bash", json!({"command": format!("echo False # check {k}")})) }
             else { Step::Tool("read", json!({"path": "src/wc.py", "offset": 1 + k % 10, "limit": 3})) });
     }
     steps.push(say("routes listed R1"));

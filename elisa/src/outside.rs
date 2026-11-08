@@ -64,7 +64,9 @@ pub fn check(name: &str, input: &Value, cwd: &Path) -> Option<Outside> {
     let (access, paths): (&str, Vec<String>) = match name {
         "read" | "outline" | "read_symbol" | "write" | "edit" | "edit_symbol" | "glob" | "grep" => {
             let dflt = if matches!(name, "glob" | "grep") { "." } else { "" };
-            let p = sv(input, "path").filter(|p| !p.is_empty()).unwrap_or(dflt);
+            // glob: an absolute pattern (`/Users/me/.ssh/*`) names its own directory (`tools::glob_args`)
+            let gdir = if name == "glob" { Some(crate::tools::glob_args(input).0) } else { None };
+            let p = match &gdir { Some(d) => d.as_str(), None => sv(input, "path").filter(|p| !p.is_empty()).unwrap_or(dflt) };
             if p.is_empty() { return None; }
             let r = resolve(&root, Path::new(p));
             if inside(&root, &r) { return None; }

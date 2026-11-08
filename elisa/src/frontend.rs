@@ -13,6 +13,9 @@ pub struct Args {
     pub model: Option<String>,
     /// --provider NAME: a connection of `~/.config/elisa/providers.toml` (`none` = ignore that file)
     pub provider: Option<String>,
+    /// --type streamdense|anthropic|openai: with --base-url, the kind of server there (default: the active
+    /// connection's kind, else config.toml's)
+    pub kind: Option<String>,
     pub max_ctx: Option<usize>,
     pub cwd: Option<PathBuf>,
     /// --no-character: no companion in the TUI
@@ -49,7 +52,9 @@ pub struct Banner {
 /// Shown after every model reply and kept in the status bar.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Status {
-    pub tok_s: f64,
+    /// decode rate; None when the reply had no decode window (a tool-call-only reply, or under 0.2 s of decode):
+    /// shown as "—", never as a false 0.0
+    pub tok_s: Option<f64>,
     pub ttft_s: f64,
     pub ctx_used: usize,
     pub max_ctx: usize,
@@ -120,7 +125,7 @@ impl CheckEvent {
         let s = if self.summary.is_empty() { String::new() } else { format!(" {}", self.summary) };
         match self.status {
             CheckStatus::Running => format!("check: {} …", self.cmd),
-            CheckStatus::Pass => format!("check: {} ✓", self.cmd),
+            CheckStatus::Pass => format!("check: {} ✓{s}", self.cmd),
             CheckStatus::Fail if self.round < self.rounds => format!("check: {} ✗{s} → fixing ({}/{})", self.cmd, self.round + 1, self.rounds),
             CheckStatus::Fail => format!("check: {} ✗{s}", self.cmd),
             CheckStatus::Timeout => format!("check: {} ⏱{s}", self.cmd),
@@ -161,6 +166,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/context", "token use: system / tools / history / limit"),
     ("/notes", "show the saved notes"),
     ("/allow", "list always-allowed tools; /allow clear resets them"),
+    ("/trust", "accept an MCP server's changed tool list: /trust NAME (no name: list changed servers)"),
+    ("/audit", "the last tool calls and approvals in the audit log, and its chain check: /audit [N]"),
     ("/forget", "delete the saved notes and unpin the pinned facts"),
     ("/resume", "pick a past session to continue"),
     ("/state", "show the current state card (what Elisa carries forward)"),
@@ -192,13 +199,14 @@ pub trait Frontend {
     /// edited; `cwd` resolves relative paths
     fn tool_detail(&mut self, name: &str, input: &serde_json::Value, cwd: &std::path::Path) { let _ = (name, input, cwd); }
     fn tool_done(&mut self, output: &str, is_error: bool);
-    /// blocking: ask to run a Write/Exec tool
-    fn approve(&mut self, tool: &str, summary: &str) -> Approval;
+    /// blocking: ask to run a Write/Exec tool. `server`: the MCP server the tool belongs to (None for Elisa's own
+    /// tools); "always" then covers that whole server (approval key `mcp:SERVER`)
+    fn approve(&mut self, tool: &str, summary: &str, server: Option<&str>) -> Approval;
     /// blocking: ask to run a tool call that reaches outside the project (`o`: read / write and the exact paths).
     /// Yes = allow once, Always = allow these paths for this session, No = deny. Default: `approve` with the outside
     /// line added to the summary.
     fn approve_outside(&mut self, tool: &str, summary: &str, o: &Outside) -> Approval {
-        self.approve(tool, &format!("{summary}\n{}", o.line()))
+        self.approve(tool, &format!("{summary}\n{}", o.line()), None)
     }
     fn info(&mut self, s: &str);
     fn error(&mut self, s: &str);

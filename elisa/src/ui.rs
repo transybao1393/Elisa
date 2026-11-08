@@ -31,23 +31,26 @@ pub fn k(n: usize) -> String {
 }
 
 /// Status of one reply. A tool-only reply arrives in one piece at the end (the gateway hides the call text), so there
-/// is no decode window: tok_s is 0 and ttft_s is the whole request time.
+/// is no decode window: tok_s is None and ttft_s is the whole request time.
 pub fn status(r: &Reply, ctx_used: usize, max_ctx: usize) -> Status {
     let gen = r.total_s - r.ttft_s;
-    let (tok_s, ttft_s) = if gen >= 0.2 { (r.usage.output_tokens as f64 / gen, r.ttft_s) } else { (0.0, r.total_s) };
+    let (tok_s, ttft_s) = if gen >= crate::api::MIN_DECODE_S && r.usage.output_tokens > 0 { (Some(r.usage.output_tokens as f64 / gen), r.ttft_s) } else { (None, r.total_s) };
     Status { tok_s, ttft_s, ctx_used, max_ctx, reused: r.usage.cache_read_input_tokens, output_tokens: r.usage.output_tokens }
 }
 
 /// `23.4 tok/s · ttft 0.6s`; with no decode window (a tool-call-only reply, or under 0.2 s of decode) there is no honest
-/// rate, so only the request time: `2.0s total`.
+/// rate: `— tok/s · 2.0s total` (the request time).
 pub fn speed(st: &Status) -> String {
-    if st.tok_s > 0.0 { format!("{:.1} tok/s · ttft {}", st.tok_s, dur(st.ttft_s, 1)) } else { format!("{} total", dur(st.ttft_s, 1)) }
+    match st.tok_s {
+        Some(t) => format!("{t:.1} tok/s · ttft {}", dur(st.ttft_s, 1)),
+        None => format!("— tok/s · {} total", dur(st.ttft_s, 1)),
+    }
 }
 
 /// `23.4 tok/s · ttft 0.6s · ctx 3.1K/12.3K (25%) · reused 2.9K`
 pub fn status_text(st: &Status) -> String {
     let pct = st.ctx_used * 100 / st.max_ctx.max(1);
-    let sp = if st.tok_s > 0.0 { speed(st) } else { format!("{} tok · {}", st.output_tokens, speed(st)) };
+    let sp = if st.tok_s.is_some() { speed(st) } else { format!("{} tok · {}", st.output_tokens, speed(st)) };
     let mut s = format!("{sp} · ctx {}/{} ({pct}%)", k(st.ctx_used), k(st.max_ctx));
     if st.reused > 0 { s += &format!(" · reused {}", k(st.reused)); }
     s
@@ -188,9 +191,10 @@ impl Frontend for Plain {
     }
     fn tool_start(&mut self, summary: &str) { tool_line(summary); }
     fn tool_done(&mut self, output: &str, is_error: bool) { tool_preview(output, is_error); }
-    fn approve(&mut self, tool: &str, _summary: &str) -> Approval {
+    fn approve(&mut self, tool: &str, _summary: &str, server: Option<&str>) -> Approval {
+        let what = match server { Some(s) => format!("MCP server {s}"), None => tool.to_string() };
         loop {
-            let ans = ask(&format!("allow? [y]es / [n]o / [a]lways for {tool}"));
+            let ans = ask(&format!("allow? [y]es / [n]o / [a]lways for {what}"));
             if crate::repl::CANCEL.load(Ordering::SeqCst) { return Approval::No; }
             match ans.as_deref().map(|s| s.trim().to_ascii_lowercase()).as_deref() {
                 Some("y" | "yes") => return Approval::Yes,

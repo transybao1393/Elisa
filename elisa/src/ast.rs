@@ -609,9 +609,31 @@ pub fn errors(src: &str, tree: &Tree) -> Vec<ParseErr> {
         if !n.has_error() { continue; }
         let mut c = n.walk();
         let kids: Vec<Node> = n.children(&mut c).collect();
+        // the error sits in a hidden node the node API never shows (Python's `MISSING _newline` when two statements
+        // are joined on one line): report it here, or the guard lets a broken file through (soak M2)
+        if !kids.iter().any(|k| k.has_error() || k.is_error() || k.is_missing()) { out.push(hidden_error(src, n, &kids)); }
         for k in kids.into_iter().rev() { stack.push(k); }
     }
     out
+}
+
+/// A parse error inside `n` that no visible child carries: where two statements meet on one line with nothing
+/// between them ("missing line break"), else at the start of `n`.
+fn hidden_error(src: &str, n: Node, kids: &[Node]) -> ParseErr {
+    let at = |b: usize, what: String| {
+        let b = b.min(src.len());
+        let ls = line_start(src, b);
+        let le = line_end(src, ls);
+        ParseErr { line: src[..ls].matches('\n').count() + 1, col: src[ls..b].chars().count() + 1, what, src_line: src[ls..le].to_string() }
+    };
+    let named: Vec<&Node> = kids.iter().filter(|k| k.is_named() && !k.is_extra()).collect();
+    for w in named.windows(2) {
+        let gap = src.get(w[0].end_byte()..w[1].start_byte()).unwrap_or("");
+        if !gap.contains('\n') && !gap.contains(';') {
+            return at(w[1].start_byte(), format!("missing line break before `{}`", cut(&one_line(text(*w[1], src)), 40)));
+        }
+    }
+    at(n.start_byte(), format!("syntax error in `{}`", n.kind().replace('_', " ")))
 }
 
 /// what identifies an error when lines move: its kind + text, not its position

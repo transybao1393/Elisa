@@ -93,13 +93,22 @@ struct Edit: Identifiable {
     var failed: String?
 }
 
-struct Stat { var tokS = 0.0, ttft = 0.0, ctxUsed = 0, maxCtx = 0, reused = 0, out = 0 }
+struct Stat {
+    /// nil (or 0) = no decode window (a short or tool-only reply): shown as "—"
+    var tokS: Double? = nil
+    var ttft = 0.0, ctxUsed = 0, maxCtx = 0, reused = 0, out = 0
+    /// the decode rate as the status bar / footer show it: "21.4", or "—" when there is none
+    var tokSText: String { tokS.map { $0 > 0 && $0.isFinite ? String(format: "%.1f", $0) : "—" } ?? "—" }
+}
 
 struct Approval {
     let tool: String; let summary: String; var sel = 0
     /// a call outside the project folder (Elisa's `approve` with outside: true): read / write / bash and the paths;
     /// its answers are allow once / allow these paths for this session / deny
     var outside = false; var access = ""; var accessWord = ""; var paths: [String] = []
+    /// the MCP server the tool comes from (`server` on `approve`; "web" is Elisa's built-in web server);
+    /// nil for Elisa's own tools. "always" allows the whole server for this project
+    var server: String? = nil
 }
 
 enum Phase: Equatable { case starting, idle, thinking, streaming, tool, permission, exited }
@@ -119,6 +128,14 @@ final class AppModel: ObservableObject {
     @Published var phase: Phase = .starting
     @Published var phaseSince = Date()
     @Published var approval: Approval?
+    /// no folder open yet: the window shows the welcome screen (Welcome.swift) instead of the transcript
+    @Published var welcome = false
+    /// the last folders opened, newest first, that still exist (the welcome screen's Recent list)
+    var recentFolders: [String] {
+        let d = UserDefaults.standard
+        let l = d.stringArray(forKey: "recentFolders") ?? d.string(forKey: "lastFolder").map { [$0] } ?? []
+        return l.filter { FileManager.default.fileExists(atPath: $0) }
+    }
     @Published var picker: [[String: Any]]?
     @Published var pickSel = 0
     @Published var edits: [Edit] = []
@@ -218,6 +235,7 @@ final class AppModel: ObservableObject {
     // MARK: - lifecycle
 
     func start() {
+        welcome = false
         attachments = []; sentImages = []; vision = false
         blocks = []; edits = []; editIdx = 0; stat = nil; sumIn = 0; sumOut = 0; turn = 0; cur = nil; queued = 0
         approval = nil; picker = nil; watchLine = nil; auditLine = nil; job = nil; compactLine = nil; cardNo = nil; expanded = []
@@ -231,6 +249,8 @@ final class AppModel: ObservableObject {
 
     /// a saved Model Connections change: Elisa reads its connection at start, so restart it on this project's session
     func reconnect() {
+        // on the welcome screen there is no session yet: the next folder opened uses the new connection
+        guard !welcome else { return }
         let extra = extraArgs
         if !extraArgs.contains("--continue") { extraArgs.append("--continue") }
         start()
@@ -241,6 +261,7 @@ final class AppModel: ObservableObject {
         folder = f
         demo = false
         UserDefaults.standard.set(f, forKey: "lastFolder")
+        UserDefaults.standard.set(Array(([f] + recentFolders.filter { $0 != f }).prefix(5)), forKey: "recentFolders")
         start()
     }
 
@@ -509,19 +530,20 @@ final class AppModel: ObservableObject {
             }
             setPhase(.streaming)
         case "reply_done":
-            let st = Stat(tokS: d(e, "tok_s"), ttft: d(e, "ttft_s"), ctxUsed: n(e, "ctx_used"), maxCtx: n(e, "max_ctx"), reused: n(e, "reused"), out: n(e, "output_tokens"))
+            let st = Stat(tokS: (e["tok_s"] as? NSNumber)?.doubleValue, ttft: d(e, "ttft_s"), ctxUsed: n(e, "ctx_used"), maxCtx: n(e, "max_ctx"), reused: n(e, "reused"), out: n(e, "output_tokens"))
             stat = st
             let inT = max(0, st.ctxUsed - st.out)
             sumIn += inT; sumOut += st.out
             let r = reply()
             blocks[r].parts.removeAll { if case .footer = $0.kind { return true }; return false }
-            add(.footer("in \(k(inT)) (reused \(k(st.reused))) · out \(k(st.out)) · \(String(format: "%.1f", st.tokS)) tok/s · ttft \(dur(st.ttft))"))
+            add(.footer("in \(k(inT)) (reused \(k(st.reused))) · out \(k(st.out)) · \(st.tokSText) tok/s · ttft \(dur(st.ttft))"))
             setPhase(.thinking)
         case "tool_start":
             let name = s(e, "name")
             let summary = s(e, "summary")
             let target = summary.split(separator: " ", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
-            add(.tool(ToolRow(name: name, verb: name == "bash" ? "Bash" : name.prefix(1).uppercased() + name.dropFirst(), target: target)))
+            let server = (e["server"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            add(.tool(ToolRow(name: name, verb: toolLabel(name, server: server), target: target)))
             setPhase(.tool)
         case "tool_detail":
             let tgt = e["target"] as? String
@@ -541,8 +563,14 @@ final class AppModel: ObservableObject {
             }
         case "approve":
             approval = Approval(tool: s(e, "tool"), summary: s(e, "summary"), outside: (e["outside"] as? Bool) ?? false,
-                                access: s(e, "access"), accessWord: s(e, "access_word"), paths: (e["paths"] as? [String]) ?? [])
-            updateTool { $0.status = .pending }
+                                access: s(e, "access"), accessWord: s(e, "access_word"), paths: (e["paths"] as? [String]) ?? [],
+                                server: (e["server"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+            // the approval names the tool's MCP server: an older core's tool_start does not, so relabel the row
+            let tool = s(e, "tool")
+            updateTool { t in
+                t.status = .pending
+                if let srv = approval?.server, t.name == tool { t.verb = toolLabel(tool, server: srv) }
+            }
             setPhase(.permission)
         case "tool_done":
             let err = (e["is_error"] as? Bool) ?? false
@@ -573,6 +601,12 @@ final class AppModel: ObservableObject {
             // the fold's own line becomes the result (it said "compacting…" while the fold ran)
             setCompactLine("✓ compacted the conversation: \(k(n(e, "from"))) → \(k(n(e, "to"))) tokens · earlier turns are in the notes (/notes)")
             compactLine = nil
+            // the context meter follows the fold / /clear (the next reply_done sets it again)
+            if e["to"] is NSNumber {
+                var st = stat ?? Stat(maxCtx: maxCtx)
+                st.ctxUsed = n(e, "to")
+                stat = st
+            }
         case "card":
             // {text, n?}: n is the card's number (shown as "state #N"); an older Elisa omits it and none is shown
             let no = (e["n"] as? NSNumber)?.intValue
@@ -645,4 +679,31 @@ func dur(_ s: Double, _ places: Int = 1) -> String {
 }
 
 /// 1234 -> "1.2K"
+/// Elisa's own tools (and its built-in servers' tools): their row labels
+let toolLabels: [String: String] = [
+    "read": "Read", "write": "Write", "edit": "Edit", "bash": "Bash", "glob": "Glob", "grep": "Grep",
+    "outline": "Outline", "read_symbol": "Read symbol", "edit_symbol": "Edit symbol",
+    "web_search": "Web search", "web_fetch": "Web page",
+    "think": "Thinking", "steps": "Steps", "step_done": "Step done", "calc": "Calc",
+    "run_code": "Run code", "docs_pdf": "PDF", "docs_sheet": "Spreadsheet",
+    "sec_secrets": "Secret scan", "sec_deps": "Dependency audit", "sec_binary": "Binary check",
+    "sec_jwt": "JWT decode",
+]
+
+/// a tool row's label: a known Elisa tool by its friendly name; an MCP tool as "server · tool" with the tool part
+/// humanized ("time · convert time"). The core exposes an MCP tool as `server_tool`; `server` (when the core sends
+/// it) says where the server name ends, else the part before the first `_` is taken as the server
+func toolLabel(_ name: String, server: String? = nil) -> String {
+    if let l = toolLabels[name] { return l }
+    let human = { (t: Substring) in t.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ") }
+    if let srv = server {
+        let rest = name.hasPrefix(srv + "_") ? name.dropFirst(srv.count + 1) : Substring(name)
+        return "\(srv) · \(human(rest.isEmpty ? Substring(name) : rest))"
+    }
+    if let i = name.firstIndex(of: "_"), i != name.startIndex, name.index(after: i) != name.endIndex {
+        return "\(name[..<i]) · \(human(name[name.index(after: i)...]))"
+    }
+    return name.prefix(1).uppercased() + name.dropFirst()
+}
+
 func k(_ n: Int) -> String { n < 1000 ? "\(n)" : String(format: "%.1fK", Double(n) / 1000) }

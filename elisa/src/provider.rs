@@ -75,7 +75,8 @@ pub struct Profile {
     /// the model can see pictures: true / false, or absent = work it out (Anthropic yes, Ollama asks the server, else no)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
-    /// web access for the model (`web_search`, `web_fetch`): "" = off, "duckduckgo" (no key) or "searxng"
+    /// old connection-level web setting: still read and saved so files load, but ignored since 2026-11-08 (web access
+    /// is config.toml `web`, and each call asks in the chat): "" = off, "duckduckgo" (no key) or "searxng"
     #[serde(default, skip_serializing_if = "empty")]
     pub web: String,
     /// the SearXNG server for `web = "searxng"`

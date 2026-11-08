@@ -189,9 +189,143 @@ pub fn split_state(text: &str) -> (String, Option<String>, bool) {
         }
     }
     vis.push_str(rest);
-    let card = card.map(|c| strip_markup(&c)).filter(|c| !c.is_empty()).map(|c| if c.chars().count() > CARD_CAP { format!("{}…", head(&c, CARD_CAP)) } else { c });
+    let card = card.and_then(|c| clean_card(&strip_markup(&c))).map(|c| if c.chars().count() > CARD_CAP { format!("{}…", head(&c, CARD_CAP)) } else { c });
     let broken = card.is_none();
     (vis.replace(CARD_ECHO, "").trim_end().to_string(), card, broken)
+}
+
+/// The fields of the system prompt's card template.
+const CARD_KEYS: &[&str] = &["goal", "done", "now", "keep", "next", "open"];
+/// The template's own values (`goal: …`, `keep: must-not-lose facts`): a small model copies them into its card
+/// (uitest 2026-11-08: card #9 kept `keep: must-not-lose facts` and was carried into every later session).
+const CARD_PLACEHOLDERS: &[&str] = &["must-not-lose facts", "must not lose facts", "must-not-lose", "n/a", "tbd", "todo", "none yet"];
+
+/// A value that says nothing: empty, only dots / dashes / ellipses, or one of the template's placeholders.
+fn is_placeholder(v: &str) -> bool {
+    let v = v.trim().trim_matches(|c: char| c == '`' || c == '"' || c == '\'' || c == '*').trim();
+    let v = v.trim_end_matches(['.', '…']).trim();
+    v.is_empty() || v.chars().all(|c| matches!(c, '.' | '…' | '-' | '_' | '?') || c.is_whitespace())
+        || CARD_PLACEHOLDERS.iter().any(|p| v.eq_ignore_ascii_case(p))
+}
+
+/// A card as it is kept and stored: template placeholders, empty fields and the copied instruction line dropped
+/// (`keep: must-not-lose facts; ./run.sh` keeps `./run.sh`). None when nothing real is left.
+pub fn clean_card(card: &str) -> Option<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in card.lines() {
+        let t = l.trim();
+        if t.is_empty() || t.contains(CARD_ECHO) || t.contains("End final replies") || t == "<state>" || t == "</state>" { continue; }
+        if let Some((k, v)) = t.split_once(':') {
+            let key = k.trim().trim_start_matches(['-', '*']).trim().to_ascii_lowercase();
+            if CARD_KEYS.contains(&key.as_str()) {
+                let items: Vec<&str> = v.split(';').map(str::trim).filter(|x| !is_placeholder(x)).collect();
+                if !items.is_empty() { out.push(format!("{key}: {}", items.join("; "))); }
+                continue;
+            }
+        }
+        if !is_placeholder(t) { out.push(t.to_string()); }
+    }
+    let s = out.join("\n");
+    (!s.trim().is_empty()).then_some(s)
+}
+
+/// lowercase words only (punctuation, quotes and symbols as spaces), for comparing notes with the instructions
+fn norm_words(s: &str) -> String {
+    let s: String = s.chars().map(|c| if c.is_alphanumeric() { c.to_lowercase().next().unwrap_or(c) } else { ' ' }).collect();
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Summary notes as they are stored: the summarizer's instructions and template text never are (uitest 2026-11-08:
+/// a 2B model quoted "The conversation above will be erased. Write notes…" as the user's goal and kept
+/// "Finished steps and decisions, with their reasons." and "Also known as: name = other words; …"). Drops lines that
+/// repeat (part of) prompts/compact.md, placeholder values, template items of the `Also known as:` line, and
+/// headings left with nothing under them.
+pub fn clean_notes(notes: &str) -> String {
+    let instr = norm_words(COMPACT_MD);
+    // whole instruction sentences / clauses: a line quoting one is an echo even with real words around it
+    let frags: Vec<String> = COMPACT_MD.split(['.', '\n', ':', '(', ')']).map(norm_words).filter(|f| f.len() >= 24).collect();
+    let echo = |t: &str| {
+        let n = norm_words(t);
+        (n.len() >= 12 && instr.contains(&n)) || frags.iter().any(|f| n.contains(f.as_str()))
+    };
+    let mut lines: Vec<String> = Vec::new();
+    for l in notes.lines() {
+        let t = l.trim();
+        if t.starts_with('#') {
+            if !t.trim_start_matches('#').trim().is_empty() { lines.push(t.to_string()); }
+            continue;
+        }
+        if t.is_empty() { lines.push(String::new()); continue; }
+        let body = t.trim_start_matches(['-', '*', '`', ' ']).trim_end_matches('`');
+        if body.to_ascii_lowercase().starts_with("also known as:") {
+            let items: Vec<&str> = body["also known as:".len()..].split(';').map(str::trim)
+                .filter(|x| !is_placeholder(x) && norm_words(x) != "name other words" && real_alias(x)).collect();
+            if !items.is_empty() { lines.push(format!("Also known as: {}", items.join("; "))); }
+            continue;
+        }
+        if is_placeholder(body) || is_placeholder(body.trim_matches(['[', ']', '(', ')'])) || body.trim_matches(['[', ']', '(', ')']).eq_ignore_ascii_case("none") || echo(t) { continue; }
+        lines.push(l.trim_end().to_string());
+    }
+    // headings with nothing under them go; blank runs become one blank line
+    let mut out: Vec<String> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if l.starts_with('#') {
+            let has_body = lines[i + 1..].iter().take_while(|x| !x.starts_with('#')).any(|x| !x.trim().is_empty());
+            if !has_body { continue; }
+        }
+        if l.is_empty() && out.last().is_none_or(|p: &String| p.is_empty()) { continue; }
+        out.push(l.clone());
+    }
+    out.join("\n").trim().to_string()
+}
+
+/// names an `Also known as:` item may not have: the parties of every conversation, the OS, dates (retest 2026-11-08:
+/// `Also known as: user, Elisa, system, macos, 2026-11-08, <path>`)
+const TRIVIAL_ALIAS: &[&str] = &["user", "the user", "elisa", "system", "assistant", "macos", "os", "linux", "model", "project", "the project", "today", "date", "me", "you", "i"];
+
+/// An alias worth keeping: `name = other words`, both sides real, the name not one of TRIVIAL_ALIAS, a date or a path.
+fn real_alias(item: &str) -> bool {
+    let Some((name, other)) = item.split_once('=') else { return false };
+    let (n, o) = (norm_words(name), norm_words(other));
+    !n.is_empty() && !o.is_empty() && n != o && !TRIVIAL_ALIAS.contains(&n.as_str()) && !name.contains('/')
+        && !n.chars().all(|c| c.is_ascii_digit() || c == ' ')
+}
+
+/// `notes` cut to whole lines within `max_tokens` (the top first: the goal and done sections lead).
+pub fn cap_notes(notes: &str, max_tokens: usize) -> String {
+    let mut out = String::new();
+    for l in notes.lines() {
+        if estimate_tokens(&out) + estimate_tokens(l) + 1 > max_tokens { break; }
+        out.push_str(l);
+        out.push('\n');
+    }
+    // a heading cut off from its body is noise
+    let mut s = out.trim_end().to_string();
+    while let Some(last) = s.lines().last() {
+        if !last.starts_with('#') { break; }
+        s = s[..s.len() - last.len()].trim_end().to_string();
+    }
+    s
+}
+
+/// The line in front of notes a NEW session carries from an earlier one (not `--continue` / `/resume`, and after
+/// `/clear` or `/reset`): they are background, not the task (uitest 2026-11-08: an old goal carried into a new
+/// session sent a 2B model on 30 web steps the user never asked for).
+pub const NOTES_BACKGROUND: &str = "(Background from an earlier session; the user has not asked to continue it. Do not pursue its goal or next step unless the request asks.)";
+
+/// Notes as a new session's first message carries them: the background line first, and without the old
+/// `## Session goal` section (that goal belongs to the earlier session; this one sets its own).
+pub fn background_notes(notes: &str) -> String {
+    let notes = notes.trim();
+    let rest = match notes.find(GOAL_NOTES) {
+        Some(i) => {
+            let after = &notes[i + GOAL_NOTES.len()..];
+            let end = after.find("\n## ").map_or(after.len(), |j| j + 1);
+            format!("{}{}", &notes[..i], &after[end..]).trim().to_string()
+        }
+        None => notes.to_string(),
+    };
+    if rest.is_empty() { String::new() } else { format!("{NOTES_BACKGROUND}\n{rest}") }
 }
 
 fn is_user_text(m: &Message) -> bool {
@@ -258,8 +392,10 @@ fn trim_strings(v: &mut Value) {
     }
 }
 
-/// a capped tool result keeps at least this many chars (its head and the marker)
-const RESULT_MIN_CHARS: usize = 240;
+/// a capped tool result keeps at least this many chars (~300 tokens: its head, its tail and the marker); the session
+/// folds older turns rather than cut below it, and says so plainly when even that does not fit (`not_shown`). soak:
+/// results cut to "0 tokens left" (240 chars of head) were re-requested or answered with invented numbers.
+pub const RESULT_MIN_CHARS: usize = 1000;
 
 /// Follows the marker of a cut `read`: the cut took its `next: offset=N` footer, and more reads would only be cut too
 /// (run 2026-11-05: 2-4 lines per read until the context was full, the offsets guessed).
@@ -267,15 +403,51 @@ pub const READ_CUT: &str = "[the context window is too full to read more of this
 
 /// One result cut to `keep` chars: its head (to a line end when one is near) + `[trimmed N chars]`; a cut `read`
 /// (its last line is the `[lines a-b of n]` footer) says why instead of leaving the model to page on.
+/// `msgs` with every secret in text, tool input and tool output redacted (for saved sessions: disk never holds one).
+pub fn redact_messages(msgs: &[Message]) -> Vec<Message> {
+    let mut out = msgs.to_vec();
+    for m in &mut out {
+        for b in &mut m.content {
+            match b {
+                Block::Text { text: s } | Block::ToolResult { content: s, .. } => {
+                    let (r, n) = crate::secrets::redact(s);
+                    if n > 0 { *s = r; }
+                }
+                Block::ToolUse { input, .. } => { crate::secrets::redact_json(input); }
+                Block::Image { .. } => {}
+            }
+        }
+    }
+    out
+}
+
 fn cut_result(content: &str, keep: usize) -> String {
+    // an untrusted fence keeps its closing tag (the cut is head-only)
+    let close = crate::untrusted::CLOSE;
+    if let Some(body) = content.strip_suffix(close) {
+        if content.chars().count() > keep {
+            return format!("{}\n{close}", cut_result(body.trim_end_matches('\n'), keep.saturating_sub(close.len() + 1).max(1)));
+        }
+    }
     let n = content.chars().count();
     if n <= keep { return content.to_string(); }
     let read = content.rsplit('\n').next().is_some_and(|l| l.starts_with("[lines "));
-    let room = keep.saturating_sub(if read { 24 + READ_CUT.len() } else { 24 }).max(1);
-    let mut h = head(content, room);
+    let room = keep.saturating_sub(if read { 24 + READ_CUT.len() } else { 26 }).max(1);
+    if read {
+        // a read: its head and why (its `next: offset` footer would only lead to more cut reads)
+        let mut h = head(content, room);
+        if let Some(i) = h.rfind('\n').filter(|&i| i >= h.len() * 3 / 4) { h = &h[..i]; }
+        let cut = n - h.chars().count();
+        return format!("{h}\n[trimmed {cut} chars] {READ_CUT}");
+    }
+    // anything else: head and tail (a command's summary, a count or an error is at its end)
+    let tail_room = room * 2 / 5;
+    let mut h = head(content, room - tail_room);
     if let Some(i) = h.rfind('\n').filter(|&i| i >= h.len() * 3 / 4) { h = &h[..i]; }
-    let cut = n - h.chars().count();
-    if read { format!("{h}\n[trimmed {cut} chars] {READ_CUT}") } else { format!("{h}\n[trimmed {cut} chars]") }
+    let mut t = tail(content, tail_room);
+    if let Some(i) = t.find('\n').filter(|&i| i <= t.len() / 4) { t = &t[i + 1..]; }
+    let cut = n - h.chars().count() - t.chars().count();
+    if t.is_empty() { format!("{h}\n[trimmed {cut} chars]") } else { format!("{h}\n[trimmed {cut} chars]\n{t}") }
 }
 
 /// One step's tool results fitted into `room_tokens` (what the window has left before the output reserve): when
@@ -342,7 +514,13 @@ pub fn next_goal(current: Option<&str>, input: &str) -> Option<String> {
     match (current, goal_statement(input)) {
         (_, Some(g)) => Some(g),
         (Some(c), None) => Some(c.to_string()),
-        (None, None) => Some(one_line(input, 240)),
+        (None, None) => {
+            // small talk and a plain question set no goal (soak: "hi Elisa! how are you today?" became the session
+            // goal); a greeting in front of a request is not part of it
+            let req = without_greeting(input).trim();
+            let question = req.ends_with('?') && crate::mcp_reason::wanted(req) == Some(false);
+            if req.is_empty() || is_small_talk(req) || question { None } else { Some(one_line(req, 240)) }
+        }
     }
 }
 
@@ -620,7 +798,9 @@ impl Store {
     pub fn save_notes(&self, notes: &str) -> Result<(), String> {
         fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let p = self.notes_path();
-        fs::write(&p, format!("{}\n", notes.trim())).map_err(|e| format!("{}: {e}", p.display()))
+        // on disk: never a secret, whatever the `redact` setting
+        let (notes, _) = crate::secrets::redact(notes.trim());
+        fs::write(&p, format!("{notes}\n")).map_err(|e| format!("{}: {e}", p.display()))
     }
 
     pub fn clear_notes(&self) -> Result<(), String> {
@@ -635,6 +815,8 @@ impl Store {
         let dir = self.sessions_dir();
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let p = dir.join(format!("{}.json", run_id()));
+        // the title below comes from the redacted copy too (QA N2: a password typed in the prompt reached the .meta)
+        let msgs = &redact_messages(msgs)[..];
         let json = serde_json::to_string(msgs).map_err(|e| e.to_string())?;
         let tmp = p.with_extension("json.tmp");
         fs::write(&tmp, json).and_then(|_| fs::rename(&tmp, &p)).map_err(|e| format!("{}: {e}", p.display()))?;
@@ -810,3 +992,467 @@ pub fn with_memory(lines: &[String], text: &str) -> String {
 
 /// The summary instructions (prompts/compact.md), sent as one more user message for an in-context summary.
 pub fn compact_instructions() -> &'static str { COMPACT_MD.trim_end() }
+
+// ----- the context budget at small windows (soak 2026-11-08: 8K, 40 folds in 40 turns) -----
+
+/// Prompt tokens where a between-turns fold starts: the fixed cost (system + tools) plus `fold_at` of the room left
+/// after it. A share of the whole limit (the old rule) sat barely above the fixed cost at 8K (fold at 3.8K with 2.8K
+/// fixed), so nearly every turn folded.
+pub fn fold_point(fixed: usize, limit: usize, fold_at: f32) -> usize {
+    fixed + (fold_at.clamp(0.0, 1.0) as f64 * limit.saturating_sub(fixed) as f64) as usize
+}
+
+/// Room (tokens) for the history a fold keeps: `fold_to` of the working budget (the limit minus the fixed cost) minus
+/// the new notes or card (`new_text`), and never less than an eighth of the working budget.
+pub fn fold_room(fixed: usize, limit: usize, fold_to: f32, new_text: usize) -> usize {
+    let working = limit.saturating_sub(fixed);
+    ((fold_to.clamp(0.0, 1.0) as f64 * working as f64) as usize).saturating_sub(new_text).max(working / 8)
+}
+
+/// A fold must free at least this much (tokens) to be worth its re-prefill: an eighth of the working budget, >= 64.
+pub fn min_fold_gain(fixed: usize, limit: usize) -> usize { (limit.saturating_sub(fixed) / 8).max(64) }
+
+/// The notes' share of the window (tokens): a sixth of the working budget, within 200 ..= 1200. After a fold the
+/// prompt is the fixed cost + the notes + the kept exchange; notes near the fold point made every later turn fold again
+/// (8K live run: ~1,000-token notes left ~700 tokens of room before the next fold).
+pub fn notes_budget(fixed: usize, limit: usize) -> usize { (limit.saturating_sub(fixed) / 6).clamp(200, 1200) }
+
+/// A tool result that did not fit even after a fold: said plainly, so the model does not invent what it held (soak:
+/// a grep count trimmed to nothing was answered "2734"; the real count was 378).
+pub fn not_shown(content: &str) -> String {
+    let first = content.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    format!("[elisa: this result ({} chars, {} lines; it starts \"{}\") did not fit the context window even after folding \
+        older turns, so it is not shown. Do not guess what it said: tell the user, or run a narrower call (a grep pattern, \
+        read with offset and limit, tail).]", content.chars().count(), content.lines().count(), one_line(head(first, 60), 60))
+}
+
+// ----- notes: Elisa's edit records, claim checks, merge, dedupe, priority cap (no model call) -----
+
+/// Heading of the notes section Elisa writes from its own edit records (ground truth, never the model's claim).
+pub const FILES_NOTES: &str = "## Files changed (Elisa's own edit records)";
+const LEDGER_TEXT_CAP: usize = 200_000;
+
+/// What Elisa's own tools changed in this session: the files `write` / `edit` / `edit_symbol` changed (with the text
+/// those edits wrote and each file's text before its first change) and the shell commands run. The evidence a
+/// summary's "added X" must be backed by.
+#[derive(Default, Clone, Debug)]
+pub struct Ledger {
+    files: Vec<LedgerFile>,
+    /// shell commands run (lowercased): a `sed -i` or `echo >>` change is evidence too
+    shell: String,
+}
+
+#[derive(Clone, Debug)]
+struct LedgerFile { path: String, writes: usize, edits: usize, wrote: String, before: String }
+
+/// `path` relative to `cwd` when it lies inside it (the model often writes absolute paths)
+fn rel_path(path: &str, cwd: &Path) -> String {
+    let p = Path::new(path);
+    p.strip_prefix(cwd).map(|r| r.display().to_string()).unwrap_or_else(|_| path.trim_start_matches("./").to_string())
+}
+
+impl Ledger {
+    /// Before a write tool runs: the file's text as it was (kept for its first change only).
+    pub fn before(&mut self, input: &Value, cwd: &Path) {
+        let Some(path) = input.get("path").and_then(Value::as_str).filter(|p| !p.trim().is_empty()) else { return };
+        let rel = rel_path(path, cwd);
+        if self.files.iter().any(|f| f.path == rel) { return; }
+        let text: String = fs::read_to_string(cwd.join(path)).unwrap_or_default().chars().take(LEDGER_TEXT_CAP).collect();
+        self.files.push(LedgerFile { path: rel, writes: 0, edits: 0, wrote: String::new(), before: text.to_lowercase() });
+    }
+
+    /// A tool call that succeeded.
+    pub fn record(&mut self, tool: &str, input: &Value, cwd: &Path) {
+        let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        match tool {
+            "write" | "edit" | "edit_symbol" => {
+                let path = s("path");
+                if path.trim().is_empty() { return; }
+                let rel = rel_path(&path, cwd);
+                let i = match self.files.iter().position(|f| f.path == rel) {
+                    Some(i) => i,
+                    None => { self.files.push(LedgerFile { path: rel, writes: 0, edits: 0, wrote: String::new(), before: String::new() }); self.files.len() - 1 }
+                };
+                let f = &mut self.files[i];
+                if tool == "write" { f.writes += 1 } else { f.edits += 1 }
+                let new = match tool { "write" => s("content"), "edit" => s("new"), _ => format!("{} {}", s("name"), s("source")) };
+                if f.wrote.len() + new.len() <= LEDGER_TEXT_CAP { f.wrote.push_str(&new.to_lowercase()); f.wrote.push('\n'); }
+            }
+            "bash" => {
+                let c = s("command").to_lowercase();
+                if self.shell.len() + c.len() <= LEDGER_TEXT_CAP { self.shell.push_str(&c); self.shell.push('\n'); }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether any file changed (a `before` with no change after it does not count).
+    pub fn is_empty(&self) -> bool { self.files.iter().all(|f| f.writes + f.edits == 0) }
+
+    /// The paths that changed, in first-change order.
+    pub fn paths(&self) -> Vec<String> { self.files.iter().filter(|f| f.writes + f.edits > 0).map(|f| f.path.clone()).collect() }
+
+    /// The notes section: one line per changed file. None when nothing changed.
+    pub fn section(&self) -> Option<String> {
+        if self.is_empty() { return None; }
+        let mut s = format!("{FILES_NOTES}\n");
+        for f in self.files.iter().filter(|f| f.writes + f.edits > 0) {
+            let what = match (f.writes, f.edits) {
+                (0, e) => format!("edited {e}×"),
+                (w, 0) => format!("{}{}", if f.before.is_empty() { "written (new file)" } else { "rewritten" }, if w > 1 { format!(" {w}×") } else { String::new() }),
+                (w, e) => format!("written {w}×, edited {e}×"),
+            };
+            s += &format!("- {}: {what}\n", f.path);
+        }
+        Some(s.trim_end().to_string())
+    }
+
+    /// The changed files `path` (as a summary wrote it) may mean: the same path, or one ends with the other.
+    fn matching(&self, path: &str) -> Vec<&LedgerFile> {
+        let p = path.trim_start_matches("./").to_lowercase();
+        if p.is_empty() { return Vec::new(); }
+        self.files.iter().filter(|f| f.writes + f.edits > 0).filter(|f| {
+            let q = f.path.to_lowercase();
+            q == p || q.ends_with(&format!("/{p}")) || p.ends_with(&format!("/{q}"))
+        }).collect()
+    }
+}
+
+/// verbs that say something new was made: its name must be in what an edit wrote
+const CLAIM_NEW: &[&str] = &[
+    "added", "wrote", "written", "created", "implemented", "documented", "appended", "inserted", "introduced", "bumped",
+    "add", "write", "create", "implement", "document", "append", "insert", "introduce", "bump",
+];
+/// past-tense change verbs: a line with one claims something was done to the code
+const CLAIM_PAST: &[&str] = &[
+    "added", "changed", "edited", "wrote", "written", "created", "fixed", "bumped", "updated", "implemented", "renamed",
+    "removed", "deleted", "modified", "refactored", "replaced", "documented", "appended", "inserted", "introduced",
+    "rewrote", "rewritten", "patched", "corrected",
+];
+/// the same verbs as a state card's `done:` items write them ("done: add restock_cost")
+const CLAIM_BASE: &[&str] = &[
+    "add", "change", "edit", "write", "create", "fix", "bump", "update", "implement", "rename", "remove", "delete",
+    "modify", "refactor", "replace", "document", "append", "insert", "introduce", "rewrite", "patch", "correct",
+];
+
+fn claim_words(line: &str) -> Vec<String> {
+    line.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|x| !x.is_empty()).map(String::from).collect()
+}
+
+fn is_claim(line: &str, done: bool) -> bool {
+    let l = line.to_lowercase();
+    if l.contains("(unverified") || l.contains(" not ") || l.contains("never") || l.contains("failed") || l.contains("n't ") { return false; }
+    claim_words(line).iter().any(|x| CLAIM_PAST.contains(&x.as_str()) || (done && CLAIM_BASE.contains(&x.as_str())))
+}
+
+/// The checkable words of a claim: (paths, identifiers). A path has a `/` or a file extension; an identifier has a
+/// `_`, starts with `--`, ends with `()`, is a version (`0.3.2`) or a comparison (`<=`); backticked spans count too.
+fn claim_tokens(line: &str) -> (Vec<String>, Vec<String>) {
+    let (mut paths, mut ids) = (Vec::new(), Vec::new());
+    let ver = |t: &str| { let t = t.trim_start_matches('v'); t.contains('.') && t.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) };
+    let ext = |t: &str| t.rsplit_once('.').is_some_and(|(a, e)| !a.is_empty() && !a.chars().all(|c| c.is_ascii_digit())
+        && (1..=5).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric()) && e.chars().any(|c| c.is_ascii_alphabetic()));
+    let mut words: Vec<String> = line.split('`').enumerate().filter(|(i, _)| i % 2 == 1).map(|(_, s)| s.trim().to_string()).collect();
+    words.extend(line.split_whitespace().map(String::from));
+    for w in words {
+        let t = w.trim_matches(|c: char| "\"'`,;:()[]{}!?*".contains(c)).trim_end_matches('.').to_string();
+        if t.is_empty() || paths.contains(&t) || ids.contains(&t) { continue; }
+        if ["<=", ">=", "==", "!=", "<", ">"].contains(&t.as_str()) { ids.push(t); continue; }
+        if t.starts_with("http") { continue; }
+        if ver(&t) { ids.push(t); continue; }
+        if (t.contains('/') && t.chars().filter(|c| c.is_alphanumeric()).count() >= 2) || ext(&t) { paths.push(t); continue; }
+        let id = t.trim_end_matches("()");
+        if (id.contains('_') && id.chars().any(char::is_alphanumeric)) || (id.starts_with("--") && id.len() > 3) || t.ends_with("()") {
+            ids.push(id.to_string());
+        }
+    }
+    (paths, ids)
+}
+
+/// One claim against the edit records: Some(true) backed, Some(false) contradicted, None nothing to check it by.
+/// A claim that something new was made ("added restock_cost") needs its name in what an edit wrote (or a shell
+/// command); a change to existing code ("fixed low_stock (< to <=)") may name code the changed file held before or
+/// holds now. A named file narrows the evidence to that file's edits. With only a path, the path must have changed.
+fn check_claim(line: &str, ledger: &Ledger, now: &dyn Fn(&str) -> Option<String>) -> Option<bool> {
+    let (paths, ids) = claim_tokens(line);
+    let named: Vec<&LedgerFile> = paths.iter().flat_map(|p| ledger.matching(p)).collect();
+    if ids.is_empty() {
+        return if paths.is_empty() { None } else { Some(!named.is_empty()) };
+    }
+    let new = claim_words(line).iter().any(|w| CLAIM_NEW.contains(&w.as_str()));
+    let files: Vec<&LedgerFile> = if named.is_empty() { ledger.files.iter().collect() } else { named };
+    let mut corpus = ledger.shell.clone();
+    for f in files {
+        corpus.push_str(&f.wrote);
+        if !new {
+            corpus.push_str(&f.before);
+            if let Some(t) = now(&f.path) { corpus.push_str(&t.chars().take(LEDGER_TEXT_CAP).collect::<String>().to_lowercase()); }
+        }
+    }
+    Some(ids.iter().any(|i| corpus.contains(&i.to_lowercase())))
+}
+
+/// The marker on a "done" line nothing could confirm.
+pub const UNVERIFIED: &str = "(unverified: not in Elisa's edit records)";
+
+/// New notes (a summary, or state cards) with their "done / changed" claims checked against Elisa's own edit records
+/// (soak 2026-11-08: notes kept "added restock_cost", "--low-only flag", "bumped the version" though no edit did any
+/// of it; `check_claim`). A contradicted claim is dropped; one with nothing to check while nothing changed this
+/// session is marked UNVERIFIED. The model's `## Files touched` lines keep only files the records have (others are
+/// dropped, or marked when there are no records), and a "no files were touched" line goes. `now`: a changed file's text now (path relative to the project).
+pub fn verify_claims(notes: &str, ledger: &Ledger, now: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut heading = String::new();
+    for l in notes.lines() {
+        let t = l.trim();
+        if t.starts_with('#') { heading = norm_words(t); out.push(l.to_string()); continue; }
+        if t.is_empty() { out.push(String::new()); continue; }
+        if heading.starts_with("files touched") {
+            let n = norm_words(t);
+            if n.starts_with("no files") || n.starts_with("none") || n.starts_with("nothing") || n.contains("no files were") { continue; }
+            let (paths, _) = claim_tokens(t);
+            // Elisa's own section lists what changed: a line it does not back is noise next to it (dropped); with no
+            // records at all (bash may have changed something) it is marked instead
+            if paths.iter().any(|p| !ledger.matching(p).is_empty()) {
+                // the file did change; what the line says about it is a claim like any other
+                if !(is_claim(t, true) && check_claim(t, ledger, now) == Some(false)) { out.push(l.to_string()); }
+            } else if ledger.is_empty() { out.push(format!("{} {UNVERIFIED}", l.trim_end())); }
+            continue;
+        }
+        // a card's `done: a; b` line: every item is a claim
+        if let Some(rest) = t.strip_prefix("done:") {
+            let kept: Vec<String> = rest.split(';').map(str::trim).filter(|x| !x.is_empty()).filter_map(|x| match check_claim(x, ledger, now) {
+                Some(false) if is_claim(x, true) => None,
+                None if is_claim(x, true) && ledger.is_empty() => Some(format!("{x} {UNVERIFIED}")),
+                _ => Some(x.to_string()),
+            }).collect();
+            if !kept.is_empty() { out.push(format!("done: {}", kept.join("; "))); }
+            continue;
+        }
+        // sentence by sentence: a paragraph that mixes a real change with an invented one keeps only the real one
+        // (8K live run: "…created CHANGELOG.md. The model has updated README.md…" with README.md never changed)
+        let done = heading.starts_with("done");
+        let mut kept: Vec<String> = Vec::new();
+        for sent in sentences(l.trim_end()) {
+            if !is_claim(&sent, done) { kept.push(sent); continue; }
+            match check_claim(&sent, ledger, now) {
+                Some(false) => {}
+                None if ledger.is_empty() => kept.push(format!("{sent} {UNVERIFIED}")),
+                _ => kept.push(sent),
+            }
+        }
+        let line = kept.join(" ");
+        if !line.trim().trim_start_matches(['-', '*']).trim().is_empty() { out.push(line); }
+    }
+    clean_notes(&out.join("\n"))
+}
+
+/// `line` split after `. ` / `! ` / `? ` (a version like `0.3.2` or a path like `core.py` has no space after its dot)
+fn sentences(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut it = line.chars().peekable();
+    while let Some(c) = it.next() {
+        cur.push(c);
+        if matches!(c, '.' | '!' | '?') && it.peek().is_some_and(|n| n.is_whitespace()) {
+            out.push(std::mem::take(&mut cur).trim().to_string());
+        }
+    }
+    if !cur.trim().is_empty() { out.push(cur.trim().to_string()); }
+    // a bullet marker alone is no sentence
+    out.retain(|x| !x.is_empty());
+    out
+}
+
+/// notes as (heading line, body lines); the lines before the first heading have heading ""
+fn sections(notes: &str) -> Vec<(String, Vec<String>)> {
+    let mut v: Vec<(String, Vec<String>)> = vec![(String::new(), Vec::new())];
+    for l in notes.lines() {
+        if l.trim_start().starts_with("## ") { v.push((l.trim().to_string(), Vec::new())); }
+        else if let Some(s) = v.last_mut() { s.1.push(l.trim_end().to_string()); }
+    }
+    for s in &mut v {
+        while s.1.last().is_some_and(|l| l.trim().is_empty()) { s.1.pop(); }
+        while s.1.first().is_some_and(|l| l.trim().is_empty()) { s.1.remove(0); }
+    }
+    v.retain(|s| !s.0.is_empty() || !s.1.is_empty());
+    v
+}
+
+/// a heading's first two words, lowercased: "## Current state / next step" → "current state"
+fn heading_key(h: &str) -> String { norm_words(h).split(' ').take(2).collect::<Vec<_>>().join(" ") }
+
+/// sections whose newest version replaces the older one (they describe "now", not history)
+fn replaces(key: &str) -> bool { ["goal", "current state", "session goal", "from state"].iter().any(|k| key.starts_with(k)) }
+
+/// Keep-first rank of a section when the notes must shrink (lower = kept longer): Elisa's file records, decisions
+/// and open tasks first, the model's own file list and the alias line last.
+fn rank(key: &str) -> u8 {
+    const ORDER: &[&str] = &["session goal", "files changed", "done", "current state", "facts to", "from state", "goal", "files touched"];
+    ORDER.iter().position(|k| key.starts_with(k)).map_or(ORDER.len() as u8, |i| i as u8)
+}
+
+/// the words of a bullet line, for duplicate checks (`- `, `* `, numbering removed)
+fn bullet_key(l: &str) -> String {
+    let t = l.trim().trim_start_matches(['-', '*', '•']).trim();
+    let d = t.chars().take_while(char::is_ascii_digit).count();
+    let t = if d > 0 && t[d..].starts_with(['.', ')']) { &t[d + 1..] } else { t };
+    norm_words(t)
+}
+
+/// `lines` without duplicates: the same words again, or a line whose words another line contains (>= 3 words: the
+/// longer one stays, where the first one stood). soak: a Done list repeated 8 bullets 3-4 times.
+fn dedupe(lines: &[String]) -> Vec<String> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for l in lines {
+        let k = bullet_key(l);
+        if k.is_empty() { if !l.trim().is_empty() { out.push((l.clone(), k)); } continue; }
+        if let Some(i) = out.iter().position(|(_, o)| !o.is_empty() && (*o == k || (o.split(' ').count() >= 3 && k.contains(o.as_str())) || (k.split(' ').count() >= 3 && o.contains(k.as_str())))) {
+            if k.len() > out[i].1.len() { out[i] = (l.clone(), k); }
+            continue;
+        }
+        out.push((l.clone(), k));
+    }
+    out.into_iter().map(|(l, _)| l).collect()
+}
+
+/// the `Also known as:` items of `lines` (taken out of them)
+fn take_aliases(lines: &mut Vec<String>) -> Vec<String> {
+    let mut items = Vec::new();
+    lines.retain(|l| {
+        let b = l.trim().trim_start_matches(['-', '*', '`', ' ']).trim_end_matches('`');
+        match b.to_ascii_lowercase().starts_with("also known as:") {
+            true => { items.extend(b["also known as:".len()..].split(';').map(|x| x.trim().to_string()).filter(|x| !x.is_empty())); false }
+            false => true,
+        }
+    });
+    items
+}
+
+/// Notes as they are kept: duplicate bullets dropped in every section, one `Also known as:` line at the end (merged,
+/// trivial items dropped), sections in a fixed order (session goal, Elisa's file records, done, current state, facts, …).
+pub fn tidy_notes(notes: &str) -> String {
+    let mut secs = sections(&clean_notes(notes));
+    let mut aliases: Vec<String> = Vec::new();
+    for s in &mut secs {
+        aliases.extend(take_aliases(&mut s.1));
+        s.1 = dedupe(&s.1);
+    }
+    secs.retain(|s| s.1.iter().any(|l| !l.trim().is_empty()));
+    secs.sort_by_key(|s| if s.0.is_empty() { 254 } else { rank(&heading_key(&s.0)) });
+    let mut out: Vec<String> = Vec::new();
+    for (h, body) in &secs {
+        if !h.is_empty() { out.push(h.clone()); }
+        out.extend(body.iter().cloned());
+        out.push(String::new());
+    }
+    let mut seen: Vec<String> = Vec::new();
+    aliases.retain(|a| { let k = norm_words(a); let new = !seen.contains(&k); seen.push(k); new });
+    if !aliases.is_empty() { out.push(format!("Also known as: {}", aliases.join("; "))); }
+    // clean_notes drops trivial alias items and squeezes blank lines
+    clean_notes(&out.join("\n"))
+}
+
+/// `new` notes merged into `old` ones, no model call: a section that describes "now" (goal, current state, the state
+/// card section) is replaced by its newer version; every other section keeps the old lines and adds the new ones
+/// (duplicates dropped); Elisa's own file records merge by path (the newer line for a path wins). Sections only the
+/// old notes have stay. soak: /clear replaced the notes with a summary of one turn, and the codename, the owner and
+/// the `<=` fix were gone.
+pub fn merge_notes(old: Option<&str>, new: &str) -> String {
+    let old = old.map(str::trim).unwrap_or("");
+    if old.is_empty() { return tidy_notes(new); }
+    let mut secs = sections(old);
+    for (h, body) in sections(new) {
+        let key = heading_key(&h);
+        let Some(i) = secs.iter().position(|s| heading_key(&s.0) == key && (key.is_empty() == s.0.is_empty())) else { secs.push((h, body)); continue };
+        if replaces(&key) { secs[i] = (h, body); continue; }
+        if key.starts_with("files changed") {
+            let path = |l: &str| l.trim().trim_start_matches("- ").split(": ").next().unwrap_or("").to_string();
+            let mut lines = secs[i].1.clone();
+            for l in body {
+                match lines.iter().position(|o| path(o) == path(&l)) { Some(j) => lines[j] = l, None => lines.push(l) }
+            }
+            secs[i].1 = lines;
+            continue;
+        }
+        let mut lines = secs[i].1.clone();
+        lines.extend(body);
+        secs[i].1 = lines;
+    }
+    let text: Vec<String> = secs.into_iter().flat_map(|(h, b)| {
+        let mut v = Vec::new();
+        if !h.is_empty() { v.push(h); }
+        v.extend(b);
+        v.push(String::new());
+        v
+    }).collect();
+    tidy_notes(&text.join("\n"))
+}
+
+/// lines every section keeps while another one still has more (`cap_notes_priority`)
+const CAP_FLOOR: usize = 2;
+
+/// `notes` (tidied) cut to `max_tokens` by priority, not position: lines go from the lowest-ranked section first
+/// (the alias line, the model's own file list, the request quote, …), the oldest first in a `done` list, so Elisa's
+/// file records, decisions and open tasks are the last to go. A section left empty loses its heading.
+pub fn cap_notes_priority(notes: &str, max_tokens: usize) -> String {
+    let notes = tidy_notes(notes);
+    if estimate_tokens(&notes) <= max_tokens { return notes; }
+    let mut lines: Vec<String> = notes.lines().map(String::from).collect();
+    let mut aliases = take_aliases(&mut lines);
+    let mut secs = sections(&lines.join("\n"));
+    let render = |secs: &[(String, Vec<String>)], aliases: &[String]| {
+        let mut out: Vec<String> = Vec::new();
+        for (h, b) in secs {
+            if b.iter().all(|l| l.trim().is_empty()) { continue; }
+            if !h.is_empty() { out.push(h.clone()); }
+            out.extend(b.iter().cloned());
+            out.push(String::new());
+        }
+        if !aliases.is_empty() { out.push(format!("Also known as: {}", aliases.join("; "))); }
+        out.join("\n").trim().to_string()
+    };
+    let lines_of = |b: &[String]| b.iter().filter(|l| !l.trim().is_empty()).count();
+    while estimate_tokens(&render(&secs, &aliases)) > max_tokens {
+        if aliases.pop().is_some() { continue; }
+        // the lowest-ranked section that still has more than CAP_FLOOR lines, so one long section (a done list) never
+        // starves the facts and the next step; once every section is down to that, strictly by rank (the session goal
+        // goes last of all)
+        let rank_of = |i: usize| if secs[i].0.is_empty() { 253 } else { rank(&heading_key(&secs[i].0)) };
+        let pick = |floor: usize| (0..secs.len()).filter(|&i| lines_of(&secs[i].1) > floor).max_by_key(|&i| (rank_of(i), i));
+        let Some(i) = pick(CAP_FLOOR).or_else(|| pick(0)) else { break };
+        let key = heading_key(&secs[i].0);
+        let b = &mut secs[i].1;
+        let oldest_first = key.starts_with("done") || key.starts_with("from state");
+        let pos = if oldest_first { b.iter().position(|l| !l.trim().is_empty()) } else { b.iter().rposition(|l| !l.trim().is_empty()) };
+        match pos { Some(p) => { b.remove(p); } None => break }
+    }
+    render(&secs, &aliases)
+}
+
+/// Words that make a message small talk, not a task (soak: "hi Elisa! how are you today?" became the session goal).
+const SMALL_TALK: &[&str] = &[
+    "hi", "hello", "hey", "heya", "hiya", "yo", "howdy", "greetings", "good", "morning", "afternoon", "evening", "day",
+    "night", "how", "are", "is", "it", "going", "you", "doing", "today", "elisa", "there", "again", "thanks", "thank",
+    "cheers", "ok", "okay", "great", "nice", "cool", "awesome", "bye", "goodbye", "see", "later", "what's", "whats", "up",
+    "sup", "all", "fine", "well", "and", "u", "job", "welcome", "please", "lol", "haha", "yes", "no", "sure", "i'm", "im",
+];
+/// leading greeting words a request may start with ("Hi! Can you …", "hello again :) tell me …")
+const GREETING: &[&str] = &["hi", "hello", "hey", "heya", "hiya", "yo", "howdy", "greetings", "good", "morning", "afternoon", "evening", "elisa", "there", "again"];
+
+/// The request without a leading greeting ("Hi! Can you remind me…" → "Can you remind me…").
+fn without_greeting(input: &str) -> &str {
+    let mut rest = input.trim_start();
+    loop {
+        let w: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '\'').collect();
+        if w.is_empty() || !GREETING.contains(&w.to_lowercase().as_str()) { break; }
+        rest = rest[w.len()..].trim_start_matches(|c: char| c.is_whitespace() || ",.!:;-–—)(:".contains(c) || !c.is_ascii() && !c.is_alphanumeric());
+    }
+    rest
+}
+
+/// Small talk: a greeting, thanks, "how are you", an acknowledgement — nothing to work on.
+pub fn is_small_talk(input: &str) -> bool {
+    let w: Vec<String> = input.split(|c: char| !(c.is_alphanumeric() || c == '\'')).filter(|x| !x.is_empty()).map(str::to_lowercase).collect();
+    !w.is_empty() && w.len() <= 12 && w.iter().all(|x| SMALL_TALK.contains(&x.as_str()))
+}

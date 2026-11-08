@@ -192,7 +192,7 @@ fn tmpdir(tag: &str) -> PathBuf {
 }
 
 fn client(url: &str) -> Client {
-    Client::new(&Config { base_url: url.into(), ..Config::default() })
+    Client::new(&Config { base_url: url.into(), model: "test-m".into(), ..Config::default() })
 }
 
 fn send(c: &Client, msgs: &[Message]) -> (Result<elisa::types::Reply, String>, String) {
@@ -219,10 +219,11 @@ fn run_elisa_cfg(args: &[&str], cwd: &Path, stdin: Option<&str>, env: &[(&str, S
     std::fs::write(home.join(".config/elisa/config.toml"), format!("auto_mode = true\nchat_window = 1600\n{user_cfg}")).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_elisa"));
     cmd.args(args).arg("--cwd").arg(cwd).current_dir(cwd).env("HOME", &home)
+        .args(if args.contains(&"--model") || user_cfg.contains("model") { &[][..] } else { &["--model", "test-m"][..] })
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped()).stderr(Stdio::piped());
     for (k, _) in std::env::vars() {
-        if k.starts_with("ELISA_") || k.starts_with("ANTHROPIC_") { cmd.env_remove(&k); }
+        if k.starts_with("ELISA_") || k.starts_with("ANTHROPIC_") || k.starts_with("BRAVE_") { cmd.env_remove(&k); }
     }
     for (k, v) in env { cmd.env(k, v); }
     let mut child = cmd.spawn().unwrap();
@@ -290,7 +291,7 @@ fn api_text_split_mid_word_with_cache_read() {
     let keys: Vec<&str> = b.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(keys, ["model", "max_tokens", "system", "messages", "stream"], "no tools/thinking when empty/off");
     assert_eq!(b["stream"], true);
-    assert_eq!(b["model"], "qwen38-27b");
+    assert_eq!(b["model"], "test-m");
 }
 
 #[test]
@@ -401,7 +402,7 @@ fn config_files_and_env_overrides() {
     assert!(e.contains("proj/.elisa/config.toml") && e.contains("modle"), "{e}");
 
     let c = Config::default();
-    assert_eq!((c.base_url.as_str(), c.model.as_str(), c.api_key.as_str(), c.max_ctx), ("http://127.0.0.1:8898", "qwen38-27b", "dummy", None));
+    assert_eq!((c.base_url.as_str(), c.model.as_str(), c.api_key.as_str(), c.max_ctx), ("http://127.0.0.1:8898", "", "dummy", None), "no guessed model");
     assert_eq!((c.max_output, c.keep_recent_turns, c.tool_output_max_chars, c.bash_timeout_s, c.max_steps), (2048, 3, 6000, 120, 30));
     assert_eq!(c.auto_approve, ["read", "glob", "grep"]);
     assert!(!c.think && (c.compact_at - 0.80).abs() < 1e-6);
@@ -480,8 +481,10 @@ fn e2e_api_error_exits_1() {
 #[test]
 fn repl_clear_writes_notes_reset_does_not() {
     let d = tmpdir("repl");
+    // a reply longer than the notes' framing: /clear must come out smaller (a tiny chat keeps no notes)
+    let hi = format!("Hi there. {}", "Here is some context about the project. ".repeat(12));
     let f = Fake::start(vec![
-        text_reply("Hi there."),
+        text_reply(&hi),
         text_reply("NOTES-CLR: greeted user"),
         text_reply("Second answer."),
         text_reply("Third answer."),
@@ -521,11 +524,12 @@ fn repl_ui_status_line() {
     let r = Reply { id: String::new(), content: vec![], stop_reason: "end_turn".into(),
         usage: Usage { input_tokens: 3000, output_tokens: 117, cache_read_input_tokens: 2900, ..Usage::default() }, ttft_s: 0.6, total_s: 5.6 };
     assert_eq!(elisa::ui::status_line(&r, 3100, 12288), "23.4 tok/s · ttft 0.6s · ctx 3.1K/12.3K (25%) · reused 2.9K");
-    // a tool-call-only reply: no decode window -> no rate (never "0.0 tok/s"), only the request time
+    // a tool-call-only reply: no decode window -> no rate (never "0.0 tok/s"): "—" and the request time
     let t = Reply { ttft_s: 2.0, total_s: 2.0, usage: Usage { input_tokens: 100, output_tokens: 53, cache_read_input_tokens: 3900, ..Usage::default() }, ..r.clone() };
     let st = elisa::ui::status(&t, 4053, 8192);
-    assert_eq!(elisa::ui::speed(&st), "2.0s total");
-    assert_eq!(elisa::ui::status_text(&st), "53 tok · 2.0s total · ctx 4.1K/8.2K (49%) · reused 3.9K");
+    assert_eq!(st.tok_s, None);
+    assert_eq!(elisa::ui::speed(&st), "— tok/s · 2.0s total");
+    assert_eq!(elisa::ui::status_text(&st), "53 tok · — tok/s · 2.0s total · ctx 4.1K/8.2K (49%) · reused 3.9K");
     assert_eq!(elisa::ui::speed(&elisa::ui::status(&r, 3100, 12288)), "23.4 tok/s · ttft 0.6s");
     assert_eq!(elisa::ui::k(999), "999");
 }
@@ -548,7 +552,7 @@ fn repl_approval_prompts_and_prefix_across_turns() {
     let reqs = f.messages();
     assert_eq!(reqs.len(), 5);
     let (c, err) = last_tool_result(&reqs[1]);
-    assert!(err && c == "denied by user", "{c}");
+    assert!(err && c == format!("denied by user: {NO_RETRY}"), "{c}");
     assert_prefix_rule(&reqs);
 }
 
@@ -651,7 +655,8 @@ fn repl_mid_turn_fold_once_keeps_current_turn() {
     let last = &reqs[5];
     let first = last["messages"][0]["content"][0]["text"].as_str().unwrap();
     assert!(first.contains("NOTES-T1"), "{first}");
-    assert!(user_texts_of(last).iter().any(|t| t == "read f2 then f3"), "the current request is kept verbatim");
+    // the request is kept verbatim (its own message, or the `## Request` part of the rebuilt first message)
+    assert!(user_texts_of(last).iter().any(|t| elisa::context::request_body(t) == "read f2 then f3"), "the current request is kept verbatim: {:?}", user_texts_of(last));
     assert!(!last.to_string().contains("f1.txt line"), "turn 1's read is folded away");
     let r = tool_results(last);
     assert_eq!(r.len(), 2, "{r:?}");
@@ -673,7 +678,8 @@ fn tool_names(req: &Value) -> Vec<String> {
 #[test]
 fn one_mode_same_system_and_tools_everywhere() {
     const SUMMARY_SYSTEM: &str = "You write short, concrete session notes for a coding agent.";
-    let code = ["read", "write", "edit", "bash", "glob", "grep", "outline", "read_symbol", "edit_symbol"];
+    // none of these turns is about documents or security: those tools stay out (gate_tools = "auto")
+    let code = ["read", "write", "edit", "bash", "glob", "grep", "outline", "read_symbol", "edit_symbol", "web_search", "web_fetch"];
     let d = tmpdir("one-mode");
     big_files(&d, &["a.txt"]);
     let f = Fake::start(vec![
@@ -945,8 +951,10 @@ fn text_tool_call_gets_one_correction() {
 fn write_cut_by_output_limit_is_not_saved() {
     let d = tmpdir("cutwrite");
     let cut = || Sse::new(100, 0).tool_input("w1", "write", json!({"path":"game.html","content":"<html>"})).end("tool_use", 2048);
+    // a context big enough that the output limit is `max_output` (2048) whatever the tool list costs
+    let run = |url: &str| run_elisa_cfg(&["-p", "make a game", "--yes", "--base-url", url], &d, None, &[], "max_ctx = 32768\n");
     let f = Fake::start(vec![cut(), text_reply("I'll use smaller pieces.")]);
-    let o = run_elisa(&["-p", "make a game", "--yes", "--base-url", &f.url()], &d, None);
+    let o = run(&f.url());
     assert_eq!(o.code, 0, "stderr: {}", o.stderr);
     assert_eq!(f.left(), 0);
     assert!(!d.join("game.html").exists(), "a cut write is not saved");
@@ -961,20 +969,21 @@ fn write_cut_by_output_limit_is_not_saved() {
 
     // only once per turn: a second cut stops the turn and says so
     let g = Fake::start(vec![cut(), cut()]);
-    let o = run_elisa(&["-p", "make a game", "--yes", "--base-url", &g.url()], &d, None);
+    let o = run(&g.url());
     assert_eq!((g.messages().len(), g.left()), (2, 0));
     assert!(!d.join("game.html").exists());
     assert!(o.stderr.contains("[stopped: `write game.html` was cut off"), "{}", o.stderr);
 
     // under the limit the same call runs
     let h = Fake::start(vec![Sse::new(100, 0).tool_input("w1", "write", json!({"path":"game.html","content":"<html>"})).end("tool_use", 2047), text_reply("Done.")]);
-    let o = run_elisa(&["-p", "make a game", "--yes", "--base-url", &h.url()], &d, None);
+    let o = run(&h.url());
     assert_eq!(o.code, 0, "stderr: {}", o.stderr);
     assert!(d.join("game.html").exists());
 }
 
-/// The same call with the same result 3 times in a row stops the turn (session 1793540068 ran one failing command
-/// ~15 times); the third result tells the model why.
+/// The same call a third time in a turn does not run (session 1793540068 ran one failing command ~15 times; chat QA
+/// ran one web search 14 times with slightly different results): the model is told to use the earlier result, and a
+/// second blocked step stops the turn (`loop_guard.rs`).
 #[test]
 fn repeated_identical_tool_call_stops_the_turn() {
     let d = tmpdir("repeat");
@@ -982,19 +991,38 @@ fn repeated_identical_tool_call_stops_the_turn() {
     let f = Fake::start(vec![same(), same(), same(), same(), text_reply("never sent")]);
     let o = run_elisa(&["-p", "run it", "--yes", "--base-url", &f.url()], &d, None);
     assert_eq!(o.code, 0, "stderr: {}", o.stderr);
-    assert!(o.stderr.contains("returned the same result 3 times in a row"), "{}", o.stderr);
-    assert_eq!(f.messages().len(), 3, "no 4th request");
-    assert_eq!(f.left(), 2);
+    assert!(o.stderr.contains("[stopped: the model kept repeating calls that already ran"), "{}", o.stderr);
+    assert_eq!(f.messages().len(), 4, "no 5th request");
+    assert_eq!(f.left(), 1);
     let sess = std::fs::read_dir(d.join(".elisa/sessions")).unwrap().map(|e| e.unwrap().path())
         .find(|p| p.extension().is_some_and(|x| x == "json")).unwrap();
     let h: Vec<Message> = serde_json::from_str(&std::fs::read_to_string(sess).unwrap()).unwrap();
     let results: Vec<&str> = h.iter().flat_map(|m| &m.content).filter_map(|b| match b { Block::ToolResult { content, .. } => Some(content.as_str()), _ => None }).collect();
-    assert_eq!(results.len(), 3);
-    assert!(!results[1].contains("[elisa:") && results[2].contains("[elisa: this exact call has now returned this same result 3 times"), "{results:?}");
+    assert_eq!(results.len(), 4);
+    assert!(results[1].contains("boom") && !results[1].contains("[elisa:"), "{results:?}");
+    assert!(results[2].starts_with("[elisa: not run: this exact call already ran 2 times"), "{results:?}");
     let last = h.last().unwrap();
-    assert!(matches!(&last.content[0], Block::Text { text } if text.starts_with("[stopped: `bash echo boom; exit 3`")), "{last:?}");
+    assert!(matches!(&last.content[0], Block::Text { text } if text.starts_with("[stopped: the model kept repeating calls")), "{last:?}");
 
-    // a different result in between resets the streak
+    // a tool the request did not offer (security s1: `sec_malware` in a build without it) is refused before any
+    // approval, even under --yes: one short error with real names, and only a `denial` in the audit log
+    let d = tmpdir("unknown-tool");
+    let f = Fake::start(vec![
+        Sse::new(100, 0).tool_input("m", "sec_malware", json!({"path": "."})).end("tool_use", 5),
+        text_reply("That tool is not available."),
+    ]);
+    let o = run_elisa(&["-p", "scan for malware", "--yes", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!(f.left(), 0);
+    let r = tool_results(&f.messages()[1]).remove(0);
+    assert!(r.starts_with("unknown tool `sec_malware`") && r.contains("Available: "), "{r}");
+    let audit_dir = d.join("_home/.elisa/audit");
+    let lines: Vec<Value> = std::fs::read_dir(&audit_dir).unwrap().flat_map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap()
+        .lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).collect::<Vec<_>>()).filter(|v| v["tool"] == "sec_malware").collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!((lines[0]["event"].as_str(), lines[0]["reason"].as_str()), (Some("denial"), Some("unknown_tool")));
+
+    // a write in between resets the count (the command may read what it changed)
     let d = tmpdir("repeat2");
     let f = Fake::start(vec![
         Sse::new(100, 0).tool_input("b", "bash", json!({"command": "cat n.txt"})).end("tool_use", 5),
@@ -1023,7 +1051,7 @@ impl Serve {
         std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
         std::fs::write(home.join(".config/elisa/config.toml"), config).unwrap();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_elisa"));
-        cmd.args(["--serve-jsonl", "--base-url", url, "--cwd"]).arg(cwd).current_dir(cwd).env("HOME", &home)
+        cmd.args(["--serve-jsonl", "--model", "test-m", "--base-url", url, "--cwd"]).arg(cwd).current_dir(cwd).env("HOME", &home)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         for (k, _) in std::env::vars() { if k.starts_with("ELISA_") || k.starts_with("ANTHROPIC_") { cmd.env_remove(&k); } }
         let mut child = cmd.spawn().unwrap();
@@ -1080,7 +1108,10 @@ fn jsonl_scripted_turn_gives_the_expected_events() {
     ]);
     let mut s = Serve::start(&f.url(), &dir);
     let hello = s.until("ready");
-    assert_eq!(kinds(&hello), ["hello", "banner", "ready"]);
+    // max_ctx 4096 (the fake's /health): system + tools are over 30% of it, so one warning follows the banner
+    assert_eq!(kinds(&hello), ["hello", "banner", "info", "ready"]);
+    let warn = hello.iter().find(|e| e["type"] == "info").unwrap();
+    assert!(warn["text"].as_str().unwrap().starts_with("context: system + tools take "), "{warn}");
     assert!(hello[0]["commands"].as_array().unwrap().iter().any(|c| c[0] == "/help"));
     // the launch greeting plays 2.2 s (as in the TUI); let it end so the turn's states show
     while s.until("shade").last().unwrap()["state"] == "greeting" {}
@@ -1118,6 +1149,7 @@ fn jsonl_approval_round_trip_yes_and_no() {
     s.cmd(json!({"type": "send", "text": "make new.txt"}));
     let evs = s.until("approve");
     assert_eq!((evs.last().unwrap()["tool"].as_str(), evs.last().unwrap()["summary"].as_str()), (Some("write"), Some("write new.txt (1 lines)")));
+    assert!(evs.last().unwrap().get("server").is_none(), "Elisa's own tool: no server field");
     let d = evs.iter().find(|e| e["type"] == "tool_detail").unwrap();
     assert_eq!((d["detail"]["kind"].as_str(), d["detail"]["add"].as_u64()), (Some("new file"), Some(1)));
     assert!(!dir.join("new.txt").exists(), "nothing written before the answer");
@@ -1130,7 +1162,8 @@ fn jsonl_approval_round_trip_yes_and_no() {
     s.until("turn_done");
     s.until("ready");
     s.cmd(json!({"type": "send", "text": "now the bash"}));
-    s.until("approve");
+    let evs = s.until("approve");
+    assert!(evs.last().unwrap().get("server").is_none(), "{}", evs.last().unwrap());
     s.cmd(json!({"type": "approve", "answer": "no"}));
     let evs = s.until("tool_done");
     assert_eq!((evs.last().unwrap()["note"].as_str(), evs.last().unwrap()["is_error"].as_bool()), (Some("denied"), Some(true)));
@@ -1138,7 +1171,36 @@ fn jsonl_approval_round_trip_yes_and_no() {
     assert!(!dir.join("x.txt").exists());
     let reqs = f.messages();
     assert_eq!(last_tool_result(&reqs[1]), ("wrote 1 lines to new.txt".into(), false));
-    assert_eq!(last_tool_result(&reqs[3]), ("denied by user".into(), true));
+    assert_eq!(last_tool_result(&reqs[3]), (format!("denied by user: {NO_RETRY}"), true));
+    s.quit();
+}
+
+/// An edit that cannot change anything (old == new, old not found) and a write to a URL fail with a tool error
+/// before any approval prompt (`tools::precheck`).
+#[test]
+fn useless_edit_fails_without_an_approval_prompt() {
+    let dir = tmpdir("jsonl-precheck");
+    std::fs::write(dir.join("calc.py"), "x = 1\n").unwrap();
+    let f = Fake::start(vec![
+        Sse::new(800, 0).tool_input("t1", "edit", json!({"path": "calc.py", "old": "x = 1", "new": "x = 1"})).end("tool_use", 9),
+        Sse::new(850, 0).tool_input("t2", "edit", json!({"path": "calc.py", "old": "y = 2", "new": "y = 3"})).end("tool_use", 9),
+        Sse::new(900, 0).tool_input("t3", "write", json!({"path": "https://doc.rust-lang.org/std/index.html", "content": "hi\n"})).end("tool_use", 9),
+        text_reply("nothing to do"),
+    ]);
+    let mut s = Serve::start(&f.url(), &dir);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "fix calc"}));
+    let evs = s.until("turn_done");
+    assert!(!evs.iter().any(|e| e["type"] == "approve"), "no approval prompt: {evs:?}");
+    let done: Vec<&Value> = evs.iter().filter(|e| e["type"] == "tool_done").collect();
+    assert_eq!(done.len(), 3, "{evs:?}");
+    assert!(done.iter().all(|e| e["is_error"] == true), "{done:?}");
+    let reqs = f.messages();
+    assert!(last_tool_result(&reqs[1]).0.contains("no change"), "{:?}", last_tool_result(&reqs[1]));
+    assert!(last_tool_result(&reqs[2]).0.contains("old not found"), "{:?}", last_tool_result(&reqs[2]));
+    assert!(last_tool_result(&reqs[3]).0.contains("is a URL"), "{:?}", last_tool_result(&reqs[3]));
+    assert_eq!(std::fs::read_to_string(dir.join("calc.py")).unwrap(), "x = 1\n");
+    assert!(!dir.join("https:").exists());
     s.quit();
 }
 
@@ -1417,7 +1479,8 @@ fn ast_off_drops_the_tools_and_the_prompt_line() {
     let o = run_elisa(&["-p", "hello", "--base-url", &f.url()], &d, None);
     assert_eq!(o.code, 0, "{}", o.stderr);
     let r = &f.messages()[0];
-    assert_eq!(tool_names(r), ["read", "write", "edit", "bash", "glob", "grep"]);
+    // a plain turn: the documents and security tools are left out (gate_tools = "auto")
+    assert_eq!(tool_names(r), ["read", "write", "edit", "bash", "glob", "grep", "web_search", "web_fetch"]);
     assert!(!system(r).contains("outline"), "{}", system(r));
     let g = Fake::start(vec![text_reply("hi")]);
     let d2 = tmpdir("ast-on");
@@ -1667,7 +1730,7 @@ fn outside_read_asks_even_though_read_never_asks_and_deny_keeps_it_out() {
     assert!(o.stderr.contains(&format!("outside the project · read · {want}")), "prompt shows read + the exact path: {}", o.stderr);
     let reqs = f.messages();
     let (c, err) = last_tool_result(&reqs[1]);
-    assert!(err && c.starts_with("denied by user (read outside the project folder") && c.contains(&want), "{c}");
+    assert!(err && c.starts_with("denied by user (read outside the project folder") && c.contains(&want) && c.ends_with(NO_RETRY), "{c}");
     assert!(!c.contains("top secret"));
     let (c, err) = last_tool_result(&reqs[3]);
     assert!(!err && c.contains("in"), "{c}");
@@ -1818,4 +1881,659 @@ fn jsonl_outside_approve_event_carries_paths_and_session_answer() {
     assert!(last_tool_result(&reqs[1]).0.contains("top secret"));
     assert!(last_tool_result(&reqs[2]).1, "grep denied");
     s.quit();
+}
+
+#[test]
+fn web_search_is_denied_with_nobody_to_ask() {
+    // web calls leave the machine: like a write, -p without a terminal and without --yes denies them (nothing is sent)
+    let d = tmpdir("web-ask");
+    let f = Fake::start(vec![
+        Sse::new(500, 400).tool_input("w1", "web_search", json!({"query": "rust 2026 edition"})).end("tool_use", 8),
+        text_reply("ok"),
+    ]);
+    let o = run_elisa(&["-p", "look it up", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let m = f.messages();
+    assert_eq!(m.len(), 2);
+    assert!(tool_names(&m[0]).contains(&"web_search".to_string()), "the built-in web MCP server is on by default");
+    assert!(m[1].to_string().contains("denied (non-interactive; use --yes)"), "{}", m[1]);
+}
+
+/// a one-shot SearXNG stand-in: answers one JSON search and hands back the request line it got
+fn fake_searx() -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{BufRead, BufReader, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut c, _) = l.accept().unwrap();
+        let mut first = String::new();
+        let mut r = BufReader::new(c.try_clone().unwrap());
+        r.read_line(&mut first).unwrap();
+        loop { let mut h = String::new(); if r.read_line(&mut h).unwrap() == 0 || h == "\r\n" { break; } }
+        let body = r#"{"results":[{"title":"Ollama v0.99 released","url":"https://ollama.example/blog/v0.99","content":"New engine."}]}"#;
+        let _ = write!(c, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+        let _ = tx.send(first);
+    });
+    (url, rx)
+}
+
+#[test]
+fn model_searches_through_the_builtin_web_mcp_server() {
+    // the model asks for web_search; Elisa runs it through its own MCP server (`elisa --mcp-serve web`, here on a
+    // SearXNG stand-in) and the hits come back to the model as the tool result
+    let d = tmpdir("mcp-web");
+    let (searx, got) = fake_searx();
+    let f = Fake::start(vec![
+        Sse::new(500, 400).tool_input("w1", "web_search", json!({"query": "latest Ollama release"})).end("tool_use", 8),
+        text_reply("Ollama v0.99 is out."),
+    ]);
+    let o = run_elisa_cfg(&["-p", "what is the latest Ollama release?", "--yes", "--base-url", &f.url()], &d, None, &[],
+        &format!("web = \"searxng\"\nsearxng_url = \"{searx}\"\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let req = got.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(req.contains("q=latest%20Ollama%20release") || req.contains("q=latest+Ollama+release"), "{req}");
+    let m = f.messages();
+    assert_eq!(m.len(), 2);
+    assert!(tool_names(&m[0]).contains(&"web_search".to_string()) && tool_names(&m[0]).contains(&"web_fetch".to_string()));
+    let (res, err) = last_tool_result(&m[1]);
+    assert!(!err && res.contains("Ollama v0.99 released"), "{res}");
+    assert!(o.stdout.contains("Ollama v0.99 is out."), "{}", o.stdout);
+}
+
+/// the request line and headers (lower-cased names) a stand-in server got
+type Got = (String, Vec<(String, String)>);
+
+/// a one-shot Brave Search API stand-in: answers one request with `status` and `body` and hands back the request
+/// line and its headers (lower-cased names)
+fn fake_brave(status: u16, body: &'static str) -> (String, std::sync::mpsc::Receiver<Got>) {
+    use std::io::{BufRead, BufReader, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut c, _) = l.accept().unwrap();
+        let mut first = String::new();
+        let mut r = BufReader::new(c.try_clone().unwrap());
+        r.read_line(&mut first).unwrap();
+        let mut heads = Vec::new();
+        loop {
+            let mut h = String::new();
+            if r.read_line(&mut h).unwrap() == 0 || h == "\r\n" { break; }
+            if let Some((k, v)) = h.trim_end().split_once(':') { heads.push((k.trim().to_ascii_lowercase(), v.trim().to_string())); }
+        }
+        let _ = write!(c, "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+        let _ = tx.send((first, heads));
+    });
+    (url, rx)
+}
+
+const BRAVE_OK: &str = r#"{"type":"search","web":{"results":[
+  {"title":"Ollama <strong>v0.99</strong> released","url":"https://ollama.example/blog/v0.99","description":"New <strong>engine</strong> &amp; more."},
+  {"title":"Second","url":"https://two.example/","description":""}]}}"#;
+
+/// a search through the built-in web server on Brave: (tool result, is_error, stdout + stderr, request line, headers)
+fn brave_search(status: u16, body: &'static str, user_cfg: &str, env: &[(&str, &str)]) -> (String, bool, String, String, Vec<(String, String)>) {
+    let d = tmpdir("mcp-brave");
+    let (brave, got) = fake_brave(status, body);
+    let f = Fake::start(vec![
+        Sse::new(500, 400).tool_input("w1", "web_search", json!({"query": "latest Ollama release"})).end("tool_use", 8),
+        text_reply("done"),
+    ]);
+    let mut envs: Vec<(&str, String)> = vec![("ELISA_BRAVE_URL", brave)];
+    envs.extend(env.iter().map(|(k, v)| (*k, v.to_string())));
+    let o = run_elisa_cfg(&["-p", "what is the latest Ollama release?", "--yes", "--base-url", &f.url()], &d, None, &envs, user_cfg);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let (req, heads) = got.recv_timeout(Duration::from_secs(5)).unwrap();
+    let m = f.messages();
+    assert_eq!(m.len(), 2);
+    let (res, err) = last_tool_result(&m[1]);
+    (unfence(&res, "web_search latest Ollama release"), err, format!("{}\n{}", o.stdout, o.stderr), req, heads)
+}
+
+/// a web result reaches the model inside an `<untrusted>` fence (src/untrusted.rs): the body, checked and unwrapped
+fn unfence(res: &str, source: &str) -> String {
+    let head = format!("<untrusted source=\"{source}\">\n");
+    let body = res.strip_prefix(&head).and_then(|r| r.strip_suffix("\n</untrusted>"));
+    body.unwrap_or_else(|| panic!("not fenced as {source:?}: {res}")).to_string()
+}
+
+fn header<'a>(heads: &'a [(String, String)], k: &str) -> Option<&'a str> { heads.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str()) }
+
+#[test]
+fn model_searches_brave_through_the_builtin_web_mcp_server() {
+    let (res, err, out, req, heads) = brave_search(200, BRAVE_OK, "web = \"brave\"\nbrave_api_key = \"cfg-key-123\"\n", &[]);
+    assert!(req.starts_with("GET /res/v1/web/search?q=latest") && req.contains("Ollama") && req.contains("&count=5"), "{req}");
+    assert_eq!(header(&heads, "x-subscription-token"), Some("cfg-key-123"), "the key reached the server through its env: {heads:?}");
+    assert_eq!(header(&heads, "accept"), Some("application/json"));
+    // the same format as the other engines, markup and entities out
+    assert!(!err && res.starts_with("results for \"latest Ollama release\":\n1. Ollama v0.99 released\n   https://ollama.example/blog/v0.99\n   New engine & more.\n2. Second\n   https://two.example/"), "{res}");
+    assert!(!out.contains("cfg-key-123"), "{out}");
+    // the environment wins over the config file
+    let (_, err, out, _, heads) = brave_search(200, BRAVE_OK, "web = \"brave\"\nbrave_api_key = \"cfg-key-123\"\n", &[("BRAVE_API_KEY", "env-key-456")]);
+    assert!(!err);
+    assert_eq!(header(&heads, "x-subscription-token"), Some("env-key-456"));
+    assert!(!out.contains("env-key-456"), "{out}");
+}
+
+#[test]
+fn brave_refusals_are_one_clear_line_without_the_key() {
+    for (status, says) in [(401, "Brave Search refused the API key (HTTP 401): check BRAVE_API_KEY or brave_api_key"),
+                           (403, "Brave Search refused the API key (HTTP 403)"),
+                           (429, "Brave Search rate limit reached (HTTP 429)")] {
+        let (res, err, out, _, _) = brave_search(status, r#"{"type":"ErrorResponse","error":{"detail":"no"}}"#, "web = \"brave\"\n", &[("BRAVE_API_KEY", "bad-key-789")]);
+        assert!(err && res.contains(says) && !res.contains('\n'), "{status}: {res}");
+        assert!(!res.contains("bad-key-789") && !out.contains("bad-key-789"), "{status}: {res}\n{out}");
+    }
+}
+
+#[test]
+fn brave_without_a_key_turns_web_off_with_one_note_and_a_project_cannot_set_the_key() {
+    let web = |names: Vec<String>| names.iter().any(|n| n.starts_with("web_"));
+    let note = "web: off — web = \"brave\" needs an API key: set BRAVE_API_KEY or brave_api_key in ~/.config/elisa/config.toml";
+    let d = tmpdir("brave-nokey");
+    std::fs::create_dir_all(d.join(".elisa")).unwrap();
+    std::fs::write(d.join(".elisa/config.toml"), "brave_api_key = \"project-key-000\"\n").unwrap();
+    let f = Fake::start(vec![text_reply("hi")]);
+    let o = run_elisa_cfg(&["-p", "hello", "--base-url", &f.url()], &d, None, &[], "web = \"brave\"\n");
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stderr.matches(note).count(), 1, "{}", o.stderr);
+    assert!(o.stderr.contains("brave_api_key ignored: only ~/.config/elisa/config.toml (or BRAVE_API_KEY) holds the key"), "{}", o.stderr);
+    assert!(!o.stderr.contains("project-key-000") && !o.stdout.contains("project-key-000"), "{}", o.stderr);
+    assert!(!web(tool_names(&f.messages()[0])));
+}
+
+/// the advice a denied tool call carries back to the model
+const NO_RETRY: &str = "do not call this tool again for this request; answer without it or ask the user";
+
+#[test]
+fn a_project_config_cannot_add_mcp_servers_but_elisa_still_runs() {
+    let d = tmpdir("mcp-project");
+    let marker = d.join("started");
+    std::fs::create_dir_all(d.join(".elisa")).unwrap();
+    std::fs::write(d.join(".elisa/config.toml"), format!("[mcp.x]\ncommand = [\"/bin/sh\", \"-c\", \"touch {}\"]\n\n[mcp.web]\nenabled = true\n", marker.display())).unwrap();
+    let f = Fake::start(vec![text_reply("hi")]);
+    let o = run_elisa(&["-p", "hello", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stderr.contains("mcp x: not started — a project config cannot add MCP servers"), "{}", o.stderr);
+    assert!(o.stderr.contains("[mcp.web] enabled = true ignored: a project config can only switch servers off"), "{}", o.stderr);
+    assert!(!marker.exists(), "the project's server never ran");
+    let m = f.messages();
+    assert_eq!(m.len(), 1);
+    assert!(!tool_names(&m[0]).iter().any(|n| n.starts_with("x_")), "{:?}", tool_names(&m[0]));
+}
+
+#[test]
+fn mcp_servers_named_like_elisas_tools_are_skipped() {
+    // a server called `edit` / `read` would share Elisa's approval keys (and `read` its default auto-approve): refused.
+    // Each would be a working server (Elisa's own web server under another name) if it were started.
+    let d = tmpdir("mcp-reserved");
+    let exe = env!("CARGO_BIN_EXE_elisa");
+    let cfg = format!("[mcp.edit]\ncommand = [\"{exe}\", \"--mcp-serve\", \"web\"]\n[mcp.read]\ncommand = [\"{exe}\", \"--mcp-serve\", \"web\"]\n\
+        [mcp.\"bad name\"]\ncommand = [\"{exe}\", \"--mcp-serve\", \"web\"]\n");
+    let f = Fake::start(vec![text_reply("hi")]);
+    let o = run_elisa_cfg(&["-p", "hello", "--base-url", &f.url()], &d, None, &[], &cfg);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    for n in ["edit", "read"] {
+        assert!(o.stderr.contains(&format!("mcp {n}: not started — \"{n}\" is one of Elisa's own tool names")), "{}", o.stderr);
+    }
+    assert!(o.stderr.contains("mcp bad name: not started — a server name may only use letters, digits, _ and -"), "{}", o.stderr);
+    let names = tool_names(&f.messages()[0]);
+    assert_eq!(names.iter().filter(|n| n.ends_with("web_search")).collect::<Vec<_>>(), ["web_search"], "only the built-in web server: {names:?}");
+}
+
+#[test]
+fn malformed_mcp_entries_skip_that_server_and_elisa_still_runs() {
+    let d = tmpdir("mcp-malformed");
+    let cfg = "[mcp.both]\ncommand = [\"true\"]\nurl = \"http://127.0.0.1:1/mcp\"\n\
+        [mcp.neither]\nenv = { A = \"b\" }\n\
+        [mcp.empty]\ncommand = [\"\"]\n\
+        [mcp.str]\ncommand = \"npx server\"\n\
+        [mcp.typo]\ncomand = [\"true\"]\n";
+    let f = Fake::start(vec![text_reply("hi")]);
+    let o = run_elisa_cfg(&["-p", "hello", "--base-url", &f.url()], &d, None, &[], cfg);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    for (n, why) in [("both", "not both"), ("neither", "give command"), ("empty", "command is empty"), ("str", "command must be a list"), ("typo", "unknown key \"comand\"")] {
+        let line = o.stderr.lines().find(|l| l.contains(&format!("mcp {n}: not started — "))).unwrap_or_else(|| panic!("no note for {n}: {}", o.stderr));
+        assert!(line.contains(why), "{line}");
+    }
+    assert!(o.stdout.contains("hi"));
+    assert!(tool_names(&f.messages()[0]).contains(&"web_search".to_string()), "the rest of the config still applies");
+}
+
+#[test]
+fn bad_web_settings_turn_web_off_with_one_note() {
+    let web = |names: Vec<String>| names.iter().any(|n| n.starts_with("web_"));
+    for (cfg, note) in [
+        ("web = \"google\"\n", "web: off — web = \"google\" is not a search method (use \"duckduckgo\", \"searxng\" or \"brave\")"),
+        ("web = \"searxng\"\n", "web: off — web = \"searxng\" needs searxng_url = \"http://…\""),
+        ("web = \"searxng\"\nsearxng_url = \"localhost:8080\"\n", "web: off — web = \"searxng\" needs searxng_url"),
+    ] {
+        let d = tmpdir("web-bad");
+        let f = Fake::start(vec![text_reply("hi")]);
+        let o = run_elisa_cfg(&["-p", "hello", "--base-url", &f.url()], &d, None, &[], cfg);
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        assert_eq!(o.stderr.matches(note).count(), 1, "{cfg}: {}", o.stderr);
+        assert!(!web(tool_names(&f.messages()[0])), "{cfg}");
+    }
+    // a project config may only turn web off: picking the search method there is ignored, with a note
+    let d = tmpdir("web-project");
+    std::fs::create_dir_all(d.join(".elisa")).unwrap();
+    std::fs::write(d.join(".elisa/config.toml"), "web = \"searxng\"\n").unwrap();
+    let f = Fake::start(vec![text_reply("hi")]);
+    let o = run_elisa(&["-p", "hello", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stderr.contains("web = \"searxng\" ignored: a project config can only turn web off"), "{}", o.stderr);
+    assert!(!o.stderr.contains("web: off"), "{}", o.stderr);
+    assert!(web(tool_names(&f.messages()[0])), "the user's setting (duckduckgo) stays");
+    // a clean config: no startup notes at all
+    let d = tmpdir("web-clean");
+    let f = Fake::start(vec![text_reply("hi")]);
+    let o = run_elisa(&["-p", "hello", "--base-url", &f.url()], &d, None);
+    assert!(!o.stderr.contains("web:") && !o.stderr.contains("not started"), "{}", o.stderr);
+}
+
+#[test]
+fn mcp_always_allow_is_kept_as_mcp_name_and_does_not_cover_elisas_edit() {
+    let d = tmpdir("mcp-always");
+    std::fs::write(d.join("a.txt"), "old\n").unwrap();
+    let (searx, got) = fake_searx();
+    let f = Fake::start(vec![
+        Sse::new(10, 0).tool_input("w1", "web_search", json!({"query": "elisa"})).end("tool_use", 5),
+        text_reply("Searched."),
+        Sse::new(10, 0).tool_input("e1", "edit", json!({"path": "a.txt", "old": "old", "new": "new"})).end("tool_use", 5),
+        text_reply("Not edited."),
+    ]);
+    let o = run_elisa_cfg(&["--base-url", &f.url()], &d, Some("search\na\nedit it\nn\n"), &[],
+        &format!("memory = false\nweb = \"searxng\"\nsearxng_url = \"{searx}\"\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    got.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(o.stderr.contains("allow? [y]es / [n]o / [a]lways for MCP server web"), "{}", o.stderr);
+    assert!(o.stderr.contains("allow? [y]es / [n]o / [a]lways for edit"), "edit still asks: {}", o.stderr);
+    assert_eq!(std::fs::read_to_string(d.join(".elisa/allow")).unwrap(), "mcp:web\n");
+    assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "old\n");
+    // bare names in .elisa/allow are Elisa's tools only: `web` (as an earlier build saved it) is not `mcp:web`, so it asks
+    std::fs::write(d.join(".elisa/allow"), "edit\nweb\n").unwrap();
+    let g = Fake::start(vec![
+        Sse::new(10, 0).tool_input("w2", "web_fetch", json!({"url": "https://example.invalid/"})).end("tool_use", 5),
+        text_reply("Not fetched."),
+    ]);
+    let o = run_elisa_cfg(&["--base-url", &g.url()], &d, Some("fetch\nn\n"), &[], "memory = false\n");
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stderr.matches("for MCP server web").count(), 1, "a bare `web` entry is not `mcp:web`: {}", o.stderr);
+    let (c, err) = last_tool_result(&g.messages()[1]);
+    assert!(err && c == format!("denied by user: {NO_RETRY}"), "{c}");
+}
+
+#[test]
+fn auto_approve_covers_mcp_tools_only_by_mcp_name() {
+    // default auto_approve (read, glob, grep) and a bare `web` do not cover MCP tools: denied with nobody to ask
+    for cfg in ["", "auto_approve = [\"read\", \"web\", \"web_search\"]\n"] {
+        let d = tmpdir("mcp-auto");
+        let f = Fake::start(vec![
+            Sse::new(10, 0).tool_input("w1", "web_search", json!({"query": "elisa"})).end("tool_use", 5),
+            text_reply("No search."),
+        ]);
+        let o = run_elisa_cfg(&["-p", "search", "--base-url", &f.url()], &d, None, &[], cfg);
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        let (c, err) = last_tool_result(&f.messages()[1]);
+        assert!(err && c.starts_with("denied (non-interactive"), "{cfg}: {c}");
+    }
+    // `mcp:web` does
+    let d = tmpdir("mcp-auto-yes");
+    let (searx, got) = fake_searx();
+    let f = Fake::start(vec![
+        Sse::new(10, 0).tool_input("w1", "web_search", json!({"query": "elisa"})).end("tool_use", 5),
+        text_reply("Searched."),
+    ]);
+    let o = run_elisa_cfg(&["-p", "search", "--base-url", &f.url()], &d, None, &[],
+        &format!("auto_approve = [\"read\", \"mcp:web\"]\nweb = \"searxng\"\nsearxng_url = \"{searx}\"\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    got.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (c, err) = last_tool_result(&f.messages()[1]);
+    assert!(!err && c.contains("Ollama v0.99 released"), "{c}");
+}
+
+#[test]
+fn jsonl_approve_names_the_mcp_server_and_a_no_says_do_not_retry() {
+    let dir = tmpdir("jsonl-mcp");
+    let f = Fake::start(vec![
+        Sse::new(800, 0).tool_input("w1", "web_search", json!({"query": "elisa"})).end("tool_use", 9),
+        text_reply("ok, no search"),
+    ]);
+    let mut s = Serve::start(&f.url(), &dir);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "search"}));
+    let evs = s.until("approve");
+    let a = evs.last().unwrap();
+    assert_eq!((a["tool"].as_str(), a["server"].as_str(), a["outside"].as_bool()), (Some("web_search"), Some("web"), Some(false)), "{a}");
+    s.cmd(json!({"type": "approve", "answer": "no"}));
+    let evs = s.until("tool_done");
+    assert_eq!(evs.last().unwrap()["note"].as_str(), Some("denied"));
+    s.until("turn_done");
+    assert_eq!(last_tool_result(&f.messages()[1]), (format!("denied by user: {NO_RETRY}"), true));
+    s.quit();
+}
+
+#[test]
+fn web_tools_go_away_when_the_web_server_is_disabled_or_web_is_off() {
+    let web = |names: Vec<String>| names.iter().any(|n| n.starts_with("web_"));
+    // [mcp.web] enabled = false, even from a project config
+    let d = tmpdir("mcp-web-off");
+    std::fs::create_dir_all(d.join(".elisa")).unwrap();
+    std::fs::write(d.join(".elisa/config.toml"), "[mcp.web]\nenabled = false\n").unwrap();
+    let f = Fake::start(vec![text_reply("hi")]);
+    let o = run_elisa(&["-p", "hello", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let r = &f.messages()[0];
+    assert!(!web(tool_names(r)) && tool_names(r).contains(&"read".to_string()), "{:?}", tool_names(r));
+    // web = "off" in the user config
+    let d2 = tmpdir("web-off");
+    let g = Fake::start(vec![text_reply("hi")]);
+    let o2 = run_elisa_cfg(&["-p", "hello", "--base-url", &g.url()], &d2, None, &[], "web = \"off\"\n");
+    assert_eq!(o2.code, 0, "{}", o2.stderr);
+    assert!(!web(tool_names(&g.messages()[0])), "{:?}", tool_names(&g.messages()[0]));
+}
+
+/// QA 2026-11-08 (H1): a model that lists a .env file as `- DB_PASSWORD: value` (or YAML / JSON / `KEY = value`)
+/// put the raw value into the saved session and the memory log. Every form is redacted on disk.
+#[test]
+fn reformatted_secrets_never_reach_sessions_or_memory() {
+    let d = tmpdir("secret-forms");
+    // assembled at runtime: no scannable literal in this file
+    let vals: Vec<String> = (0..7).map(|i| format!("TPcp{i}Xk9q2LmR7vWz4bN")).collect();
+    std::fs::write(d.join("deploy.env"), format!("PORT=8080\nDB_PASSWORD={}\n", vals[0])).unwrap();
+    let reply = format!(
+        "Settings:\n- PORT: 8080\n- DB_PASSWORD: {}\n\nAs YAML:\n```yaml\ndb:\n  password: {}\n```\nAs JSON:\n```json\n{{\"password\": \"{}\"}}\n```\n\
+         Shell:\n```sh\nexport DB_PASSWORD={}\nDB_PASSWORD = {}\n```\n1. **API_TOKEN**: `{}`\nDB_PASSWORD:{}\n",
+        vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6]
+    );
+    let f = Fake::start(vec![
+        Sse::new(10, 0).tool_input("r1", "read", json!({"path": "deploy.env"})).end("tool_use", 9),
+        text_reply(&reply),
+    ]);
+    let o = run_elisa(&["-p", "read deploy.env and list each setting with its value", "--yes", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    // walk everything Elisa wrote: .elisa/ (sessions, notes, metrics) and the memory dir under the temp HOME
+    fn files(p: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
+            let q = e.path();
+            if q.is_dir() { files(&q, out) } else { out.push(q) }
+        }
+    }
+    let mut all = Vec::new();
+    files(&d.join(".elisa"), &mut all);
+    files(&d.join("_home/.elisa"), &mut all);
+    let sessions: Vec<_> = all.iter().filter(|p| p.extension().is_some_and(|e| e == "json") && p.to_string_lossy().contains("sessions")).collect();
+    assert_eq!(sessions.len(), 1, "{all:?}");
+    assert!(all.iter().any(|p| p.extension().is_some_and(|e| e == "seg")), "memory segments written: {all:?}");
+    for p in &all {
+        let b = std::fs::read(p).unwrap();
+        let s = String::from_utf8_lossy(&b);
+        for v in &vals { assert!(!s.contains(v.as_str()), "{} holds {}…", p.display(), &v[..4]); }
+    }
+    let sess = std::fs::read_to_string(sessions[0]).unwrap();
+    assert!(sess.contains("[redacted:env-secret]") && sess.contains("[redacted:generic-secret]"), "{sess}");
+    // the memory log holds the (redacted) reply, so the check above really covered it
+    assert!(all.iter().filter(|p| p.extension().is_some_and(|e| e == "seg"))
+        .any(|p| String::from_utf8_lossy(&std::fs::read(p).unwrap()).contains("[redacted:env-secret]")), "reply not in memory log");
+}
+
+/// Every file Elisa wrote for project `d`: `.elisa/` (sessions, notes, metrics) and the memory dir under the temp HOME.
+fn written_files(d: &Path) -> Vec<PathBuf> {
+    fn files(p: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
+            let q = e.path();
+            if q.is_dir() { files(&q, out) } else { out.push(q) }
+        }
+    }
+    let mut all = Vec::new();
+    files(&d.join(".elisa"), &mut all);
+    files(&d.join("_home/.elisa"), &mut all);
+    all
+}
+
+/// QA N1: `app.cfg` holds `API_KEY_PROD=<value>`; the tool result was stored redacted, but the model's sentence
+/// "…app.cfg with the value <value>" (no key name) reached notes, the session and memory raw. A value the session
+/// has seen is now hidden wherever it appears on disk.
+#[test]
+fn a_secret_restated_in_prose_never_reaches_disk() {
+    let d = tmpdir("secret-prose");
+    let v = ["ZpQ8", "1kLmN3vB7xR2tY6w"].concat();
+    std::fs::write(d.join("app.cfg"), format!("NAME=demo\nAPI_KEY_PROD={v}\n")).unwrap();
+    let reply = format!("There is a secret in the project file app.cfg with the value {v}. Rotate {v} soon.\n\
+        <state>\ngoal: scan for secrets\ndone: found the key {v} in app.cfg\nkeep: app.cfg value {v}\nnext: none\n</state>");
+    let f = Fake::start(vec![
+        Sse::new(10, 0).tool_input("s1", "sec_secrets", json!({"path": "."})).end("tool_use", 9),
+        Sse::new(10, 0).tool_input("r1", "read", json!({"path": "app.cfg"})).end("tool_use", 9),
+        text_reply(&reply),
+    ]);
+    let o = run_elisa(&["--yes", "--base-url", &f.url()], &d, Some("Use the sec_secrets tool to scan this project for secrets\n/exit\n"));
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!(f.left(), 0, "{}", o.stderr);
+    let all = written_files(&d);
+    assert!(all.iter().any(|p| p.to_string_lossy().contains("sessions")), "{all:?}");
+    assert!(all.iter().any(|p| p.extension().is_some_and(|e| e == "seg")), "memory segments written: {all:?}");
+    let mut saw_reply = false;
+    for p in &all {
+        let s = String::from_utf8_lossy(&std::fs::read(p).unwrap()).to_string();
+        assert!(!s.contains(&v), "{} holds the value", p.display());
+        saw_reply |= s.contains("with the value [redacted:env-secret]");
+    }
+    assert!(saw_reply, "the reply was saved (redacted): {all:?}");
+}
+
+/// QA N2: a `KEY=value` / `key: value` the user types inside a sentence was raw in the session, metrics.jsonl and
+/// memory (a ghp_ token in the same message was redacted).
+#[test]
+fn a_secret_typed_mid_sentence_never_reaches_disk() {
+    let d = tmpdir("secret-typed");
+    let v = ["Zr4W", "q8Lp2Nx6Tb9Vk3Hs"].concat();
+    let f = Fake::start(vec![text_reply("OK")]);
+    let prompt = format!("Just reply OK, no tools: my db password is DB_PASSWORD={v} and password: {v}");
+    let o = run_elisa(&["-p", &prompt, "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    let all = written_files(&d);
+    assert!(all.iter().any(|p| p.file_name().is_some_and(|n| n == "metrics.jsonl")), "{all:?}");
+    assert!(all.iter().any(|p| p.extension().is_some_and(|e| e == "seg")), "{all:?}");
+    for p in &all {
+        let s = String::from_utf8_lossy(&std::fs::read(p).unwrap()).to_string();
+        assert!(!s.contains(&v), "{} holds the value", p.display());
+    }
+    let sess = all.iter().find(|p| p.to_string_lossy().contains("sessions") && p.extension().is_some_and(|e| e == "json")).expect("session saved");
+    let s = std::fs::read_to_string(sess).unwrap();
+    assert!(s.contains("DB_PASSWORD=[redacted:env-secret]") && s.contains("password: [redacted:"), "{s}");
+}
+
+/// QA N3: a reply with only its state card left the user with nothing to read. Asked once more (the nudge goes with
+/// that one request, never into the history), then an info line if it is still empty.
+#[test]
+fn an_empty_visible_reply_is_retried_once_then_noted() {
+    let d = tmpdir("empty-reply");
+    let card = "<state>\ngoal: none\ndone: none\nnext: none\n</state>";
+    let f = Fake::start(vec![text_reply(card), text_reply(&format!("You're welcome! What next?\n{card}"))]);
+    let o = run_elisa(&["-p", "thanks", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert!(o.stdout.contains("You're welcome!"), "{}", o.stdout);
+    assert!(o.stderr.contains("asking the model once more") && !o.stderr.contains("[no answer"), "{}", o.stderr);
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 2);
+    let (m0, m1) = (reqs[0]["messages"].as_array().unwrap(), reqs[1]["messages"].as_array().unwrap());
+    // the same history, plus the nudge as the last message
+    assert_eq!(m1.len(), m0.len() + 1);
+    assert_eq!(m0[..], m1[..m0.len()]);
+    assert!(m1.last().unwrap().to_string().contains("one plain sentence"), "{}", m1.last().unwrap());
+    let sess = written_files(&d).into_iter().find(|p| p.to_string_lossy().contains("sessions") && p.extension().is_some_and(|e| e == "json")).unwrap();
+    let s = std::fs::read_to_string(sess).unwrap();
+    assert!(s.contains("You're welcome!") && !s.contains("one plain sentence"), "{s}");
+
+    // empty twice: one retry, then a note instead of silence
+    let d = tmpdir("empty-reply2");
+    let f = Fake::start(vec![text_reply(card), text_reply(card), text_reply("unused")]);
+    let o = run_elisa(&["-p", "2+2=?", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!(f.left(), 1, "exactly one retry");
+    assert!(o.stderr.contains("[no answer: the model wrote no text for you twice"), "{}", o.stderr);
+}
+
+// ---------- session memory: state card carry-over, /clear, ctx after Esc, tok/s null ----------
+
+/// A new session does not take over the last session's state card (uitest 2026-11-08: "continuing from state card
+/// #9" with an old goal sent a 2B model on 30 web steps); `--continue` does, cleaned of template text.
+#[test]
+fn state_card_is_carried_only_into_a_continued_session() {
+    let d = tmpdir("card-carry");
+    let f = Fake::start(vec![text_reply("ok\n<state>\ngoal: OLD-GOAL-X\ndone: …\nkeep: must-not-lose facts\nnext: OLD-NEXT-X\n</state>")]);
+    let o = run_elisa(&["--base-url", &f.url()], &d, Some("first question R1\n/exit\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    // run 2: a new session in the same project
+    let g = Fake::start(vec![text_reply("fresh")]);
+    let o = run_elisa(&["--base-url", &g.url()], &d, Some("an unrelated question R2\n/state\n/exit\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(!o.stderr.contains("continuing from state card"), "{}", o.stderr);
+    assert!(o.stderr.contains("no state card yet"), "{}", o.stderr);
+    let req = g.messages()[0].to_string();
+    assert!(req.contains("R2") && !req.contains("OLD-GOAL-X") && !req.contains("OLD-NEXT-X"), "the old card reached a new session: {req}");
+    // run 3: --continue carries it, without the template placeholders (a new second: session ids are unix seconds)
+    std::thread::sleep(Duration::from_millis(1100));
+    let o = run_elisa(&["--base-url", "http://127.0.0.1:9", "--continue"], &d, Some("/state\n/exit\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stderr.contains("continuing from state card #"), "{}", o.stderr);
+    assert!(o.stderr.contains("goal: OLD-GOAL-X") && o.stderr.contains("next: OLD-NEXT-X"), "{}", o.stderr);
+    assert!(!o.stderr.contains("must-not-lose") && !o.stderr.contains("done: …"), "template text in the card: {}", o.stderr);
+}
+
+/// /clear shrinks the context even when the model's summary is longer than the conversation, stores no
+/// instruction / template text, sends `compacted` (the ctx meter updates now), and the next request carries the
+/// notes as background.
+#[test]
+fn jsonl_clear_shrinks_the_context_and_keeps_clean_notes() {
+    let dir = tmpdir("jsonl-clear");
+    let long = "The answer, at some length. ".repeat(40);
+    let pad: String = (0..120).map(|i| format!("- detail line {i:03} PAD\n")).collect();
+    let summary = format!("## Goal\nWhat the user said: \"hello\" and \"The conversation above will be erased. Write notes so a fresh session can pick up the work\"\n\n\
+        ## Done\nFinished steps and decisions, with their reasons.\n\n## Files touched\n\n\
+        ## Current state / next step\nGreeted the user. REAL-NOTE-1\n{pad}\n\
+        ## Facts to remember\nCommands that build or test the project, paths, names, and preferences the user stated in their own words.\n\n\
+        Also known as: name = other words; …\n<state>\ngoal: x\n</state>");
+    let f = Fake::start(vec![text_reply(&long), text_reply(&summary), text_reply("after")]);
+    let mut s = Serve::start(&f.url(), &dir);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "hello"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "/clear"}));
+    let evs = s.until("turn_done");
+    let c = evs.iter().find(|e| e["type"] == "compacted").unwrap_or_else(|| panic!("no compacted event: {:?}", kinds(&evs)));
+    let (from, to) = (c["from"].as_u64().unwrap(), c["to"].as_u64().unwrap());
+    assert!(to < from, "/clear grew the context: {from} -> {to}");
+    let info = evs.iter().filter(|e| e["type"] == "info").map(|e| e["text"].as_str().unwrap()).find(|t| t.starts_with("[cleared:")).unwrap();
+    assert!(info.contains("notes saved"), "{info}");
+    let notes = std::fs::read_to_string(dir.join(".elisa/notes.md")).unwrap();
+    assert!(notes.contains("REAL-NOTE-1"), "{notes}");
+    assert!(notes.matches("PAD").count() < 120, "the notes were cut to fit under the conversation: {notes}");
+    for bad in ["will be erased", "Finished steps", "name = other words", "Also known as", "Commands that build", "## Files touched", "<state>", "## Goal"] {
+        assert!(!notes.contains(bad), "{bad:?} stored in the notes:\n{notes}");
+    }
+    // the next request: one first message, notes marked as background
+    s.cmd(json!({"type": "send", "text": "next one"}));
+    s.until("turn_done");
+    let reqs = f.messages();
+    let m = reqs[2]["messages"].as_array().unwrap();
+    assert_eq!(m.len(), 1);
+    let t = m[0]["content"][0]["text"].as_str().unwrap();
+    assert!(t.contains(elisa::context::NOTES_BACKGROUND) && t.contains("REAL-NOTE-1") && t.ends_with("## Request\nnext one"), "{t}");
+    s.quit();
+}
+
+/// Esc mid-reply on a server that reports no usage (Ollama sends it only at the end): `reply_done` carries the
+/// estimated context, not 0 (uitest: the ctx meter reset to 0/8.2K). A short reply has no decode window: tok_s null.
+#[test]
+fn jsonl_interrupt_keeps_the_context_and_short_replies_have_no_rate() {
+    let dir = tmpdir("jsonl-esc-ctx");
+    let words: Vec<String> = (0..3000).map(|i| format!("w{i} ")).collect();
+    let pieces: Vec<&str> = words.iter().map(String::as_str).collect();
+    let f = Fake::start(vec![Sse::new(0, 0).text(&pieces).end("end_turn", 3000), text_reply("after")]);
+    let mut s = Serve::start(&f.url(), &dir);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "talk a lot"}));
+    s.until("delta");
+    std::thread::sleep(Duration::from_millis(100));
+    s.cmd(json!({"type": "interrupt"}));
+    let evs = s.until("turn_done");
+    let rd = evs.iter().find(|e| e["type"] == "reply_done").unwrap();
+    let ctx = rd["ctx_used"].as_u64().unwrap();
+    // system + tools alone are hundreds of tokens
+    assert!(ctx > 300, "ctx_used after Esc: {rd}");
+    assert!(rd["output_tokens"].as_u64().unwrap() > 0, "the partial reply counts: {rd}");
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "again"}));
+    let evs = s.until("turn_done");
+    let rd = evs.iter().find(|e| e["type"] == "reply_done").unwrap();
+    assert!(rd.get("tok_s").is_some() && rd["tok_s"].is_null(), "no decode window: tok_s is null, not 0.0: {rd}");
+    s.quit();
+}
+
+/// soak 2026-11-08: /clear summarised one turn, replaced the notes and said "No files were touched" after 4 edits,
+/// and the notes kept a "done" item no edit made. Now: merged with the earlier notes, the file list from Elisa's own
+/// edit records, the invented claim dropped.
+#[test]
+fn jsonl_clear_merges_notes_and_lists_the_files_really_changed() {
+    let dir = tmpdir("jsonl-clear-merge");
+    std::fs::create_dir_all(dir.join(".elisa")).unwrap();
+    std::fs::write(dir.join(".elisa/notes.md"), "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n").unwrap();
+    let summary = "## Done\n- Wrote hello.txt with a greeting. REAL-DONE\n- Added restock_cost(items) to core.py.\n- Wrote hello.txt with a greeting. REAL-DONE\n\n\
+        ## Files touched\nNo files were touched in this session.\n\n## Current state / next step\nnothing open";
+    let f = Fake::start(vec![
+        Sse::new(800, 0).tool_input("t1", "write", json!({"path": "hello.txt", "content": "hi there\n"})).end("tool_use", 12),
+        text_reply("Wrote it."),
+        text_reply(summary),
+    ]);
+    let mut s = Serve::start(&f.url(), &dir);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "create hello.txt saying hi there"}));
+    s.until("approve");
+    s.cmd(json!({"type": "approve", "answer": "yes"}));
+    s.until("turn_done");
+    assert_eq!(std::fs::read_to_string(dir.join("hello.txt")).unwrap(), "hi there\n");
+    s.cmd(json!({"type": "send", "text": "/clear"}));
+    s.until("turn_done");
+    let notes = std::fs::read_to_string(dir.join(".elisa/notes.md")).unwrap();
+    assert!(notes.contains("BLUE HERON"), "earlier facts kept: {notes}");
+    assert!(notes.contains(&format!("{}\n- hello.txt: written (new file)", elisa::context::FILES_NOTES)), "{notes}");
+    assert_eq!(notes.matches("REAL-DONE").count(), 1, "{notes}");
+    assert!(!notes.contains("No files were touched") && !notes.contains("restock_cost"), "{notes}");
+    s.quit();
+}
+
+/// The documents / security tools come only on turns about them, after every stable tool (a flip changes the end of
+/// the tool list only); a plain turn has neither.
+#[test]
+fn docs_and_sec_tools_only_on_turns_about_them_and_last() {
+    let d = tmpdir("gate");
+    let f = Fake::start(vec![text_reply("plain"), text_reply("doc"), text_reply("sec")]);
+    let o = run_elisa(&["--base-url", &f.url(), "--max-ctx", "16384"], &d,
+        Some("explain what a mutex is\nwhat does docs/spec.pdf say about reorders?\nscan this project for leaked secrets\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let reqs = f.messages();
+    let names: Vec<Vec<String>> = reqs.iter().map(tool_names).collect();
+    assert!(!names[0].iter().any(|n| n.starts_with("docs_") || n.starts_with("sec_")), "{:?}", names[0]);
+    let stable = names[0].clone();
+    assert_eq!(names[1][..stable.len()], stable[..], "stable tools first, unchanged");
+    assert_eq!(names[1][stable.len()..], ["docs_pdf", "docs_sheet"]);
+    // the PDF named one turn earlier is still in the recent context: the documents tools stay, the security ones join
+    // after them (a fixed order)
+    assert_eq!(names[2][..stable.len()], stable[..]);
+    assert_eq!(names[2][stable.len()..], ["docs_pdf", "docs_sheet", "sec_secrets", "sec_deps", "sec_binary", "sec_jwt"]);
+}
+
+/// No model configured: Elisa guesses none and sends nothing; `-p` says how to choose one and exits 2.
+#[test]
+fn no_model_sends_nothing_and_says_how_to_choose() {
+    let (r, _) = send(&Client::new(&Config { base_url: "http://127.0.0.1:1".into(), ..Config::default() }), &[Message::user_text("hi")]);
+    assert_eq!(r.unwrap_err(), elisa::api::NO_MODEL);
+    let d = tmpdir("nomodel");
+    // the comment keeps run_elisa_cfg from adding --model
+    let o = run_elisa_cfg(&["-p", "hi", "--base-url", "http://127.0.0.1:1"], &d, None, &[], "# no model chosen\n");
+    assert_eq!(o.code, 2, "{}", o.stderr);
+    assert!(o.stderr.contains("No model chosen") && o.stderr.contains("--model"), "{}", o.stderr);
 }

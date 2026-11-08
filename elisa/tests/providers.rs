@@ -251,15 +251,15 @@ fn openai_translates_the_request_and_the_stream() {
 #[test]
 fn openai_errors_and_length_stop() {
     let (url, _) = serve(|_, _| (401, "application/json", r#"{"error":{"message":"bad key"}}"#.into()));
-    let cfg = Config { base_url: url, transport: Transport::OpenAi, ..Config::default() };
+    let cfg = Config { base_url: url, model: "m".into(), transport: Transport::OpenAi, ..Config::default() };
     assert!(run(&Client::new(&cfg), &history(), &[]).unwrap_err().contains("bad key"));
 
     let (url, _) = serve(|_, _| (200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"cut\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n".into()));
-    let cfg = Config { base_url: url, transport: Transport::OpenAi, ..Config::default() };
+    let cfg = Config { base_url: url, model: "m".into(), transport: Transport::OpenAi, ..Config::default() };
     assert_eq!(run(&Client::new(&cfg), &history(), &[]).unwrap().0.stop_reason, "max_tokens");
 
     let (url, _) = serve(|_, _| (200, "text/event-stream", "data: {\"error\":{\"message\":\"overloaded\"}}\n\n".into()));
-    let cfg = Config { base_url: url, transport: Transport::OpenAi, ..Config::default() };
+    let cfg = Config { base_url: url, model: "m".into(), transport: Transport::OpenAi, ..Config::default() };
     assert!(run(&Client::new(&cfg), &history(), &[]).unwrap_err().contains("overloaded"));
 }
 
@@ -276,7 +276,7 @@ const ANTHROPIC_SSE: &str = "event: message_start\ndata: {\"type\":\"message_sta
 #[test]
 fn anthropic_gets_no_gateway_extras_and_the_gateway_keeps_them() {
     let (url, seen) = serve(|_, _| (200, "text/event-stream", ANTHROPIC_SSE.into()));
-    let cfg = Config { base_url: url, api_key: "sk-ant".into(), transport: Transport::Anthropic, ..Config::default() };
+    let cfg = Config { base_url: url, model: "m".into(), api_key: "sk-ant".into(), transport: Transport::Anthropic, ..Config::default() };
     let client = Client::new(&cfg);
     assert_eq!(run(&client, &history(), &[]).unwrap().1, "hi");
     let s = seen.lock().unwrap()[0].clone();
@@ -288,7 +288,7 @@ fn anthropic_gets_no_gateway_extras_and_the_gateway_keeps_them() {
     assert!(!client.server_warm());
 
     let (url, seen) = serve(|_, _| (200, "text/event-stream", ANTHROPIC_SSE.into()));
-    let cfg = Config { base_url: url, ..Config::default() };
+    let cfg = Config { base_url: url, model: "m".into(), ..Config::default() };
     run(&Client::new(&cfg), &history(), &[]).unwrap();
     let s = seen.lock().unwrap()[0].clone();
     assert!(s.header("x-streamdense-project").is_some());
@@ -403,7 +403,7 @@ fn mcp_http_json_and_sse_with_session_and_bearer() {
     };
     let (url, seen) = serve(reply);
     let target = |tool: &str| elisa::provider::McpTarget { url: format!("{url}/mcp"), tool: tool.into(), ..Default::default() };
-    let cfg = Config { api_key: "tok".into(), transport: Transport::Mcp(target("two")), ..Config::default() };
+    let cfg = Config { model: "m".into(), api_key: "tok".into(), transport: Transport::Mcp(target("two")), ..Config::default() };
     let (_, text) = run(&Client::new(&cfg), &history(), &[]).unwrap();
     assert_eq!(text, "over http");
     let s = seen.lock().unwrap().clone();

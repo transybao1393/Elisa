@@ -13,10 +13,16 @@ final class ShadeKit {
     private var svgFn: JSValue?
     private var ctx: JSContext?
     private var durs: [String: Double] = [:]
-    /// small builds only (face, mini): bounded, a few MB at most
+    /// small builds (face, mini) always: bounded, a few MB at most
     private var cache: [String: NSImage] = [:]
     private var order: [String] = []
     private let cacheMax = 400
+    /// large builds (dock) only when their whole loop fits the byte budget (a held pose such as the sleeping one does; a 30 fps
+    /// awake loop does not, and is drawn per frame as before rather than thrashing the cache)
+    private var big: [String: (img: NSImage, bytes: Int)] = [:]
+    private var bigOrder: [String] = []
+    private var bigBytes = 0
+    private let bigBudget = 32 << 20
     private(set) var problem: String?
 
     func load(_ kit: Kit) {
@@ -48,17 +54,29 @@ final class ShadeKit {
     }
 
     /// Shade as an image `pt` points square (+ `pad` headroom on each side for jumps / ears), drawn as vectors into a
-    /// bitmap of exactly pt * scale pixels
-    func image(_ state: String, t: Double, frame: Int, pt: CGFloat, detail: String, bg: String?, props: Bool, pad: CGFloat, scale: CGFloat) -> NSImage? {
+    /// bitmap of exactly pt * scale pixels. `loop` = frames in the state's loop at the current rate (sizes the cache
+    /// decision for large builds); a frame is keyed by its loop fraction `t`, so the same pose at any rate is shared
+    func image(_ state: String, t: Double, loop: Int, pt: CGFloat, detail: String, bg: String?, props: Bool, pad: CGFloat, scale: CGFloat) -> NSImage? {
         let small = pt <= 32
-        let key = "\(state)|\(frame)|\(pt)|\(detail)|\(bg ?? "")|\(props)|\(pad)|\(scale)"
+        let key = "\(state)|\(t)|\(pt)|\(detail)|\(bg ?? "")|\(props)|\(pad)|\(scale)"
         if small, let i = cache[key] { return i }
+        if !small, let e = big[key] { return e.img }
+        let px = max(1, Int((pt * (1 + 2 * pad) * scale).rounded()))
+        let bytes = px * px * 4
+        let keepBig = !small && loop * bytes <= bigBudget
         guard let s = svg(state, t: t, size: Int(pt), detail: detail, bg: bg, props: props) else { return nil }
         let img = ShadeKit.raster(ShadeKit.padded(s, pad), pt: pt * (1 + 2 * pad), scale: scale)
         if small, let img {
             cache[key] = img
             order.append(key)
             if order.count > cacheMax { cache.removeValue(forKey: order.removeFirst()) }
+        } else if keepBig, let img {
+            big[key] = (img, bytes)
+            bigOrder.append(key)
+            bigBytes += bytes
+            while bigBytes > bigBudget, !bigOrder.isEmpty {
+                if let old = big.removeValue(forKey: bigOrder.removeFirst()) { bigBytes -= old.bytes }
+            }
         }
         return img
     }
@@ -92,7 +110,68 @@ final class ShadeKit {
     }
 }
 
-/// One Shade, animated with its state's loop (the kit's `t = elapsed / dur`), at `fps`.
+/// How fast the Shades may animate, from the main window's state: occluded / minimized / app hidden = paused (no
+/// timeline ticks at all), not key = a lower rate, and a sleeping Shade holds one pose (curled, eyes shut, mid-breath)
+/// that is drawn once per state change. Each tick of a Shade's TimelineView re-runs the window's SwiftUI update and
+/// display pass; that is what kept an idle window with a sleeping Shade at ~50 % CPU (uitest longrun M4). Awake in the
+/// key window: rates unchanged.
+@MainActor
+final class ShadePace: ObservableObject {
+    static let shared = ShadePace()
+    @Published private(set) var visible = true
+    @Published private(set) var key = true
+    private weak var window: NSWindow?
+    private var tokens: [NSObjectProtocol] = []
+
+    /// awake, window not key
+    static let unfocusedFps: Double = 8
+
+    /// the frame rate for a Shade that would run at `base` showing `state`; 0 = paused (one still frame)
+    func fps(_ base: Double, state: String) -> Double {
+        // --shots / --frames render the window offscreen and expect it to animate as if in front
+        if Shots.scale != nil { return base }
+        if !visible || state == "sleeping" { return 0 }
+        return key ? base : min(base, ShadePace.unfocusedFps)
+    }
+
+    func track(_ w: NSWindow?) {
+        guard let w, w !== window else { return }
+        window = w
+        for t in tokens { NotificationCenter.default.removeObserver(t) }
+        let nc = NotificationCenter.default
+        let winNames: [Notification.Name] = [NSWindow.didChangeOcclusionStateNotification, NSWindow.didBecomeKeyNotification,
+                                             NSWindow.didResignKeyNotification, NSWindow.didMiniaturizeNotification,
+                                             NSWindow.didDeminiaturizeNotification]
+        let appNames: [Notification.Name] = [NSApplication.didHideNotification, NSApplication.didUnhideNotification,
+                                             NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification]
+        tokens = winNames.map { nc.addObserver(forName: $0, object: w, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.update() } } }
+            + appNames.map { nc.addObserver(forName: $0, object: nil, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.update() } } }
+        update()
+    }
+
+    private func update() {
+        guard let w = window else { return }
+        let v = w.occlusionState.contains(.visible) && !w.isMiniaturized && !NSApp.isHidden
+        let k = w.isKeyWindow
+        if v != visible { visible = v }
+        if k != key { key = k }
+    }
+}
+
+/// tells ShadePace which window the Shades live in (attached to the main window's content)
+struct ShadePaceProbe: NSViewRepresentable {
+    final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            ShadePace.shared.track(window)
+        }
+    }
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ v: Probe, context: Context) {}
+}
+
+/// One Shade, animated with its state's loop (the kit's `t = elapsed / dur`), at `fps` (lowered or paused by
+/// ShadePace when the window is in the background or the Shade sleeps).
 struct ShadeImage: View {
     let state: String
     let since: Date
@@ -104,14 +183,18 @@ struct ShadeImage: View {
     var pad: CGFloat = 0.15
     var fps: Double = 24
     @Environment(\.displayScale) private var scale
+    @ObservedObject private var pace = ShadePace.shared
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / fps, paused: !animate)) { tl in
+        let rate = pace.fps(fps, state: state)
+        let run = animate && rate > 0
+        let f = run ? rate : fps
+        TimelineView(.animation(minimumInterval: 1 / f, paused: !run)) { tl in
             let dur = ShadeKit.shared.dur(state)
-            let n = max(1, Int((dur / 1000 * fps).rounded(.up)))
-            let i = animate ? Int(max(0, tl.date.timeIntervalSince(since)) * fps) % n : n / 2
+            let n = max(1, Int((dur / 1000 * f).rounded(.up)))
+            let i = run ? Int(max(0, tl.date.timeIntervalSince(since)) * f) % n : n / 2
             let t = animate ? Double(i) / Double(n) : 0.5
-            let img = ShadeKit.shared.image(state, t: t, frame: i, pt: size, detail: detail, bg: bg, props: props, pad: pad, scale: Shots.scale ?? max(1, scale))
+            let img = ShadeKit.shared.image(state, t: t, loop: run ? n : 1, pt: size, detail: detail, bg: bg, props: props, pad: pad, scale: Shots.scale ?? max(1, scale))
             ZStack {
                 if let img { Image(nsImage: img).resizable().interpolation(.high).frame(width: size * (1 + 2 * pad), height: size * (1 + 2 * pad)) }
             }

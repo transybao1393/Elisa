@@ -344,3 +344,18 @@ fn reindent_keeps_relative_indentation() {
     assert_eq!(reindent("    fn a() {\n        b();\n    }\n", "  ", true), "  fn a() {\n      b();\n  }");
     assert_eq!(reindent("fn a() {\n\n    b();\n}", "\t", true), "\tfn a() {\n\n\t    b();\n\t}");
 }
+
+/// soak M2: two Python statements joined on one line leave only a hidden `MISSING _newline` node; the guard must
+/// still see it (it let the file through before)
+#[test]
+fn python_guard_catches_joined_statements() {
+    let old = "def t():\n    skus = sorted(x)\n    assert skus == ['A']\n    skus = sorted(x)\n";
+    let new = "def t():\n    skus = sorted(x)\n    assert skus == ['A']    skus = sorted(x)\n";
+    let e = new_errors(Lang::Python, Some(old), new);
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert_eq!((e[0].line, e[0].col), (3, 29));
+    assert!(e[0].what.contains("missing line break before `skus = sorted(x)`"), "{e:?}");
+    assert!(guard(Path::new("t.py"), "t.py", Some(old), new).unwrap_err().starts_with("refused:"));
+    // the same break already in the file does not block a later edit
+    assert!(new_errors(Lang::Python, Some(new), &format!("{new}\n\ndef u():\n    pass\n")).is_empty());
+}

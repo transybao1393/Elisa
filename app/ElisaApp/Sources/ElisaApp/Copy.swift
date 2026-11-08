@@ -38,7 +38,7 @@ extension AppModel {
         head.append("folder: \(cwd)")
         head.append("phase: \(phase)")
         if let s = stat {
-            head.append(String(format: "last reply: ctx %d/%d · %.1f tok/s · ttft %.2fs · reused %d · out %d", s.ctxUsed, s.maxCtx > 0 ? s.maxCtx : maxCtx, s.tokS, s.ttft, s.reused, s.out))
+            head.append(String(format: "last reply: ctx %d/%d · %@ tok/s · ttft %.2fs · reused %d · out %d", s.ctxUsed, s.maxCtx > 0 ? s.maxCtx : maxCtx, s.tokSText, s.ttft, s.reused, s.out))
         } else {
             head.append("context: \(maxCtx) · no reply yet")
         }

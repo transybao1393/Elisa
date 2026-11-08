@@ -1,11 +1,13 @@
 // Elisa: the native window for the Elisa agent. Spawns `elisa --serve-jsonl` in the chosen project folder.
 //
-//   ElisaApp [--demo] [--cwd DIR] [--theme dark|light] [--base-url URL] [--model M] [--shots DIR]
+//   ElisaApp [--demo] [--cwd DIR] [--theme dark|light] [--base-url URL [--type T]] [--model M] [--shots DIR]
 //            [--script FILE [--seed N] [--script-delay S] [--script-cap S]] [--frame X,Y,W,H] [--continue] [--script-from-final]
 //            [--frames DIR [--frames-every S]]
 //
 // --demo: no model; Elisa uses its scripted demo gateway (`--demo-states`) in a fresh demo project.
-// --base-url / --model are passed to Elisa (default: its config, http://127.0.0.1:8898 = streamdense gateway).
+// --base-url / --type / --model are passed to Elisa (default: its config, http://127.0.0.1:8898 = streamdense gateway).
+// --base-url alone keeps the active connection's kind and model (its key only for the same host); --type
+// streamdense|anthropic|openai says what kind of server is there instead.
 // --shots DIR (debug): plays the demo and writes PNGs of the window (offscreen render, no screen-recording permission).
 // --script FILE: scripted playback of a person typing in this window (Playback.swift); any key or click stops it.
 // --frames DIR (debug): the window as DIR/frame-NNNNN.png every S seconds (default 0.25), for a GIF or video of a run.
@@ -49,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         print("elisa: \(ElisaProcess.binary()?.path ?? "not found")")
         MenuBarItem.shared.install(model: m, kit: Boot.kit)
         if opt("--theme") == "light" { m.dark = false }
-        for f in ["--base-url", "--model"] { if let v = opt(f) { m.extraArgs += [f, v] } }
+        for f in ["--base-url", "--model"] + (opt("--base-url") != nil ? ["--type"] : []) { if let v = opt(f) { m.extraArgs += [f, v] } }
         // --continue: elisa resumes the project's last session
         if args.contains("--continue") { m.extraArgs.append("--continue") }
         // --connections-shot FILE [--connections-select NAME] (debug): the Model Connections window as a PNG, then quit
@@ -64,28 +66,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.folder = opt("--cwd")
         if let dir = shots { Shots.shared.run(into: dir, model: m) }
         if let dir = opt("--selftest") { SelfTest.shared.run(into: dir, images: optAll("--selftest-image"), quit: args.contains("--selftest-quit"), model: m) }
+        if let dir = opt("--frames") {
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            var n = 0
+            Timer.scheduledTimer(withTimeInterval: max(0.05, Double(opt("--frames-every") ?? "") ?? 0.25), repeats: true) { _ in
+                MainActor.assumeIsolated { Shots.shared.capture(String(format: "frame-%05d", n), into: dir); n += 1 }
+            }
+        }
+        // --frame X,Y,W,H: where the window goes (two windows side by side for a two-session run)
+        if let f = opt("--frame")?.split(separator: ",").compactMap({ Double($0) }), f.count == 4 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                NSApp.windows.first { $0.title == "Elisa" || $0.isVisible }?.setFrame(NSRect(x: f[0], y: f[1], width: f[2], height: f[3]), display: true)
+            }
+        }
         if m.demo || m.folder != nil {
             m.start()
-            // --frame X,Y,W,H: where the window goes (two windows side by side for a two-session run)
-            if let f = opt("--frame")?.split(separator: ",").compactMap({ Double($0) }), f.count == 4 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    NSApp.windows.first { $0.title == "Elisa" || $0.isVisible }?.setFrame(NSRect(x: f[0], y: f[1], width: f[2], height: f[3]), display: true)
-                }
-            }
-            if let dir = opt("--frames") {
-                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-                var n = 0
-                Timer.scheduledTimer(withTimeInterval: max(0.05, Double(opt("--frames-every") ?? "") ?? 0.25), repeats: true) { _ in
-                    MainActor.assumeIsolated { Shots.shared.capture(String(format: "frame-%05d", n), into: dir); n += 1 }
-                }
-            }
             if let f = opt("--script") {
                 Playback.shared.run(file: f, seed: UInt64(opt("--seed") ?? "") ?? 1, delay: Double(opt("--script-delay") ?? "") ?? 3,
                                     cap: Double(opt("--script-cap") ?? "") ?? 2700, fromFinal: args.contains("--script-from-final"), model: m)
             }
         } else {
-            // the window first, then the folder picker over it
-            DispatchQueue.main.async { openFolderPanel(m) }
+            // no folder yet: the welcome screen (introduction, model connection, folder choice)
+            m.welcome = true
         }
     }
 
@@ -109,7 +111,7 @@ func openFolderPanel(_ m: AppModel) {
     if let last = UserDefaults.standard.string(forKey: "lastFolder") { p.directoryURL = URL(fileURLWithPath: last) }
     if p.runModal() == .OK, let u = p.url {
         m.open(folder: u.path)
-    } else if m.phase == .starting && m.cwd.isEmpty {
+    } else if !m.welcome && m.phase == .starting && m.cwd.isEmpty {
         m.blocks = [Block(kind: .info("[no folder chosen · File > Open Folder… (⌘O), or File > Demo Session]", .plain))]
         m.phase = .exited
     }
@@ -124,6 +126,8 @@ struct ElisaMain: App {
         Window("Elisa", id: "main") {
             MainWindow()
                 .environmentObject(m)
+                // the Shades pause while this window is occluded and slow down while it is not key (ShadePace)
+                .background(ShadePaceProbe())
                 .frame(minWidth: 640, minHeight: 560)
         }
         .windowStyle(.hiddenTitleBar)

@@ -58,16 +58,39 @@ fn messages(system: &str, msgs: &[Message]) -> Vec<Value> {
 /// most questions, up to 5,700 on a picture)
 pub const REASONING_ROOM: usize = 3072;
 
-pub fn body(model: &str, req: &Request, num_ctx: usize, thinks: Option<bool>) -> Value {
+/// A simple turn's prefill (`no_think`): a closed, short reasoning block the model continues after. qwen3-vl's
+/// thinking variant ignores `think: false` (measured: 1,100 chars of reasoning for a bare "hi" either way; with
+/// Elisa's prompt "hi" reasoned 3,000 tokens for 30-150 s and still answered nothing). With this prefill it answers in
+/// well under a second and still calls a tool when the request needs one. The wording was picked from six tried on
+/// Elisa's real request: without the hint about a plain first sentence the 2B model often answered with only the
+/// state card.
+pub const NO_THINK_PREFILL: &str = "<think>\nA simple message, so no long reasoning. My reply starts with a plain sentence for the user (for a greeting or thanks: a short friendly line asking what to do next); if it needs a file or command, I call the tool instead. The <state> card goes at the very end.\n</think>\n\n";
+
+/// Does `model` take the `<think>…</think>` prefill (the Qwen3 family: its chat format closes reasoning that way)?
+pub fn takes_prefill(model: &str) -> bool { let m = model.to_lowercase(); m.contains("qwen3") || m.contains("qwq") }
+
+/// How a reasoning model is asked not to reason on a simple turn (`Client::set_simple`): `think: false`, and for the
+/// Qwen3 family the `NO_THINK_PREFILL` (then no reasoning room either: the reasoning is already written).
+pub fn no_think(model: &str, thinks: Option<bool>, simple: bool) -> (Option<bool>, Option<&'static str>) {
+    match (thinks, simple) {
+        (Some(_), true) => (Some(false), takes_prefill(model).then_some(NO_THINK_PREFILL)),
+        (t, _) => (t, None),
+    }
+}
+
+pub fn body(model: &str, req: &Request, num_ctx: usize, thinks: Option<bool>, prefill: Option<&str>) -> Value {
     let mut b = Map::new();
     b.insert("model".into(), json!(model));
-    b.insert("messages".into(), Value::Array(messages(req.system, req.messages)));
+    let mut msgs = messages(req.system, req.messages);
+    // a trailing assistant message is continued (not part of the history: the prefix before it stays the same)
+    if let Some(p) = prefill { msgs.push(json!({"role": "assistant", "content": p})); }
+    b.insert("messages".into(), Value::Array(msgs));
     if !req.tools.is_empty() {
         let tools: Vec<Value> = req.tools.iter().map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}})).collect();
         b.insert("tools".into(), Value::Array(tools));
     }
     if let Some(t) = thinks { b.insert("think".into(), json!(t)); }
-    let predict = req.max_tokens + if thinks.is_some() { REASONING_ROOM } else { 0 };
+    let predict = req.max_tokens + if thinks.is_some() && prefill.is_none() { REASONING_ROOM } else { 0 };
     b.insert("options".into(), json!({"num_ctx": num_ctx, "num_predict": predict}));
     b.insert("stream".into(), json!(true));
     Value::Object(b)
@@ -86,6 +109,9 @@ pub struct Stream {
     pub decode_s: Option<f64>,
     /// a first token (reasoning or answer) came: the seconds to it are the reply's ttft
     pub started: bool,
+    /// after a `NO_THINK_PREFILL`: the answer is shown only at the end, without any reasoning the model still wrote
+    /// into it (it sometimes opens a second block, or reasons and then writes `</think>`)
+    pub hold: bool,
 }
 
 impl Stream {
@@ -102,7 +128,7 @@ impl Stream {
         if let Some(t) = m["content"].as_str().filter(|t| !t.is_empty()) {
             if !self.started { self.started = true; publish(Phase::Decode); }
             self.text.push_str(t);
-            on_text(t);
+            if !self.hold { on_text(t); }
         }
         for tc in m["tool_calls"].as_array().map_or(&[][..], Vec::as_slice) {
             self.started = true;
@@ -123,7 +149,12 @@ impl Stream {
     }
 
     /// (content, stop_reason, usage)
-    pub fn finish(self, cancelled: bool) -> (Vec<Block>, String, Usage) {
+    pub fn finish(mut self, cancelled: bool) -> (Vec<Block>, String, Usage) {
+        if self.hold {
+            let (answer, reasoning) = split_reasoning(&self.text);
+            if reasoning > 0 { self.usage.reasoning_tokens += (reasoning / 4).max(1).min(self.usage.output_tokens.saturating_sub(self.usage.reasoning_tokens)); }
+            self.text = answer;
+        }
         let mut content = Vec::new();
         if !self.text.is_empty() { content.push(Block::Text { text: self.text }); }
         if cancelled { return (content, "cancelled".into(), self.usage); }
@@ -142,37 +173,34 @@ impl Stream {
     }
 }
 
-/// A server-side tool-call parse failure (Ollama: "qwen tool call parsing failed ... unexpected end of JSON input"):
-/// the model wrote a broken call, which a second sample usually does not
-fn broken_call(e: &str) -> bool { e.contains("JSON input") || e.contains("tool call") }
-
-/// One streamed call to `root` (the server without `/v1`), with the window `num_ctx`.
-#[allow(clippy::too_many_arguments)]
-pub fn send(agent: &ureq::Agent, root: &str, key: &str, model: &str, num_ctx: usize, thinks: Option<bool>, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
-    let mut wrote = false;
-    let first = send_once(agent, root, key, model, num_ctx, thinks, req, cancel, &mut |t: &str| { wrote = true; on_text(t) });
-    match first {
-        // once, and only when nothing was shown yet (a retry after text would show it twice)
-        Err(e) if broken_call(&e) && !wrote && !cancel.load(Ordering::Relaxed) => send_once(agent, root, key, model, num_ctx, thinks, req, cancel, on_text),
-        r => r,
+/// A held answer without the reasoning a model wrote into it: everything up to the last `</think>`, or all of it when
+/// it opened `<think>` and never closed it (cut at the limit). Returns (answer, chars of reasoning dropped).
+pub fn split_reasoning(text: &str) -> (String, usize) {
+    if let Some(i) = text.rfind("</think>") {
+        return (text[i + "</think>".len()..].trim_start().to_string(), i + "</think>".len());
     }
+    if text.trim_start().starts_with("<think>") { return (String::new(), text.len()); }
+    (text.to_string(), 0)
 }
 
+/// One streamed call to `root` (the server without `/v1`), with the window `num_ctx`. `simple` = a simple turn: a
+/// reasoning model is asked not to reason (`no_think`). One attempt: `Client::send` retries a transient failure.
 #[allow(clippy::too_many_arguments)]
-fn send_once(agent: &ureq::Agent, root: &str, key: &str, model: &str, num_ctx: usize, thinks: Option<bool>, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
+pub fn send(agent: &ureq::Agent, root: &str, key: &str, model: &str, num_ctx: usize, thinks: Option<bool>, simple: bool, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
+    let (thinks, prefill) = no_think(model, thinks, simple);
     let t0 = Instant::now();
     publish(Phase::Sent);
     let _idle = PhaseGuard;
     let mut rq = agent.post(format!("{}/api/chat", root.trim_end_matches('/'))).header("content-type", "application/json");
     if !key.is_empty() { rq = rq.header("authorization", format!("Bearer {key}")); }
-    let r = rq.send(body(model, req, num_ctx, thinks).to_string()).map_err(|e| format!("request failed: {e}"))?;
+    let r = rq.send(body(model, req, num_ctx, thinks, prefill).to_string()).map_err(|e| format!("request failed: {e}"))?;
     let status = r.status().as_u16();
     if !(200..300).contains(&status) {
         let text = r.into_body().read_to_string().unwrap_or_default();
         return Err(format!("HTTP {status}: {}", crate::api::err_message(&text)));
     }
     publish(Phase::Started);
-    let mut s = Stream::default();
+    let mut s = Stream { hold: prefill.is_some(), ..Default::default() };
     let mut ttft = None;
     let mut cancelled = false;
     for line in BufReader::new(r.into_body().into_reader()).lines() {
@@ -189,7 +217,10 @@ fn send_once(agent: &ureq::Agent, root: &str, key: &str, model: &str, num_ctx: u
         (_, Some(t)) => t,
         _ => total,
     };
+    let hold = s.hold;
     let (content, stop_reason, usage) = s.finish(cancelled);
+    // a held answer shows at once, its reasoning taken out
+    if hold { if let Some(Block::Text { text }) = content.first() { on_text(text); } }
     Ok(Reply { id: String::new(), content, stop_reason, usage, ttft_s: ttft, total_s: total })
 }
 
@@ -207,7 +238,7 @@ mod tests {
         ];
         let tools = [ToolDef { name: "read".into(), description: "d".into(), input_schema: json!({"type": "object"}) }];
         let req = Request { system: "sys", messages: &msgs, tools: &tools, max_tokens: 512 };
-        let b = body("m", &req, 8192, None);
+        let b = body("m", &req, 8192, None, None);
         assert_eq!(b["options"], json!({"num_ctx": 8192, "num_predict": 512}));
         assert_eq!(b["messages"][1], json!({"role": "user", "content": "look", "images": ["AAAA"]}));
         assert_eq!(b["messages"][2]["tool_calls"][0]["function"], json!({"name": "read", "arguments": {"path": "a"}}));
@@ -241,7 +272,7 @@ mod tests {
     fn a_thinking_model_gets_room_to_reason_and_its_reasoning_is_counted() {
         let msgs = vec![Message::user_text("hi")];
         let req = Request { system: "", messages: &msgs, tools: &[], max_tokens: 512 };
-        let b = body("m", &req, 8192, Some(false));
+        let b = body("m", &req, 8192, Some(false), None);
         assert_eq!((b["think"].clone(), b["options"]["num_predict"].clone()), (json!(false), json!(512 + REASONING_ROOM)));
         let mut s = Stream::default();
         let mut on = |_: &str| {};
@@ -261,5 +292,43 @@ mod tests {
         assert_eq!(stop, "tool_use");
         assert_eq!(content, vec![Block::ToolUse { id: "call_0".into(), name: "read".into(), input: json!({"path": "a.rs"}) }]);
         assert_eq!(Stream::default().feed(r#"{"error":"model not found"}"#, &mut on).unwrap_err(), "model not found");
+    }
+
+    #[test]
+    fn a_simple_turn_asks_a_reasoning_model_not_to_reason() {
+        // a reasoning Qwen3: think false, the closed-reasoning prefill after the history, no reasoning room
+        let (t, p) = no_think("qwen3-vl:2b", Some(true), true);
+        assert_eq!((t, p), (Some(false), Some(NO_THINK_PREFILL)));
+        let msgs = vec![Message::user_text("hi")];
+        let req = Request { system: "s", messages: &msgs, tools: &[], max_tokens: 512 };
+        let b = body("qwen3-vl:2b", &req, 8192, t, p);
+        assert_eq!(b["think"], json!(false));
+        assert_eq!(b["options"]["num_predict"], json!(512));
+        assert_eq!(b["messages"][1], json!({"role": "user", "content": "hi"}));
+        assert_eq!(b["messages"][2], json!({"role": "assistant", "content": NO_THINK_PREFILL}));
+        // another reasoning model: only the flag (it may ignore it, so it keeps its room); a model that does not
+        // reason, or a turn that is not simple: as before
+        assert_eq!(no_think("deepseek-r1:8b", Some(true), true), (Some(false), None));
+        assert_eq!(no_think("qwen3-vl:2b-instruct", None, true), (None, None));
+        assert_eq!(no_think("qwen3-vl:2b", Some(true), false), (Some(true), None));
+    }
+
+    #[test]
+    fn a_held_answer_loses_the_reasoning_written_into_it() {
+        assert_eq!(split_reasoning("Paris."), ("Paris.".into(), 0));
+        let (a, n) = split_reasoning("Okay, the user said thanks.\n</think>\n\nYou're welcome!");
+        assert_eq!(a, "You're welcome!");
+        assert!(n > 20);
+        assert_eq!(split_reasoning("<think>\nOkay, the user").0, "");
+        // streamed: nothing shown until the end, then only the answer
+        let mut s = Stream { hold: true, ..Default::default() };
+        let mut shown = String::new();
+        let mut on = |t: &str| shown.push_str(t);
+        s.feed(r#"{"message":{"content":"hmm\n</think>\n\nHi!"},"done":false}"#, &mut on).unwrap();
+        s.feed(r#"{"message":{"content":""},"done":true,"done_reason":"stop","eval_count":9}"#, &mut on).unwrap();
+        assert!(shown.is_empty());
+        let (content, _, usage) = s.finish(false);
+        assert_eq!(content, vec![Block::Text { text: "Hi!".into() }]);
+        assert!(usage.reasoning_tokens > 0);
     }
 }

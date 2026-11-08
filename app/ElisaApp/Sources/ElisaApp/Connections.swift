@@ -25,7 +25,8 @@ struct Connection: Identifiable, Equatable {
     var command = ""
     var url = ""
     var tool = ""
-    /// web access for the model: "" = off, "duckduckgo" or "searxng" (with `searxngURL`)
+    /// the old per-connection web setting: kept as read so a save does not drop it; Elisa ignores it now (web access
+    /// is config.toml `web`, and each search asks in the chat)
     var web = ""
     var searxngURL = ""
 
@@ -506,7 +507,7 @@ struct ConnectionsView: View {
             .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: c.name.isEmpty ? "(unnamed)" : c.name).font(Fonts.mono(13)).foregroundStyle(on ? p.acc : p.tx).lineLimit(1)
-                Text(verbatim: (c.leaves == nil ? "this machine" : c.type == "mcp" ? "through MCP" : "online") + (c.web.isEmpty || c.type == "mcp" ? "" : " · web")).font(Fonts.mono(11)).foregroundStyle(c.leaves == nil ? p.ok : p.warn)
+                Text(verbatim: (c.leaves == nil ? "this machine" : c.type == "mcp" ? "through MCP" : "online")).font(Fonts.mono(11)).foregroundStyle(c.leaves == nil ? p.ok : p.warn)
             }
             Spacer(minLength: 0)
         }
@@ -558,15 +559,7 @@ struct ConnectionsView: View {
                     if c.type == "openai" && Connection.isLocal(c.baseURL) { localModels(c) }
                 }
                 contextField(c)
-                HStack(alignment: .top, spacing: 18) {
-                    visionField(c).frame(maxWidth: .infinity, alignment: .leading)
-                    if c.type != "mcp" { webField(c).frame(maxWidth: .infinity, alignment: .leading) }
-                }
-                if c.type != "mcp" && c.web == "searxng" {
-                    Field(label: "SearXNG server", hint: "Its settings.yml must allow json in search.formats.") {
-                        TextField("http://127.0.0.1:8888", text: bind(c, \.searxngURL)).modifier(Input())
-                    }
-                }
+                visionField(c)
                 keyFields(c)
             }
         } else {
@@ -649,10 +642,6 @@ struct ConnectionsView: View {
         return VStack(alignment: .trailing, spacing: 3) {
             Pixel(leaves == nil ? "On this machine" : "Leaves this machine", size: 9, color: leaves == nil ? p.ok : p.warn)
             if let h = leaves { Text(verbatim: "code Elisa reads goes to \(h)").font(Fonts.mono(11.5)).foregroundStyle(p.fg2).lineLimit(2).multilineTextAlignment(.trailing) }
-            if c.type != "mcp" && !c.web.isEmpty {
-                Text(verbatim: c.web == "searxng" ? "web on: searches go to \(Connection.host(c.searxngURL))" : "web on: searches go to DuckDuckGo")
-                    .font(Fonts.mono(11.5)).foregroundStyle(p.warn).lineLimit(2).multilineTextAlignment(.trailing)
-            }
         }
         .frame(maxWidth: 300, alignment: .trailing)
     }
@@ -703,26 +692,6 @@ struct ConnectionsView: View {
                 Btn(title: "Auto", on: c.vision == nil) { bind(c, \.vision).wrappedValue = nil }
                 Btn(title: "On", on: c.vision == true) { bind(c, \.vision).wrappedValue = true }
                 Btn(title: "Off", on: c.vision == false) { bind(c, \.vision).wrappedValue = false }
-            }
-        }
-    }
-
-    /// web access for the model (web_search, web_fetch): off, DuckDuckGo (no key) or a SearXNG server. On is the
-    /// consent: the calls do not ask.
-    private func webField(_ c: Connection) -> some View {
-        let hint = switch c.web {
-        case "duckduckgo": "Searches go to DuckDuckGo, pages are fetched from the web. No asking."
-        case "searxng": "Searches go to your SearXNG server, pages are fetched from the web. No asking."
-        default: "The model can search and read web pages. Off: it stays offline."
-        }
-        return Field(label: "Web search", hint: hint) {
-            HStack(spacing: 4) {
-                Btn(title: "Off", on: c.web.isEmpty) { bind(c, \.web).wrappedValue = "" }
-                Btn(title: "DuckDuckGo", on: c.web == "duckduckgo") { bind(c, \.web).wrappedValue = "duckduckgo" }
-                Btn(title: "SearXNG", on: c.web == "searxng") {
-                    if c.searxngURL.isEmpty { bind(c, \.searxngURL).wrappedValue = "http://127.0.0.1:8888" }
-                    bind(c, \.web).wrappedValue = "searxng"
-                }
             }
         }
     }
@@ -787,8 +756,16 @@ final class ConnectionsWindow {
         ConnectionsRoot(s: store, m: m)
     }
 
-    func show(_ m: AppModel, select: String? = nil) {
+    /// openAdd: with the Add connection menu open on this preset (the welcome screen's "Add a local model" → ollama,
+    /// "Connect an API" → claude)
+    func show(_ m: AppModel, select: String? = nil, openAdd: String? = nil) {
         store.load()
+        if let a = openAdd {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                self.store.menuSel = self.store.menuItems.firstIndex { $0.name == a } ?? 0
+                self.store.menuOpen = true
+            }
+        }
         if let select { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { if let c = self.store.items.first(where: { $0.name == select }) { self.store.selected = c.id } } }
         if let w = window { w.contentView = NSHostingView(rootView: view(m)); w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 880), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)

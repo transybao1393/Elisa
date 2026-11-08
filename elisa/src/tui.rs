@@ -32,6 +32,8 @@ const YELLOW: Color = bc(P.warn);
 const SEL_BG: Color = bc(P.sel);
 /// marks an approval for a call outside the project folder (the tool name follows; the summary's 2nd line says where)
 const OUTSIDE: &str = "\u{1}outside:";
+/// an MCP tool's approval: `{MCP}server\u{1}tool` (the box offers "always allow MCP server …")
+const MCP: &str = "\u{1}mcp:";
 const CODE_BG: Color = bc(P.bg2);
 const BG: Color = bc(P.bg);
 const BG2: Color = bc(P.bg2);
@@ -86,8 +88,9 @@ impl Frontend for ChannelFrontend {
         if let Some(d) = detail(n, i, cwd) { self.send(Ev::Detail(d)) }
     }
     fn tool_done(&mut self, o: &str, e: bool) { self.send(Ev::ToolDone(o.into(), e)) }
-    fn approve(&mut self, tool: &str, summary: &str) -> Approval {
-        self.ask(|t| Ev::Approve(tool.into(), summary.into(), t), Approval::No)
+    fn approve(&mut self, tool: &str, summary: &str, server: Option<&str>) -> Approval {
+        let tool = match server { Some(s) => format!("{MCP}{s}\u{1}{tool}"), None => tool.to_string() };
+        self.ask(|t| Ev::Approve(tool, summary.into(), t), Approval::No)
     }
     /// shown by the same permission box: the tool carries the OUTSIDE mark, the summary the outside line after `\n`
     fn approve_outside(&mut self, tool: &str, summary: &str, o: &Outside) -> Approval {
@@ -1036,6 +1039,7 @@ impl App {
     /// approval box body: title, optional Write/Edit detail, the three choices (`sel` highlighted)
     fn approve_lines(&self, tool: &str, summary: &str, sel: usize, w: usize) -> Vec<Line<'static>> {
         let (tool, is_out) = match tool.strip_prefix(OUTSIDE) { Some(t) => (t, true), None => (tool, false) };
+        let (tool, server) = match tool.strip_prefix(MCP).and_then(|r| r.split_once('\u{1}')) { Some((s, t)) => (t, Some(s)), None => (tool, None) };
         let (summary, where_) = summary.split_once('\n').unwrap_or((summary, ""));
         let act = self.entries.iter().rev().find_map(|i| match &i.e { Entry::Tool(a) => Some(&**a), _ => None });
         let (verb, target) = act.map_or_else(|| { let (n, t) = summary.split_once(' ').unwrap_or((summary, "")); (cap(n), one(t)) },
@@ -1056,7 +1060,9 @@ impl App {
         };
         if let Some(d) = det { out.push(group(cut(cells(&d, st(DIM)), w))); }
         if !where_.is_empty() { out.push(group(cut(cells(&format!("⚠ {where_}"), st(YELLOW).bold()), w))); }
-        let always = if is_out { "Yes, allow these paths for this session".to_string() } else { format!("Yes, always allow {} in this project", cap(tool)) };
+        let always = if is_out { "Yes, allow these paths for this session".to_string() }
+            else if let Some(srv) = server { format!("Yes, always allow MCP server {srv} in this project") }
+            else { format!("Yes, always allow {} in this project", cap(tool)) };
         let yes = if is_out { "Yes, once" } else { "Yes" };
         for (i, l) in [yes, &always, "No"].iter().enumerate() {
             let on = i == sel;
@@ -1849,7 +1855,7 @@ fn grep_file(l: &str) -> &str {
 
 /// the gray note under an action, from the tool output
 fn finish(a: &Act, o: &str, err: bool) -> End {
-    let first = || o.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(if err { "failed" } else { "(no output)" }).to_string();
+    let first = || crate::jsonl::first_note(o).unwrap_or_else(|| (if err { "failed" } else { "(no output)" }).to_string());
     let red = |note: String| End { note, red: true, prev: vec![], more: 0 };
     if err && o.starts_with("denied") { return red("denied".into()); }
     if a.name == "bash" {
@@ -1890,8 +1896,8 @@ fn finish(a: &Act, o: &str, err: bool) -> End {
             let mut files: Vec<&str> = hits.iter().map(|l| grep_file(l)).collect();
             files.sort_unstable();
             files.dedup();
-            let more = if hits.len() < o.lines().count() { "+" } else { "" };
-            format!("{}{more} {} in {}", hits.len(), if hits.len() == 1 { "match" } else { "matches" }, plural(files.len(), "file"))
+            if hits.len() < o.lines().count() { format!("{}+ matches (capped) in {}", hits.len(), plural(files.len(), "file")) }
+            else { format!("{} {} in {}", hits.len(), if hits.len() == 1 { "match" } else { "matches" }, plural(files.len(), "file")) }
         }
         _ => first(),
     };
@@ -1899,7 +1905,7 @@ fn finish(a: &Act, o: &str, err: bool) -> End {
 }
 
 // ---------- edit panel model (built on the worker thread in tool_detail, before the tool runs) ----------
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum PL { Ctx(usize, String), Del(usize, String), Add(usize, String), Gap, Note(String) }
 pub(crate) struct View { pub(crate) path: String, pub(crate) kind: &'static str, pub(crate) body: Vec<PL>, status: Option<Result<(), String>> }
 pub(crate) struct ReadV { pub(crate) path: String, pub(crate) a: usize, pub(crate) b: usize, body: Vec<PL> }
@@ -1976,24 +1982,22 @@ pub(crate) fn detail(name: &str, input: &serde_json::Value, cwd: &std::path::Pat
     }
 }
 
-/// the region of the first match of `old`, as a diff with 3 context lines
+/// The edit as a diff with 3 context lines, computed from the file text the edit would write (the same
+/// `replacen` / `replace` as `tools::edit`), so the preview is what lands on disk. Splicing `new` in as whole lines
+/// showed an old text ending in a newline replaced by a new one without it as "no changes" / two separate lines,
+/// while the file got the two lines joined into one (soak M2).
 fn edit_body(text: &str, old: &str, new: &str, all: bool) -> Vec<PL> {
     let n = if old.is_empty() { 0 } else { text.matches(old).count() };
-    let Some(pos) = text.find(old).filter(|_| n > 0) else { return vec![PL::Note("old text not found in the file".into())] };
-    let e = pos + old.len();
-    let s0 = text[..pos].rfind('\n').map_or(0, |i| i + 1);
-    let e1 = if old.ends_with('\n') { e } else { text[e..].find('\n').map_or(text.len(), |i| e + i + 1) };
-    let l0 = text[..pos].matches('\n').count();
-    let seg = format!("{}{}{}", &text[s0..pos], new, &text[e..e1]);
-    let lines: Vec<&str> = text.lines().collect();
-    let l1 = (l0 + text[s0..e1].lines().count().max(1)).min(lines.len());
-    let (a, b) = (l0.saturating_sub(3), (l1 + 3).min(lines.len()));
-    let o = &lines[a..b];
-    let mut nw: Vec<&str> = lines[a..l0].to_vec();
-    nw.extend(seg.lines());
-    nw.extend(&lines[l1..b]);
-    let mut out = hunks(&diff(o, &nw), o, &nw, a + 1, a + 1, 3);
-    if n > 1 { out.push(PL::Note(format!("+ {} more match{}{}", n - 1, if n > 2 { "es" } else { "" }, if all { "" } else { " (not unique)" }))); }
+    if n == 0 { return vec![PL::Note("old text not found in the file".into())]; }
+    let after = if all { text.replace(old, new) } else { text.replacen(old, new, 1) };
+    let (o, nw): (Vec<&str>, Vec<&str>) = (text.lines().collect(), after.lines().collect());
+    let ops = diff(&o, &nw);
+    let mut out = if ops.iter().all(|x| x.0 == ' ') && after != text {
+        vec![PL::Note("only line endings change (a newline added or removed at the end of the file)".into())]
+    } else {
+        hunks(&ops, &o, &nw, 1, 1, 3)
+    };
+    if n > 1 { out.push(PL::Note(format!("{n} matches{}", if all { ", all replaced" } else { " (not unique: the edit will fail)" }))); }
     out
 }
 
@@ -2104,7 +2108,7 @@ mod demo {
             for w in text.split_inclusive(' ') { self.send(Ev::Delta(w.into())); if !self.wait(45) { return false; } }
             true
         }
-        fn done(&self, out: usize) { self.send(Ev::Done(Status { tok_s: 21.8, ttft_s: 0.5, ctx_used: 2900 + out, max_ctx: 8192, reused: 2600, output_tokens: out })); }
+        fn done(&self, out: usize) { self.send(Ev::Done(Status { tok_s: Some(21.8), ttft_s: 0.5, ctx_used: 2900 + out, max_ctx: 8192, reused: 2600, output_tokens: out })); }
     }
 
     pub fn play(tx: &Sender<Ev>, target: Option<St>) {
@@ -2403,7 +2407,7 @@ mod watch_tests {
         }
     }
 
-    fn st0() -> Status { Status { tok_s: 20.0, ttft_s: 0.5, ctx_used: 900, max_ctx: 4096, reused: 0, output_tokens: 40 } }
+    fn st0() -> Status { Status { tok_s: Some(20.0), ttft_s: 0.5, ctx_used: 900, max_ctx: 4096, reused: 0, output_tokens: 40 } }
     /// a reply drawn on an 80x24 screen; the agent waits for input on the returned channel
     fn replied() -> (App, mpsc::Receiver<Option<String>>) {
         let mut a = App::new(false);
@@ -2501,6 +2505,15 @@ mod watch_tests {
         assert!(!rows.iter().any(|r| r.contains("always allow")), "{rows:#?}");
         a.on_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
         assert_eq!(arx.recv().unwrap(), Approval::Always);
+    }
+
+    #[test]
+    fn mcp_permission_box_names_the_server() {
+        let (mut a, _rx) = replied();
+        let (tx, _arx) = mpsc::channel();
+        a.on_ev(Ev::Approve(format!("{MCP}fake\u{1}fake_greet"), "fake_greet {}".into(), tx));
+        let rows = screen(&mut a);
+        assert!(rows.iter().any(|r| r.contains("2. Yes, always allow MCP server fake in this project")), "{rows:#?}");
     }
 
     #[test]
@@ -2830,5 +2843,30 @@ mod watch_tests {
             std::thread::sleep(Duration::from_millis(30));
         }
         demo::QUIT.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod edit_preview_tests {
+    use super::*;
+
+    /// soak M2: old ends in a newline, new does not: the file gets two lines joined, and the preview must say so
+    #[test]
+    fn preview_shows_joined_lines() {
+        let text = "def t():\n    a = 1\n    assert a\n    b = 2\n";
+        let body = edit_body(text, "    assert a\n", "    assert a", false);
+        assert!(body.contains(&PL::Add(3, "    assert a    b = 2".into())), "{body:?}");
+        assert!(body.contains(&PL::Del(3, "    assert a".into())) && body.contains(&PL::Del(4, "    b = 2".into())), "{body:?}");
+    }
+
+    #[test]
+    fn preview_matches_written_text() {
+        let text = "a\nb\nc\n";
+        let body = edit_body(text, "b", "b1\nb2", false);
+        assert!(body.contains(&PL::Add(2, "b1".into())) && body.contains(&PL::Add(3, "b2".into())), "{body:?}");
+        let tail = edit_body("a\nb\n", "b\n", "b", false);
+        assert!(matches!(&tail[..], [PL::Note(t)] if t.contains("line endings")), "{tail:?}");
+        let two = edit_body("x\ny\nx\n", "x", "z", true);
+        assert!(two.contains(&PL::Add(1, "z".into())) && two.contains(&PL::Add(3, "z".into())), "{two:?}");
     }
 }

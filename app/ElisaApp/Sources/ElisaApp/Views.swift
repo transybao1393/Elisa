@@ -9,6 +9,17 @@ struct MainWindow: View {
 
     var body: some View {
         let p = m.pal
+        if m.welcome {
+            WelcomeView()
+                .ignoresSafeArea()
+                .environment(\.pal, p)
+                .preferredColorScheme(m.dark ? .dark : .light)
+        } else {
+            session(p)
+        }
+    }
+
+    private func session(_ p: Palette) -> some View {
         GeometryReader { g in
             // kit "BELOW 900 PX": the edit panel leaves the row (title-bar toggle, overlay sheet), padding 28 -> 20
             let narrow = g.size.width < 900
@@ -461,7 +472,17 @@ struct ToolRowView: View {
     private var outLines: [String] {
         var ls = row.output.components(separatedBy: "\n").map { $0.replacingOccurrences(of: "\t", with: "    ") }
         while let l = ls.last, l.trimmingCharacters(in: .whitespaces).isEmpty || (l.hasPrefix("[exit ") && l.hasSuffix("]")) { ls.removeLast() }
+        if nextHint != nil { ls.removeLast() }
         return Array(ls.prefix(300))
+    }
+
+    /// cut output: its last line when that is a paging hint (`next: …`, e.g. docs' `[output cut at the size limit;
+    /// next: pages="2-11"]`, which elisa keeps after the cut): shown even when collapsed, and last when expanded
+    private var nextHint: String? {
+        guard row.output.contains("more chars]") else { return nil }
+        let last = row.output.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").last ?? ""
+        let t = last.trimmingCharacters(in: .whitespaces)
+        return t.hasPrefix("next:") || t.contains("; next:") || t.hasPrefix("[next:") ? t : nil
     }
 
     var body: some View {
@@ -490,9 +511,11 @@ struct ToolRowView: View {
                     if canExpand && !row.red && !open { toggle(false) }
                 }
                 .font(Fonts.mono(12.5)).padding(.leading, 34).frame(minHeight: 20)
+                if !open, let h = nextHint { hintLine(h) }
                 if open {
                     ForEach(Array(lines.enumerated()), id: \.offset) { _, l in line(l) }
                     if row.output.contains("more chars]") || lines.count == 300 { line("… (output cut)") }
+                    if let h = nextHint { hintLine(h) }
                     toggle(true).padding(.leading, 34 + 24).frame(minHeight: 20)
                 } else if row.red {
                     ForEach(Array(row.preview.enumerated()), id: \.offset) { _, l in line(l) }
@@ -506,6 +529,13 @@ struct ToolRowView: View {
                 }
             }
         }
+    }
+
+    /// the paging hint of cut output, in the code colour so it reads as the way on
+    private func hintLine(_ l: String) -> some View {
+        Text(l).font(Fonts.mono(12.5)).foregroundStyle(p.code).lineLimit(2).truncationMode(.middle)
+            .padding(.leading, 34 + 24).frame(minHeight: 20, alignment: .leading)
+            .textSelection(.enabled)
     }
 
     private func line(_ l: String) -> some View {

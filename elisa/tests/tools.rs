@@ -221,7 +221,7 @@ fn grep_caps_at_100() {
     t.put("h.txt", body.as_bytes());
     let o = run("grep", json!({"pattern": "hit"}), &t.ctx());
     assert_eq!(o.content.lines().filter(|l| l.starts_with("h.txt:")).count(), 100);
-    assert!(o.content.contains("[stopped at 100 matches]"));
+    assert!(o.content.contains("[stopped at 100 matches:"));
 }
 
 #[test]
@@ -405,4 +405,112 @@ fn read_padding_does_not_eat_the_limit() {
     // code with content is never padding
     t.put("c.txt", b"[\n],\n};\n[\n],\n");
     assert_eq!(run("read", json!({"path": "c.txt"}), &ctx).content, "1\t[\n2\t],\n3\t};\n4\t[\n5\t],\n");
+}
+
+/// An edit / write that cannot change anything fails in `precheck` (before the approval prompt) and in the run.
+#[test]
+fn useless_edits_fail_before_approval() {
+    let t = Tmp::new();
+    t.put("calc.py", b"def add(a, b):\n    return a + b\n");
+    t.put("blob.bin", b"\x00\x01\x02text");
+    t.put("latin.txt", b"caf\xe9\n");
+    let ctx = t.ctx();
+    let cases = [
+        ("edit", json!({"path": "calc.py", "old": "a + b", "new": "a + b"}), "no change"),
+        ("edit", json!({"path": "calc.py", "old": "a * b", "new": "a - b"}), "old not found"),
+        ("edit", json!({"path": "blob.bin", "old": "text", "new": "word"}), "binary file"),
+        ("edit", json!({"path": "latin.txt", "old": "caf", "new": "tea"}), "not UTF-8"),
+        ("write", json!({"path": "blob.bin", "content": "x"}), "binary file"),
+        ("write", json!({"path": "https://doc.rust-lang.org/std/index.html", "content": "x"}), "is a URL"),
+        ("edit", json!({"path": "file:///etc/hosts", "old": "a", "new": "b"}), "is a URL"),
+        ("read", json!({"path": "https://example.com/a.txt"}), "is a URL"),
+        ("edit_symbol", json!({"path": "calc.py", "name": "add", "source": "def add(a, b):\n    return a + b"}), "no change"),
+        ("edit_symbol", json!({"path": "calc.py", "name": "nope", "source": "def nope(): pass"}), "nope"),
+    ];
+    for (name, input, want) in &cases {
+        let e = tools::precheck(name, input, &ctx).expect_err(&format!("{name} {input} passed precheck"));
+        assert!(e.contains(want), "{name} {input}: {e}");
+        let r = tools::run(name, input, &ctx);
+        assert!(r.is_error && r.content.contains(want), "{name} {input}: {}", r.content);
+    }
+    assert_eq!(std::fs::read(t.0.join("calc.py")).unwrap(), b"def add(a, b):\n    return a + b\n");
+    assert_eq!(std::fs::read(t.0.join("blob.bin")).unwrap(), b"\x00\x01\x02text");
+    assert!(!t.0.join("https:").exists() && !t.0.join("file:").exists());
+    // calls that can work pass precheck
+    for (name, input) in [
+        ("edit", json!({"path": "calc.py", "old": "a + b", "new": "a - b"})),
+        ("write", json!({"path": "new/file.txt", "content": "x"})),
+        ("write", json!({"path": "calc.py", "content": "x = 1\n"})),
+        ("read", json!({"path": "notes:v2.txt"})),
+        ("edit_symbol", json!({"path": "calc.py", "name": "add", "source": "def add(a, b):\n    return b + a"})),
+        ("bash", json!({"command": "curl https://example.com"})),
+        ("glob", json!({"pattern": "**/*.py"})),
+    ] {
+        assert!(tools::precheck(name, &input, &ctx).is_ok(), "{name} {input}");
+    }
+    // outside the project: no look at the contents before the outside approval (no "old not found" oracle)
+    let other = Tmp::new();
+    other.put("secret.txt", b"TOKEN=abc\n");
+    let outside = other.0.join("secret.txt").to_string_lossy().into_owned();
+    assert!(tools::precheck("edit", &json!({"path": outside, "old": "TOKEN=zzz", "new": "x"}), &ctx).is_ok());
+    assert!(tools::precheck("edit", &json!({"path": outside, "old": "TOKEN=abc", "new": "x"}), &ctx).is_ok());
+    assert!(tools::looks_like_url("https://x/y") && tools::looks_like_url("git+ssh://h/r"));
+    assert!(!tools::looks_like_url("src/a.rs") && !tools::looks_like_url("://x") && !tools::looks_like_url("1a://x") && !tools::looks_like_url("a b://x"));
+}
+
+/// soak M2 (tests/test_core.py 19:12:33): `old` ended in a newline, `new` did not, so the edit joined two statements
+/// on one line. The parse guard missed it (tree-sitter-python marks it only with a hidden `MISSING _newline`); now
+/// the edit is refused and the file is unchanged.
+#[test]
+fn edit_that_joins_two_python_lines_is_refused() {
+    let t = Tmp::new();
+    let body = "import os\n\n\ndef test_low():\n    skus = sorted(i.sku for i in low_stock(load_csv(DATA)))\n    assert skus == ['A-102', 'B-210', 'C-330']\n    skus = sorted(i.sku for i in low_stock(load_csv(DATA)))\n    assert skus == [\"A-102\", \"B-210\", \"C-330\"]\n";
+    t.put("tests/test_core.py", body.as_bytes());
+    let r = run("edit", json!({"path": "tests/test_core.py", "old": "    assert skus == ['A-102', 'B-210', 'C-330']\n", "new": "    assert skus == ['A-102', 'B-210', 'C-330']"}), &t.ctx());
+    assert!(r.is_error && r.content.starts_with("refused:") && r.content.contains("missing line break"), "{}", r.content);
+    assert_eq!(std::fs::read_to_string(t.0.join("tests/test_core.py")).unwrap(), body);
+    // the right edit (the duplicated lines removed) goes through
+    let ok = run("edit", json!({"path": "tests/test_core.py", "old": "    assert skus == ['A-102', 'B-210', 'C-330']\n    skus = sorted(i.sku for i in low_stock(load_csv(DATA)))\n", "new": ""}), &t.ctx());
+    assert!(!ok.is_error, "{}", ok.content);
+}
+
+#[test]
+fn read_dir_and_binary_say_what_to_use() {
+    let t = Tmp::new();
+    t.put("d/a.txt", b"x\n");
+    t.put("revenue.xlsx", b"PK\x03\x04\x00\x00binary");
+    let ctx = t.ctx();
+    let d = run("read", json!({"path": "d"}), &ctx);
+    assert!(d.is_error && d.content.contains("is a directory") && d.content.contains("glob"), "{}", d.content);
+    let b = run("read", json!({"path": "revenue.xlsx", "limit": 4}), &ctx);
+    assert!(b.is_error && b.content.contains("binary file") && b.content.contains("docs_sheet") && b.content.contains("file revenue.xlsx"), "{}", b.content);
+}
+
+#[test]
+fn grep_says_when_it_is_capped() {
+    let t = Tmp::new();
+    let body: String = (0..150).map(|i| format!("hit {i}\n")).collect();
+    t.put("a.txt", body.as_bytes());
+    let o = run("grep", json!({"pattern": "hit"}), &t.ctx());
+    assert!(o.content.ends_with("there are more; narrow the pattern, path or glob]"), "{}", o.content);
+    assert_eq!(elisa::jsonl::tool_note("grep", &o.content, false).0, "100+ matches (capped)");
+}
+
+#[test]
+fn glob_with_an_absolute_pattern_names_its_directory() {
+    let t = Tmp::new();
+    t.put("src/a.py", b"x\n");
+    let ctx = t.ctx();
+    let root = t.0.display().to_string();
+    // inside the project: works (it found nothing before)
+    let o = run("glob", json!({"pattern": format!("{root}/src/*.py")}), &ctx);
+    assert_eq!(o.content, "src/a.py");
+    assert_eq!(tools::glob_args(&json!({"pattern": "/etc/ssh/*.conf"})), ("/etc/ssh".to_string(), "*.conf".to_string()));
+    assert_eq!(tools::glob_args(&json!({"pattern": "*.py", "path": "src"})), ("src".to_string(), "*.py".to_string()));
+    let lit = tools::glob_args(&json!({"pattern": format!("{root}/src")}));
+    assert_eq!(lit, (format!("{root}/src"), "*".to_string()));
+    // outside: the outside-the-project rules see it (ask / deny like read), not a silent "no files found"
+    let out = elisa::outside::check("glob", &json!({"pattern": "/etc/*"}), &t.0).expect("outside");
+    assert!(!out.write());
+    assert!(elisa::outside::check("glob", &json!({"pattern": format!("{root}/**/*.py")}), &t.0).is_none());
 }

@@ -26,6 +26,22 @@ pub struct CallMetric {
     pub stop_reason: String,
 }
 
+/// a simple turn's output cap (`Client::simple_cap`): a greeting or a short answer needs far less
+pub const SIMPLE_OUT: usize = 1024;
+
+/// Shown instead of sending a request when no model is configured: Elisa never picks one for the user.
+pub const NO_MODEL: &str = "No model chosen, so nothing was sent. Elisa doesn't pick a model for you: \
+    in the app, choose one in Model Connections (or on the welcome screen); \
+    in the terminal, pass --model NAME or set an active connection with a model in ~/.config/elisa/providers.toml.";
+
+/// A failure worth one more try: the server's own error (5xx), or a model's broken tool call the server could not
+/// parse (Ollama: "invalid character '}' after object key", "unexpected end of JSON input"). Never a 4xx (a bad key
+/// or a refused request fails the same way again).
+pub fn transient(e: &str) -> bool {
+    if let Some(code) = e.strip_prefix("HTTP ").and_then(|r| r.get(..3)).and_then(|c| c.parse::<u16>().ok()) { return (500..600).contains(&code); }
+    e.contains("JSON input") || e.contains("tool call") || e.contains("invalid character")
+}
+
 /// The decode window `ui::status` uses too: below this there is no honest tok/s.
 pub const MIN_DECODE_S: f64 = 0.2;
 
@@ -148,6 +164,8 @@ pub struct Client {
     ollama_ctx: std::sync::atomic::AtomicUsize,
     /// that Ollama model reasons (capability "thinking"): it gets `think` = the session's setting and room to reason
     ollama_thinks: AtomicBool,
+    /// the turn in progress is a simple one (`set_simple`): no reasoning where the connection can switch it off
+    simple: AtomicBool,
 }
 
 enum Part {
@@ -183,7 +201,8 @@ pub fn warm_took(body: &str) -> bool {
 
 pub(crate) fn err_message(body: &str) -> String {
     serde_json::from_str::<Value>(body).ok()
-        .and_then(|v| v["error"]["message"].as_str().map(String::from))
+        // Anthropic / OpenAI `{"error": {"message": …}}`, Ollama `{"error": "…"}`
+        .and_then(|v| v["error"]["message"].as_str().or(v["error"].as_str()).map(String::from))
         .unwrap_or_else(|| body.chars().take(300).collect())
 }
 
@@ -197,6 +216,16 @@ fn read_usage(u: &Value, usage: &mut Usage) -> bool {
     cached.is_some()
 }
 
+/// The base the request paths are joined to. The gateway and the Anthropic API take `/v1/messages`, so a base that
+/// already ends in `/v1` (as an OpenAI-style URL does) loses it rather than asking for `/v1/v1/messages`.
+pub fn request_base(url: &str, transport: &Transport) -> String {
+    let b = url.trim_end_matches('/');
+    match transport {
+        Transport::Gateway | Transport::Anthropic => b.strip_suffix("/v1").unwrap_or(b).to_string(),
+        _ => b.to_string(),
+    }
+}
+
 impl Client {
     pub fn new(cfg: &Config) -> Client {
         let agent = ureq::Agent::config_builder()
@@ -205,7 +234,7 @@ impl Client {
             .build()
             .into();
         Client {
-            base: cfg.base_url.trim_end_matches('/').to_string(),
+            base: request_base(&cfg.base_url, &cfg.transport),
             project: project_id(&std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))),
             model: cfg.model.clone(),
             key: cfg.api_key.clone(),
@@ -217,6 +246,7 @@ impl Client {
             mcp: Mutex::new(None),
             ollama_ctx: std::sync::atomic::AtomicUsize::new(0),
             ollama_thinks: AtomicBool::new(false),
+            simple: AtomicBool::new(false),
         }
     }
 
@@ -230,6 +260,23 @@ impl Client {
     /// request sized to the window leaves room for them; 0 elsewhere.
     pub fn reasoning_room(&self) -> usize {
         if self.ollama_ctx.load(Ordering::Relaxed) > 0 && self.ollama_thinks.load(Ordering::Relaxed) { crate::ollama::REASONING_ROOM } else { 0 }
+    }
+
+    /// The turn starting now is simple (the reasoning gate's `mcp_reason::wanted` said so) and config `think_simple`
+    /// is "off": its agent calls ask the model not to reason where the connection allows it (Ollama's native API:
+    /// `ollama::no_think`) and get the smaller `SIMPLE_OUT` cap (`simple_cap`). Set once per turn, so a turn's
+    /// requests all have the same shape.
+    pub fn set_simple(&self, on: bool) { self.simple.store(on, Ordering::Relaxed); }
+
+    /// the last `set_simple`
+    pub fn simple(&self) -> bool { self.simple.load(Ordering::Relaxed) }
+
+    /// The output cap of a simple turn's agent calls, where the model then does not reason (Ollama's native API, or
+    /// Anthropic's API without `think`); None elsewhere (a reasoning model behind another server could spend a small
+    /// cap on reasoning and never answer).
+    pub fn simple_cap(&self) -> Option<usize> {
+        let quiet = self.ollama_ctx.load(Ordering::Relaxed) > 0 || (self.transport == Transport::Anthropic && !self.think);
+        (self.simple.load(Ordering::Relaxed) && quiet).then_some(SIMPLE_OUT)
     }
 
     /// The project the requests are for (`PROJECT_HEADER`; default: the process's current dir at `new`).
@@ -296,11 +343,13 @@ impl Client {
     /// it. The job returns Ok(true) when the gateway took it as a warm-up (2xx, no token generated), Ok(false) when it
     /// answered but generated (no warm-up support), Err on an error status / no connection.
     pub fn warm_job(&self, req: &Request) -> impl FnOnce() -> Result<bool, String> + Send + 'static {
+        let no_model = self.model.trim().is_empty();
         let mut body = self.body(req, false);
         body["max_tokens"] = json!(0);
         let post = self.post("/v1/messages").header("x-streamdense-warm", "1");
         let body = body.to_string();
         move || {
+            if no_model { return Err(NO_MODEL.into()); }
             let mut r = post.send(body).map_err(|e| format!("warm-up: {e}"))?;
             let status = r.status().as_u16();
             let text = r.body_mut().read_to_string().unwrap_or_default();
@@ -323,12 +372,27 @@ impl Client {
 
     /// POST /v1/messages with stream:true. Calls on_text for each text delta as it arrives.
     /// Stops early (stop_reason "cancelled") when `cancel` becomes true.
+    /// A `transient` failure before anything was shown is tried once more (a second sample of a broken tool call is
+    /// usually whole); the second failure is the error.
     pub fn send(&self, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
+        if self.model.trim().is_empty() { return Err(NO_MODEL.into()); }
+        let mut wrote = false;
+        let first = self.send_once(req, cancel, &mut |t: &str| { wrote = true; on_text(t) });
+        match first {
+            Err(e) if transient(&e) && !wrote && !cancel.load(Ordering::Relaxed) => {
+                self.send_once(req, cancel, on_text).map_err(|e2| if e2 == e { format!("{e} (tried twice)") } else { format!("{e2} (tried twice; first: {e})") })
+            }
+            r => r,
+        }
+    }
+
+    fn send_once(&self, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
         match &self.transport {
             Transport::OpenAi if self.ollama_ctx.load(Ordering::Relaxed) > 0 => {
                 let ctx = self.ollama_ctx.load(Ordering::Relaxed);
                 let thinks = self.ollama_thinks.load(Ordering::Relaxed).then_some(self.think);
-                let r = crate::ollama::send(&self.agent, crate::provider::ollama_root(&self.base), &self.key, &self.model, ctx, thinks, req, cancel, on_text)?;
+                let simple = self.simple.load(Ordering::Relaxed) && self.kind() == "agent";
+                let r = crate::ollama::send(&self.agent, crate::provider::ollama_root(&self.base), &self.key, &self.model, ctx, thinks, simple, req, cancel, on_text)?;
                 self.record(&r, true);
                 return Ok(r);
             }
@@ -491,6 +555,18 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_server_errors_and_broken_calls_are_tried_again() {
+        assert!(transient("HTTP 500: invalid character '}' after object key"));
+        assert!(transient("HTTP 503: overloaded"));
+        assert!(transient("qwen tool call parsing failed: unexpected end of JSON input"));
+        assert!(!transient("HTTP 401: invalid x-api-key"));
+        assert!(!transient("HTTP 429: rate limited"));
+        assert!(!transient("request failed: connection refused"));
+        assert_eq!(err_message(r#"{"error":"invalid character '}' after object key"}"#), "invalid character '}' after object key");
+        assert_eq!(err_message(r#"{"error":{"message":"bad key"}}"#), "bad key");
+    }
 
     #[test]
     fn phase_hints_parse() {
