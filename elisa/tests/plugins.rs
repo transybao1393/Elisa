@@ -95,6 +95,13 @@ fn the_plugin_cli_adds_lists_pins_switches_and_removes_a_plugin() {
     assert!(inst.join("plugin.toml").is_file() && inst.join("commands/hello.md").is_file() && !inst.join("server.py").exists());
     let (_, out) = elisa(&d.0, &["plugin", "list"]);
     assert!(out.contains("notes 1.0.0 · user · on") && out.contains("notes (host)") && out.contains("commands: /hello") && out.contains("2 rules"), "{out}");
+    // --json: the app's `plugins` payload, no session needed
+    let (code, out) = elisa(&d.0, &["plugin", "list", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let j: Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}: {out}"));
+    let p = &j["plugins"][0];
+    assert!(p["name"] == "notes" && p["enabled"] == true && p["trusted"] == true && p["source"] == "user" && p["rules"] == 2, "{out}");
+    assert!(p["servers"][0]["runs"] == "host" && p["commands"][0] == "/hello", "{out}");
     let (code, out) = elisa(&d.0, &["plugin", "add", &src, "--yes"]);
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("already installed"), "{out}");

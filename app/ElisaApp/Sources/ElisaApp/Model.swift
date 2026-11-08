@@ -109,6 +109,21 @@ struct Approval {
     /// the MCP server the tool comes from (`server` on `approve`; "web" is Elisa's built-in web server);
     /// nil for Elisa's own tools. "always" allows the whole server for this project
     var server: String? = nil
+    /// "always allow this pattern" (`rule` on `approve`): the exact pattern answering "rule" saves to the user's
+    /// config; nil when the core offers none for this call
+    var rule: String? = nil
+    /// not a tool call but a yes / no question (`question: true`: a plugin's setup, a project's trust prompt)
+    var question = false
+
+    /// the answers the box offers, in order: (label, the word sent back). "no" is always last
+    var choices: [(label: String, answer: String)] {
+        if question { return [("Yes", "yes"), ("No", "no")] }
+        if outside { return [("Yes, once", "yes"), ("Yes, allow these paths for this session", "always"), ("No", "no")] }
+        var c: [(String, String)] = [("Yes", "yes"), ("", "always")]
+        if rule != nil { c.append(("Yes, and always allow this pattern", "rule")) }
+        c.append(("No", "no"))
+        return c
+    }
 }
 
 enum Phase: Equatable { case starting, idle, thinking, streaming, tool, permission, exited }
@@ -240,6 +255,7 @@ final class AppModel: ObservableObject {
         blocks = []; edits = []; editIdx = 0; stat = nil; sumIn = 0; sumOut = 0; turn = 0; cur = nil; queued = 0
         approval = nil; picker = nil; watchLine = nil; auditLine = nil; job = nil; compactLine = nil; cardNo = nil; expanded = []
         scrollHeld = false; heldLines = 0; heldNew = false
+        PluginStore.shared.sessionEnded()
         setPhase(.starting)
         do { try elisa.start(cwd: folder, demo: demo, extra: extraArgs + ["--theme", dark ? "dark" : "light"]) }
         catch { blocks.append(Block(kind: .info(error.localizedDescription, .err))); setPhase(.exited) }
@@ -268,6 +284,7 @@ final class AppModel: ObservableObject {
     private func exited(_ code: Int32) {
         if phase == .exited { return }
         approval = nil
+        PluginStore.shared.sessionEnded()
         blocks.append(Block(kind: .info("[elisa exited (code \(code)) · File > Open Folder… starts a new session]", code == 0 ? .plain : .err)))
         setPhase(.exited)
     }
@@ -302,10 +319,26 @@ final class AppModel: ObservableObject {
     }
 
     func answer(_ i: Int) {
-        guard approval != nil else { return }
-        elisa.send("approve", ["answer": ["yes", "always", "no"][max(0, min(2, i))]])
+        answer(word: ["yes", "always", "no"][max(0, min(2, i))])
+    }
+
+    /// answers the open approval with Elisa's word: yes | always | rule | no
+    func answer(word: String) {
+        guard let a = approval else { return }
+        elisa.send("approve", ["answer": word])
         approval = nil
-        setPhase(i == 2 ? .thinking : .tool)
+        // a yes / no question (plugin setup, project trust) runs no tool
+        setPhase(a.question ? .thinking : word == "no" ? .thinking : .tool)
+    }
+
+    /// a session is running in a folder (the Plugins window sends its actions to it)
+    var sessionOpen: Bool { elisa.running && !welcome && phase != .exited }
+
+    /// `{"type":"plugin","op":…}`: the same as typing `/plugin OP ARG` (queued like a message)
+    func sendPlugin(_ op: String, _ arg: String = "") {
+        var f: [String: Any] = ["op": op]
+        if op == "add" { f["path"] = arg } else if !arg.isEmpty { f["name"] = arg }
+        elisa.send("plugin", f)
     }
 
     func pick(_ i: Int?) {
@@ -316,7 +349,7 @@ final class AppModel: ObservableObject {
 
     /// Esc: deny a pending permission (the kit: esc = no), else interrupt the turn
     func interrupt() {
-        if approval != nil { answer(2); return }
+        if approval != nil { answer(word: "no"); return }
         if picker != nil { pick(nil); return }
         elisa.send("interrupt")
     }
@@ -564,7 +597,14 @@ final class AppModel: ObservableObject {
         case "approve":
             approval = Approval(tool: s(e, "tool"), summary: s(e, "summary"), outside: (e["outside"] as? Bool) ?? false,
                                 access: s(e, "access"), accessWord: s(e, "access_word"), paths: (e["paths"] as? [String]) ?? [],
-                                server: (e["server"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                                server: (e["server"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                                rule: (e["rule"] as? String).flatMap { $0.isEmpty ? nil : $0 }, question: (e["question"] as? Bool) ?? false)
+            if approval?.question == true {
+                // a plugin's setup or a project's trust prompt: its window (Plugins.swift) takes the yes / no too
+                PluginStore.shared.question(self)
+                setPhase(.permission)
+                break
+            }
             // the approval names the tool's MCP server: an older core's tool_start does not, so relabel the row
             let tool = s(e, "tool")
             updateTool { t in
@@ -659,6 +699,8 @@ final class AppModel: ObservableObject {
             approval = nil
         case "exit":
             exited(Int32(n(e, "code")))
+        case "plugins", "plugin_preview", "plugin_result", "project_trust":
+            PluginStore.shared.event(s(e, "type"), e, self)
         default:
             break
         }

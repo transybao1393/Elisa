@@ -426,7 +426,9 @@ asks again.
 
 - `plugins` {plugins: [{name, version, description, source: "user"|"project", enabled, trusted, servers: [{name,
   runs: "container"|"host", installed, tools, tokens, running?}], tools, tokens, rules, commands, notes}]} — at
-  startup (when any plugin is installed or the project has one), after every change and on `/plugin list`
+  startup (when any plugin is installed or the project has one), after every change and on `/plugin list`.
+  `elisa plugin list --json` prints the same payload without a session (the app's Plugins window uses it when no
+  folder is open)
 - `plugin_preview` {op: "add"|"update"|"trust", name, text, preview: {name, version, old_version, description,
   source, host, servers: [{name, runs, installer, package, version, image, image_present, command, mounts, env,
   tools}], rules: [{level, pattern, broad}], commands, notes, problems}} — the setup screen; a yes / no `approve`

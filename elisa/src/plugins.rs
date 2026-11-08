@@ -1102,7 +1102,7 @@ pub fn run_server(args: &[String]) -> i32 {
 
 // ---------- `elisa plugin …` ----------
 
-const CLI_USAGE: &str = "usage: elisa plugin list | add PATH [--yes] | remove NAME | enable NAME | disable NAME | update NAME [--yes] | trust NAME [--yes]";
+const CLI_USAGE: &str = "usage: elisa plugin list [--json] | add PATH [--yes] | remove NAME | enable NAME | disable NAME | update NAME [--yes] | trust NAME [--yes]";
 
 fn confirm(q: &str, yes: bool) -> bool {
     if yes { return true; }
@@ -1131,7 +1131,8 @@ pub fn cli(args: &[String]) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let log = crate::audit::Log::open(&home, &cwd);
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
-    let rest: Vec<&str> = args.iter().map(String::as_str).filter(|a| *a != "--yes" && *a != "-y").collect();
+    let as_json = args.iter().any(|a| a == "--json");
+    let rest: Vec<&str> = args.iter().map(String::as_str).filter(|a| *a != "--yes" && *a != "-y" && *a != "--json").collect();
     let fail = |e: &str| { eprintln!("{e}"); 1 };
     let arg = rest.get(1).copied().unwrap_or("");
     match rest.first().copied() {
@@ -1141,7 +1142,8 @@ pub fn cli(args: &[String]) -> i32 {
                 let t = project_trusted(&home, &cwd, &p.hash);
                 infos.extend(p.infos.into_iter().map(|mut i| { i.trusted = t; i }));
             }
-            println!("{}", list_text(&infos));
+            // --json: the app's `plugins` event payload, for the app's plugin window when no session is open
+            if as_json { println!("{}", json!({"plugins": infos.iter().map(info_json).collect::<Vec<_>>()})); } else { println!("{}", list_text(&infos)); }
             0
         }
         Some("add") => {
@@ -1180,6 +1182,8 @@ pub fn cli(args: &[String]) -> i32 {
         Some("trust") if !arg.is_empty() => {
             let (_, p) = match prepare_trust(&home, arg) { Ok(x) => x, Err(e) => return fail(&e) };
             println!("{}", p.text);
+            // same as /plugin trust in a session: a plugin that cannot run as it stands is not trusted
+            if !p.problems.is_empty() { audit(&log, "trust", arg, "error", &p.problems.join("; ")); return 1; }
             if !confirm(&format!("Trust plugin {arg}'s current files?"), yes) { audit(&log, "trust", arg, "declined", ""); return 1; }
             match trust(&home, arg) {
                 Ok(m) => { audit(&log, "trust", arg, "ok", ""); println!("{m}"); 0 }

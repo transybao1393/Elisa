@@ -14,6 +14,11 @@
 // --frames-window TITLE (debug): those frames of another window ("Model Scorecard", "Model Connections").
 // --scorecard: open the Model Scorecard window at launch. --eval-test MODEL (debug): press Test on that installed
 // Ollama model as the local model list does (confirm, then run); --eval-cancel-after S: then press Cancel.
+// --plugins: open the Plugins window at launch ("Plugins" / "Plugin Setup" for --frames-window).
+// --plugins-add PATH (debug): once the session is ready, add that plugin folder as Add plugin… does (no folder picker).
+// --send TEXT (debug, repeatable): each time the session is ready, send the next TEXT as if typed (a slash command or a
+// prompt); approvals are left for the person (unlike --script). --plugin-setup-answer yes|no (debug): the Plugin
+// Setup window's Install / Trust or Not now is pressed 3 s after its question arrives.
 import AppKit
 import SwiftUI
 
@@ -113,6 +118,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if args.contains("--scorecard") { DispatchQueue.main.async { ScorecardWindow.shared.show(m) } }
+        if args.contains("--plugins") { DispatchQueue.main.async { PluginsWindow.shared.show(m) } }
+        var pending: [() -> Void] = []
+        if let path = opt("--plugins-add") { pending.append { PluginStore.shared.add(path: path, m) } }
+        for t in optAll("--send") { pending.append { m.send(t) } }
+        if !pending.isEmpty {
+            let prev = m.onEventHook
+            m.onEventHook = { e in
+                prev(e)
+                guard e["type"] as? String == "ready", !pending.isEmpty else { return }
+                let next = pending.removeFirst()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { next() }
+            }
+        }
         if let model = opt("--eval-test") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 let conns = ConnectionStore()
@@ -193,6 +211,7 @@ struct ElisaMain: App {
             CommandMenu("Elisa") {
                 Button("Model Connections…") { ConnectionsWindow.shared.show(m) }.keyboardShortcut(",")
                 Button("Model Scorecard…") { ScorecardWindow.shared.show(m) }
+                Button("Plugins…") { PluginsWindow.shared.show(m) }
                 Divider()
                 Button(m.editsShown ? "Hide Edits" : "Show Edits") { m.toggleEdits() }.keyboardShortcut("o", modifiers: .control)
                 Button("Previous Edit") { m.editPrev() }.keyboardShortcut("[", modifiers: .command)

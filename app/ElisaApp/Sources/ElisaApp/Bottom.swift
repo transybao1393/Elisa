@@ -97,8 +97,8 @@ struct StatusBar: View {
 
     @ViewBuilder private var keys: some View {
         let k = { (a: String, b: String) in Text(a).foregroundStyle(p.fg) + Text(" " + b) }
-        if m.approval != nil {
-            k("1–3", "choose") + Text(" · ") + k("esc", "= no")
+        if let a = m.approval {
+            k("1–\(a.choices.count)", "choose") + Text(" · ") + k("esc", "= no")
         } else {
             k("⏎", "send") + Text(" · ") + k("⇧⏎", "newline") + Text(" · ") + k("/", "commands") + Text(" · ") + k("ctrl-o", "edits")
         }
@@ -217,11 +217,26 @@ struct PermissionBox: View {
             : a.summary.hasPrefix(a.tool + " ") ? String(a.summary.dropFirst(a.tool.count + 1)) : a.summary
         let word = titleWord(a, web: web, mcp: mcp)
         let tool = a.tool == "bash" ? "Bash" : web ? "web access" : mcp ?? a.tool.capitalized
-        let opts = a.outside ? ["Yes, once", "Yes, allow these paths for this session", "No"]
-            : mcp != nil ? ["Yes", "Yes, always allow everything from \(tool) in this project", "No"]
-            : ["Yes", "Yes, always allow \(tool) in this project", "No"]
+        // the labels: "always" names what it covers; the rule choice shows its exact pattern after the label
+        let choices = a.choices.map { c -> (label: String, answer: String) in
+            guard c.answer == "always", !a.outside else { return c }
+            return (mcp != nil ? "Yes, always allow everything from \(tool) in this project" : "Yes, always allow \(tool) in this project", c.answer)
+        }
+        let n = choices.count
         let note = mcp.map { "MCP server \($0)" } ?? tool
         VStack(alignment: .leading, spacing: 10) {
+            if a.question {
+                // a yes / no question (a plugin's setup, a project's trust prompt): its details are in the setup window
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(a.summary).font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg).lineLimit(2)
+                    Spacer()
+                    Text(a.tool).font(Fonts.mono(11.5)).foregroundStyle(p.fg2).lineLimit(1)
+                }
+                Button { PluginSetupWindow.shared.reopen(m) } label: {
+                    Text("details in the Plugin Setup window").font(Fonts.mono(11.5)).foregroundStyle(p.acc).underline()
+                }
+                .buttonStyle(.plain)
+            } else {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 (Text("Allow \(word)\(what.isEmpty ? "" : " ")").font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg)
                  + Text(what).font(Fonts.mono(14, .medium)).foregroundStyle(p.code)
@@ -248,22 +263,33 @@ struct PermissionBox: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(p.warn.opacity(0.12)))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(p.warn.opacity(0.6), lineWidth: 1))
             }
+            }
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(0..<3, id: \.self) { i in
-                    HStack(spacing: 8) {
+                ForEach(0..<n, id: \.self) { i in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(i == a.sel ? "›" : " ").foregroundStyle(p.acc)
-                        Text("\(i + 1). ").foregroundStyle(p.fg) + optText(opts[i], tool: tool)
+                        if choices[i].answer == "rule", let rule = a.rule {
+                            // the exact pattern that is saved, and where
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("\(i + 1). ").foregroundStyle(p.fg) + Text(choices[i].label + " ").foregroundStyle(p.tx)
+                                    + Text(rule).foregroundStyle(p.code)
+                                Text("saved to [permissions] allow in ~/.config/elisa/config.toml").font(Fonts.mono(11)).foregroundStyle(p.fg2)
+                            }
+                            .textSelection(.enabled)
+                        } else {
+                            Text("\(i + 1). ").foregroundStyle(p.fg) + optText(choices[i].label, tool: tool)
+                        }
                         Spacer()
                     }
                     .font(Fonts.mono(13))
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(RoundedRectangle(cornerRadius: 4).fill(i == a.sel ? p.sel : .clear))
                     .contentShape(Rectangle())
-                    .onTapGesture { m.answer(i) }
+                    .onTapGesture { m.answer(word: choices[i].answer) }
                 }
             }
             (Text("↑↓").foregroundStyle(p.fg) + Text(" select · ") + Text("enter").foregroundStyle(p.fg) + Text(" confirm · ")
-             + Text("1–3").foregroundStyle(p.fg) + Text(" pick · ") + Text("esc").foregroundStyle(p.fg) + Text(" deny"))
+             + Text("1–\(n)").foregroundStyle(p.fg) + Text(" pick · ") + Text("esc").foregroundStyle(p.fg) + Text(" deny"))
                 .font(Fonts.mono(11.5)).foregroundStyle(p.fg2)
         }
         .padding(EdgeInsets(top: 14, leading: 16, bottom: 12, trailing: 16))
@@ -275,13 +301,14 @@ struct PermissionBox: View {
         .onAppear { focus = true }
         .onKeyPress(phases: .down) { k in
             guard var ap = m.approval else { return .ignored }
+            let words = ap.choices.map(\.answer)
             switch k.key {
-            case .upArrow: ap.sel = (ap.sel + 2) % 3; m.approval = ap
-            case .downArrow: ap.sel = (ap.sel + 1) % 3; m.approval = ap
-            case .return: m.answer(ap.sel)
-            case .escape: m.answer(2)
+            case .upArrow: ap.sel = (ap.sel + words.count - 1) % words.count; m.approval = ap
+            case .downArrow: ap.sel = (ap.sel + 1) % words.count; m.approval = ap
+            case .return: m.answer(word: words[min(ap.sel, words.count - 1)])
+            case .escape: m.answer(word: "no")
             default:
-                if let c = k.characters.first, let n = Int(String(c)), (1...3).contains(n) { m.answer(n - 1) } else { return .ignored }
+                if let c = k.characters.first, let n = Int(String(c)), (1...words.count).contains(n) { m.answer(word: words[n - 1]) } else { return .ignored }
             }
             return .handled
         }
