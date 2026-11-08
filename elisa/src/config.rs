@@ -62,6 +62,9 @@ pub struct Config {
     pub mcp: Vec<crate::mcp_host::ServerCfg>,
     /// servers switched off by name (`[mcp.NAME] enabled = false`, also from a project config; "web" = the built-in)
     pub mcp_off: Vec<String>,
+    /// per-server tool filters by server name (`[mcp.NAME] tools = […]` / `exclude = […]`), for user servers and the
+    /// built-in ones alike; a project config can only narrow them (`mcp_host::ToolFilter`)
+    pub mcp_filter: std::collections::BTreeMap<String, crate::mcp_host::ToolFilter>,
     /// narrow the test check to the edited symbols (Rust: a test-name filter; Python: the test files that import them)
     pub ast_targeted_checks: bool,
     /// per-request metrics (src/metrics.rs): one JSON line per request in `.elisa/metrics.jsonl`, and `/stats`
@@ -177,6 +180,7 @@ impl Default for Config {
             ast_guard: true,
             mcp: Vec::new(),
             mcp_off: Vec::new(),
+            mcp_filter: Default::default(),
             ast_targeted_checks: true,
             metrics: true,
             warm: "auto".into(),
@@ -204,8 +208,9 @@ impl Default for Config {
 }
 
 /// `[mcp.NAME]`: `command = ["prog", "arg"]` (stdio) or `url = "https://…"` (streamable HTTP), optional `env` table,
-/// `enabled = false` to switch a server (or the built-in `web`) off. Checked by hand (`parse_mcp`), not by serde, so
-/// one bad entry skips that server with a note instead of failing the whole config file.
+/// `enabled = false` to switch a server (or the built-in `web`) off, `tools = […]` / `exclude = […]` to offer only
+/// some of its tools. Checked by hand (`parse_mcp`), not by serde, so one bad entry skips that server with a note
+/// instead of failing the whole config file.
 #[derive(Default)]
 struct McpFile {
     command: Vec<String>,
@@ -213,6 +218,16 @@ struct McpFile {
     env: Vec<(String, String)>,
     env_pass: Vec<String>,
     enabled: Option<bool>,
+    tools: Option<Vec<String>>,
+    exclude: Option<Vec<String>>,
+}
+
+/// Elisa's own servers, which `[mcp.NAME]` can give a tool filter without a command
+const BUILTIN_SERVERS: [&str; 5] = ["web", "docs", "sec", "run", crate::mcp_reason::NAME];
+
+fn names_list(v: &toml::Value, key: &str) -> Result<Vec<String>, String> {
+    let a = v.as_array().ok_or_else(|| format!("{key} must be a list of tool names: {key} = [\"name\", …]"))?;
+    a.iter().map(|x| x.as_str().map(|s| s.trim().to_string())).collect::<Option<_>>().ok_or_else(|| format!("{key} must be a list of strings"))
 }
 
 fn parse_mcp(v: &toml::Value) -> Result<McpFile, String> {
@@ -236,7 +251,9 @@ fn parse_mcp(v: &toml::Value) -> Result<McpFile, String> {
                 m.env_pass = a.iter().map(|x| x.as_str().map(String::from)).collect::<Option<_>>().ok_or("env_pass must be a list of strings")?;
             }
             "enabled" => m.enabled = Some(v.as_bool().ok_or("enabled must be true or false")?),
-            k => return Err(format!("unknown key {k:?} (use command, url, env, env_pass, enabled)")),
+            "tools" => m.tools = Some(names_list(v, "tools")?),
+            "exclude" => m.exclude = Some(names_list(v, "exclude")?),
+            k => return Err(format!("unknown key {k:?} (use command, url, env, env_pass, enabled, tools, exclude)")),
         }
     }
     if !m.url.is_empty() && !(m.url.starts_with("http://") || m.url.starts_with("https://")) {
@@ -670,17 +687,32 @@ impl Config {
                 continue;
             }
             let adds = !m.command.is_empty() || !m.url.is_empty();
+            let filtered = m.tools.is_some() || m.exclude.is_some();
             if project {
-                self.notes.push(if adds {
-                    skip("a project config cannot add MCP servers (they run programs); add it to ~/.config/elisa/config.toml")
-                } else {
-                    format!("{}: [mcp.{name}] enabled = true ignored: a project config can only switch servers off", p.display())
-                });
+                if adds {
+                    self.notes.push(skip("a project config cannot add MCP servers (they run programs); add it to ~/.config/elisa/config.toml"));
+                    continue;
+                }
+                // a project's tool filter only narrows: its allowlist is one more that every tool must pass, its
+                // denylist adds to the user's; neither can bring back a tool the user config left out
+                if filtered {
+                    let f = self.mcp_filter.entry(name.clone()).or_default();
+                    if let Some(t) = m.tools { f.allow.push(t); }
+                    f.deny.extend(m.exclude.unwrap_or_default());
+                }
+                if !filtered || m.enabled == Some(true) {
+                    self.notes.push(format!("{}: [mcp.{name}] enabled = true ignored: a project config can only switch servers off", p.display()));
+                }
                 continue;
             }
-            if !adds && name == "web" {
+            // the user config sets the server's filter (a user server's, or a built-in's: `[mcp.docs] exclude = […]`)
+            let builtin = !adds && BUILTIN_SERVERS.contains(&name.as_str());
+            if filtered && (adds || builtin) {
+                self.mcp_filter.insert(name.clone(), crate::mcp_host::ToolFilter { allow: m.tools.into_iter().collect(), deny: m.exclude.unwrap_or_default() });
+            }
+            if builtin && (filtered || name == "web") {
                 // `[mcp.web] enabled = true` in the user config: the built-in web server back on
-                self.mcp_off.retain(|n| n != "web");
+                if name == "web" || m.enabled == Some(true) { self.mcp_off.retain(|n| n != name); }
                 continue;
             }
             if let Err(e) = check_server_name(name) { self.notes.push(skip(&e)); continue; }
@@ -694,7 +726,66 @@ impl Config {
             }
             self.mcp_off.retain(|n| n != name);
             self.mcp.retain(|c| &c.name != name);
-            self.mcp.push(crate::mcp_host::ServerCfg { name: name.clone(), command: m.command, url: m.url, env: m.env, env_pass: m.env_pass, builtin: false });
+            self.mcp.push(crate::mcp_host::ServerCfg { name: name.clone(), command: m.command, url: m.url, env: m.env, env_pass: m.env_pass, builtin: false, filter: Default::default() });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// a temp home with `user` as its config, and a project with `project` as its `.elisa/config.toml`
+    fn load(tag: &str, user: &str, project: &str) -> Config {
+        let d = std::env::temp_dir().join(format!("elisa-config-unit-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (home, proj) = (d.join("home"), d.join("proj"));
+        std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
+        std::fs::create_dir_all(proj.join(".elisa")).unwrap();
+        std::fs::write(home.join(".config/elisa/config.toml"), user).unwrap();
+        if !project.is_empty() { std::fs::write(proj.join(".elisa/config.toml"), project).unwrap(); }
+        let c = Config::load_from(&proj, Some(home), |_| None).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        c
+    }
+
+    #[test]
+    fn tool_filters_for_user_and_builtin_servers() {
+        let c = load("filters", "[mcp.browser]\ncommand = [\"npx\", \"pw\"]\ntools = [\"navigate\", \"browser_click\"]\nexclude = [\"click\"]\n\
+            [mcp.sec]\nexclude = [\"deps\"]\n[mcp.web]\ntools = [\"search\"]\n[mcp.nocmd]\ntools = [\"x\"]\n", "");
+        let b = &c.mcp_filter["browser"];
+        assert_eq!(b.allow, [vec!["navigate".to_string(), "browser_click".into()]]);
+        assert!(b.allows("browser", "browser_navigate") && !b.allows("browser", "browser_click"));
+        assert_eq!(c.mcp_filter["sec"].deny, ["deps"]);
+        assert!(!c.mcp_filter["sec"].allows("sec", "sec_deps") && c.mcp_filter["sec"].allows("sec", "sec_jwt"));
+        assert!(c.mcp_filter["web"].allows("web", "web_search") && !c.mcp_filter["web"].allows("web", "web_fetch"));
+        // built-ins take a filter without a command; the server list holds only the user server
+        assert_eq!(c.mcp.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["browser"]);
+        assert_eq!(c.notes.len(), 1, "{:?}", c.notes);
+        assert!(c.notes[0].contains("mcp nocmd: not started — give command"), "{:?}", c.notes);
+        // a bad value skips that server with a note
+        let c = load("filters-bad", "[mcp.x]\ncommand = [\"x\"]\ntools = \"navigate\"\n", "");
+        assert!(c.mcp.is_empty() && c.notes[0].contains("tools must be a list of tool names"), "{:?}", c.notes);
+    }
+
+    #[test]
+    fn a_project_tool_filter_only_narrows() {
+        let user = "[mcp.browser]\ncommand = [\"npx\", \"pw\"]\ntools = [\"navigate\", \"click\", \"snapshot\"]\n";
+        let project = "[mcp.browser]\ntools = [\"navigate\", \"snapshot\", \"hover\"]\nexclude = [\"snapshot\"]\n[mcp.docs]\nexclude = [\"sheet\"]\n";
+        let c = load("narrow", user, project);
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        let b = &c.mcp_filter["browser"];
+        assert!(b.allows("browser", "browser_navigate"));
+        assert!(!b.allows("browser", "browser_click"), "the project's allowlist narrows");
+        assert!(!b.allows("browser", "browser_snapshot"), "the project's exclude adds");
+        assert!(!b.allows("browser", "browser_hover"), "a project cannot add back a tool the user left out");
+        assert!(!c.mcp_filter["docs"].allows("docs", "docs_sheet") && c.mcp_filter["docs"].allows("docs", "docs_pdf"));
+        // the server itself still comes from the user config only
+        assert_eq!(c.mcp.len(), 1);
+        // a project cannot widen by replacing: with no user filter its allowlist is the only one; enabled = true is noted
+        let c = load("narrow2", "[mcp.browser]\ncommand = [\"npx\"]\nexclude = [\"evaluate\"]\n", "[mcp.browser]\nenabled = true\ntools = [\"evaluate\", \"click\"]\n");
+        let b = &c.mcp_filter["browser"];
+        assert!(!b.allows("browser", "browser_evaluate") && b.allows("browser", "browser_click") && !b.allows("browser", "browser_hover"));
+        assert!(c.notes.iter().any(|n| n.contains("enabled = true ignored")), "{:?}", c.notes);
     }
 }

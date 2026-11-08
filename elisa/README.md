@@ -265,7 +265,8 @@ celebration. `--serve-jsonl` sends a `check` event (`src/jsonl.rs`).
 | `/clear` | summarise to `.elisa/notes.md`, then empty the history and drop the state card (the notes become background, as in a new session); later saves go to a new session file, so the pre-clear one stays resumable. The summary is **merged** into the earlier notes (what folds and earlier summaries recorded stays), and its file list comes from Elisa's own edit records (see "Notes"), never from the model's claim. The context always comes out smaller: notes longer than the conversation are cut by priority (the alias line, the model's own file list and the request quote go first; Elisa's file records, decisions and open tasks last), else the earlier notes stay, or none for a tiny chat |
 | `/reset` | empty the history without a summary (notes kept); the state card is dropped for later sessions too (`.elisa/card-reset`) |
 | `/compact` | summarise now and continue with notes + empty history |
-| `/context` | estimated tokens of system / tools / history, the fold point, whether the documents / security / reasoning tools are offered this turn, plus the gateway's real count |
+| `/context` | estimated tokens of system / tools / history, the fold point, the tools' tokens by owner (Elisa's own, each MCP server offered this turn), whether the documents / security / reasoning tools are offered this turn, plus the gateway's real count |
+| `/mcp [NAME]` | the MCP servers (see "MCP servers"): each one's state, transport, tools offered (of how many, when filtered), their token cost, pin state and tool names; `/mcp NAME`: one server with each tool's description and the tools its filter leaves out |
 | `/notes` | print the notes |
 | `/forget` | delete the notes |
 | `/resume` | load the last saved session (`.elisa/sessions/`) |
@@ -396,7 +397,41 @@ command = ["github-mcp-server", "stdio"]   # a stdio server, or:
 env = { GITHUB_TOKEN = "..." }             # extra environment for a command server
 # env_pass = ["HTTPS_PROXY"]               # variables it may inherit from Elisa's environment (see below)
 # enabled = false                          # switch it off without deleting it
+# tools = ["create_issue", "get_issue"]    # offer only these of its tools (see "Tool filter")
+# exclude = ["delete_repository"]          # never offer these
 ```
+
+- **Tool filter.** `tools = […]` (an allowlist) and / or `exclude = […]` (a denylist) under `[mcp.NAME]` decide which
+  of the server's tools the model is offered. A name is the server's own tool name (`browser_navigate`) or that name
+  without the server's prefix (`navigate` on `[mcp.browser]`); both match. With both keys a tool must be in `tools`
+  and not in `exclude`. A filtered-out tool is never offered, and a call to it is refused like any unknown tool (no
+  approval box; audit `denial` with `reason` `unknown_tool`). A name the server does not have gives one startup line
+  after its `tools/list` (`mcp browser: the server has no tool naviagte (…)`), not an error. Elisa's own servers take
+  the same keys without a command: `[mcp.sec] exclude = ["deps"]`, `[mcp.web] tools = ["search"]`. A project's
+  `.elisa/config.toml` may add `tools` / `exclude` too, but only to narrow: its `tools` is a second allowlist every
+  tool must also pass and its `exclude` adds to yours, so it can never bring back a tool your config left out. Pinning
+  hashes the server's whole tool list, so changing the filter is never a change of the server; a later change to a
+  tool the filter leaves out is not reported (it is, once that tool is offered), while a newly added tool always is.
+  `/mcp NAME` lists what the filter leaves out.
+- **Recommended Playwright set.** `@playwright/mcp` lists 25 `browser_*` tools, about 5.6K tokens of tool definitions
+  (measured with `/mcp` on 0.0.84; an older version was ~4.1K): too much for an 8K or 16K window. Browsing
+  and form work needs eight:
+
+  ```toml
+  [mcp.browser]
+  command = ["npx", "@playwright/mcp", "--headless", "--isolated"]
+  tools = ["navigate", "navigate_back", "snapshot", "click", "type", "press_key", "wait_for", "close"]
+  ```
+
+  That is about 1.3K tokens (the session's tools 7.3K → 3.0K with qwen3-vl:2b at 16K). Add `fill_form`,
+  `select_option` or `tabs` when a task needs them; leave out `run_code_unsafe` and `evaluate` (they run arbitrary
+  JavaScript) unless you mean it.
+- **`/mcp`** shows every server: name, built-in or user, state (running, failed to start with the reason, off by
+  config with the setting, or gated off this turn for the documents / security / reasoning servers), transport
+  (`stdio` + the command's file name, or `http` + the URL's host), tools offered (`8 of 25 tools` when filtered), the
+  approximate tokens of its offered tool definitions, its pin state (`pinned`, or `changed — run /trust NAME`) and its
+  tool names without the server prefix (the names `tools` / `exclude` take). `/mcp NAME` adds each tool's description
+  (first line, cut at 100 characters), the filter and the tools it leaves out.
 
 - **Untrusted results are fenced.** Output of `web_search` / `web_fetch`, of the documents server (PDFs and
   spreadsheets often come from outside) and of every MCP server from your config reaches the model as
@@ -542,8 +577,8 @@ env = { GITHUB_TOKEN = "..." }             # extra environment for a command ser
   in one project append under a file lock. The chain proves the log was not edited in place, not that it was not
   rewritten as a whole by someone with write access to your home folder.
 - **Only the user config adds servers** (they run programs). A project's `.elisa/config.toml` may only switch one
-  off with `[mcp.NAME] enabled = false`; a server it tries to add is never started, and `enabled = true` there does
-  nothing (both with a startup note).
+  off with `[mcp.NAME] enabled = false` or narrow its tools (`tools` / `exclude`, see "Tool filter"); a server it
+  tries to add is never started, and `enabled = true` there does nothing (both with a startup note).
 - **Server names** use letters, digits, `_` and `-`, and may not be one of Elisa's own tool or approval names
   (`read`, `write`, `edit`, `bash`, `glob`, `grep`, `outline`, `read_symbol`, `edit_symbol`). `web` and `docs` are
   allowed: each replaces its built-in server.

@@ -166,6 +166,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/context", "token use: system / tools / history / limit"),
     ("/notes", "show the saved notes"),
     ("/allow", "list always-allowed tools; /allow clear resets them"),
+    ("/mcp", "MCP servers: state, tools, token cost; /mcp NAME for one server's tools"),
     ("/trust", "accept an MCP server's changed tool list: /trust NAME (no name: list changed servers)"),
     ("/audit", "the last tool calls and approvals in the audit log, and its chain check: /audit [N]"),
     ("/forget", "delete the saved notes and unpin the pinned facts"),

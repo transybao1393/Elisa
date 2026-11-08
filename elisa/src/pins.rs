@@ -68,16 +68,25 @@ pub enum Seen {
     Changed(String),
 }
 
-/// What changed between two per-tool hash sets (`old` the pinned one).
-fn describe(old: &BTreeMap<String, (String, String)>, new: &BTreeMap<String, (String, String)>) -> String {
+/// What changed between two per-tool hash sets (`old` the pinned one), as parts like `added: a`. `counts`: the tools a
+/// change counts for (those the session offers; a server's tool filter leaves the others out); an added tool always
+/// counts, since it is news about the server.
+fn parts(old: &BTreeMap<String, (String, String)>, new: &BTreeMap<String, (String, String)>, counts: &dyn Fn(&str) -> bool) -> Vec<String> {
     let names = |f: &dyn Fn(&String) -> bool, m: &BTreeMap<String, (String, String)>| m.keys().filter(|k| f(k)).cloned().collect::<Vec<_>>();
     let added = names(&|k| !old.contains_key(k), new);
-    let removed = names(&|k| !new.contains_key(k), old);
-    let desc = names(&|k| old.get(k).is_some_and(|o| o.0 != new[k].0), new);
-    let schema = names(&|k| old.get(k).is_some_and(|o| o.1 != new[k].1), new);
-    let parts: Vec<String> = [("added", added), ("removed", removed), ("description changed", desc), ("input schema changed", schema)]
-        .into_iter().filter(|(_, v)| !v.is_empty()).map(|(w, v)| format!("{w}: {}", v.join(", "))).collect();
-    if parts.is_empty() { "the tool list changed".into() } else { parts.join(" · ") }
+    let removed = names(&|k| !new.contains_key(k) && counts(k), old);
+    let desc = names(&|k| counts(k) && old.get(k).is_some_and(|o| o.0 != new[k].0), new);
+    let schema = names(&|k| counts(k) && old.get(k).is_some_and(|o| o.1 != new[k].1), new);
+    [("added", added), ("removed", removed), ("description changed", desc), ("input schema changed", schema)]
+        .into_iter().filter(|(_, v)| !v.is_empty()).map(|(w, v)| format!("{w}: {}", v.join(", "))).collect()
+}
+
+/// What changed (see `parts`), or None when only tools that do not count changed. Called when the hashes differ.
+fn describe(old: &BTreeMap<String, (String, String)>, new: &BTreeMap<String, (String, String)>, counts: &dyn Fn(&str) -> bool) -> Option<String> {
+    let p = parts(old, new, counts);
+    if !p.is_empty() { return Some(p.join(" · ")); }
+    // nothing that counts: only filtered-out tools changed (or the hash changed without a named change)
+    parts(old, new, &|_| true).is_empty().then(|| "the tool list changed".to_string())
 }
 
 /// The pins file, loaded. Unreadable or broken: empty (every server is new again), and saving rewrites it.
@@ -97,7 +106,12 @@ impl Pins {
     }
 
     /// `list` against the pin under `key`; a new key is pinned (save to keep it). A changed list is NOT re-pinned.
-    pub fn check(&mut self, key: &str, list: &[Value]) -> Seen {
+    pub fn check(&mut self, key: &str, list: &[Value]) -> Seen { self.check_by(key, list, &|_| true) }
+
+    /// `check`, where a change counts only for the tools `counts` names (the ones offered) or a tool that is new. The
+    /// whole list is hashed and pinned, so a change of the tool filter alone is never a change of the server; a change
+    /// to a filtered-out tool is `Same` and is not re-pinned either (it warns once that tool is offered).
+    pub fn check_by(&mut self, key: &str, list: &[Value], counts: &dyn Fn(&str) -> bool) -> Seen {
         let Some(old) = self.map.get(key) else {
             self.map.insert(key.to_string(), Self::entry(list));
             return Seen::New;
@@ -106,7 +120,7 @@ impl Pins {
         let old_tools: BTreeMap<String, (String, String)> = old["tools"].as_object().map(|m| m.iter().map(|(n, h)| {
             (n.clone(), (h["description"].as_str().unwrap_or("").to_string(), h["inputSchema"].as_str().unwrap_or("").to_string()))
         }).collect()).unwrap_or_default();
-        Seen::Changed(describe(&old_tools, &tool_hashes(list)))
+        match describe(&old_tools, &tool_hashes(list), counts) { Some(d) => Seen::Changed(d), None => Seen::Same }
     }
 
     /// pin `list` under `key` (the user accepted it: `/trust`)
@@ -123,8 +137,12 @@ impl Pins {
 }
 
 /// What changed from the tool list `old` to `new` (both as listed), or None when they pin the same.
-pub fn changed(old: &[Value], new: &[Value]) -> Option<String> {
-    (list_hash(old) != list_hash(new)).then(|| describe(&tool_hashes(old), &tool_hashes(new)))
+pub fn changed(old: &[Value], new: &[Value]) -> Option<String> { changed_by(old, new, &|_| true) }
+
+/// `changed`, counting only the tools `counts` names and new ones (see `Pins::check_by`)
+pub fn changed_by(old: &[Value], new: &[Value], counts: &dyn Fn(&str) -> bool) -> Option<String> {
+    if list_hash(old) == list_hash(new) { return None; }
+    describe(&tool_hashes(old), &tool_hashes(new), counts)
 }
 
 #[cfg(test)]
@@ -152,5 +170,22 @@ mod tests {
         new[1]["inputSchema"]["properties"]["b"] = json!({"type": "number"});
         assert_eq!(changed(&old, &new).unwrap(), "added: w · removed: z · description changed: x · input schema changed: y");
         assert_eq!(changed(&old, &old), None);
+    }
+
+    #[test]
+    fn changes_to_filtered_out_tools_do_not_count_but_new_tools_do() {
+        let old = [tool("x", "one"), tool("y", "two")];
+        let offered = |n: &str| n == "x";
+        // y is filtered out: its change does not count
+        assert_eq!(changed_by(&old, &[tool("x", "one"), tool("y", "evil")], &offered), None);
+        assert_eq!(changed_by(&old, &[tool("x", "one")], &offered), None, "a filtered-out tool removed");
+        assert_eq!(changed_by(&old, &[tool("x", "evil"), tool("y", "two")], &offered).unwrap(), "description changed: x");
+        assert_eq!(changed_by(&old, &[tool("x", "one"), tool("y", "two"), tool("z", "new")], &offered).unwrap(), "added: z");
+        // the pins file: the whole list is pinned; a filtered-out change is Same and not re-pinned
+        let d = std::env::temp_dir().join(format!("elisa-pins-unit-{}", std::process::id()));
+        let mut p = Pins { path: d.join("p.json"), map: Map::new() };
+        assert_eq!(p.check_by("k", &old, &offered), Seen::New);
+        assert_eq!(p.check_by("k", &[tool("x", "one"), tool("y", "evil")], &offered), Seen::Same);
+        assert_eq!(p.check("k", &[tool("x", "one"), tool("y", "evil")]), Seen::Changed("description changed: y".into()), "still pinned as it was");
     }
 }

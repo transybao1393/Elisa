@@ -25,6 +25,54 @@ pub struct ServerCfg {
     pub env_pass: Vec<String>,
     /// one of Elisa's own servers (`builtin_*`): exempt from tool-list pinning (`pins.rs`)
     pub builtin: bool,
+    /// which of its tools are offered (config `tools = […]` / `exclude = […]`); the rest are never offered and a call
+    /// to one is refused like any unknown tool
+    pub filter: ToolFilter,
+}
+
+/// A server's tool filter: config `tools = ["navigate", …]` (allowlist) and / or `exclude = ["take_screenshot", …]`
+/// (denylist) under `[mcp.NAME]`. A name is the server's own tool name (`browser_navigate`) or that name without the
+/// server's prefix (`navigate` on server `browser`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolFilter {
+    /// allowlists: a tool is offered only if every one names it (the user config sets one; a project config can add
+    /// another, which only narrows: it never brings back a tool the user config left out)
+    pub allow: Vec<Vec<String>>,
+    pub deny: Vec<String>,
+}
+
+impl ToolFilter {
+    pub fn is_empty(&self) -> bool { self.allow.is_empty() && self.deny.is_empty() }
+
+    /// `want` (a configured name) names `remote` (the server's tool name): equal, or equal once the server's prefix
+    /// (`SERVER_`) is taken off either side
+    pub fn names(server: &str, want: &str, remote: &str) -> bool {
+        let p = format!("{server}_");
+        want == remote || remote.strip_prefix(&p) == Some(want) || want.strip_prefix(&p) == Some(remote)
+    }
+
+    /// the server's tool `remote` is offered
+    pub fn allows(&self, server: &str, remote: &str) -> bool {
+        self.allow.iter().all(|l| l.iter().any(|w| Self::names(server, w, remote)))
+            && !self.deny.iter().any(|w| Self::names(server, w, remote))
+    }
+
+    /// the configured names that name none of `remotes` (each once, in config order)
+    pub fn unknown(&self, server: &str, remotes: &[&str]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for w in self.allow.iter().flatten().chain(&self.deny) {
+            if !remotes.iter().any(|r| Self::names(server, w, r)) && !out.contains(w) { out.push(w.clone()); }
+        }
+        out
+    }
+
+    /// as config: `tools = [a, b] · exclude = [c]` ("" when there is no filter)
+    pub fn describe(&self) -> String {
+        let l = |v: &[String]| format!("[{}]", v.join(", "));
+        let mut parts: Vec<String> = self.allow.iter().map(|a| format!("tools = {}", l(a))).collect();
+        if !self.deny.is_empty() { parts.push(format!("exclude = {}", l(&self.deny))); }
+        parts.join(" · ")
+    }
 }
 
 /// A command server's environment on top of the allowlist: its `env_pass` names with their values from Elisa's
@@ -129,10 +177,14 @@ pub struct Host {
     setup: Duration,
     /// the pins file, once `check_pins` ran (None: no pinning)
     pins: Option<PathBuf>,
+    /// the servers that did not start, and why (`/mcp`)
+    down: Vec<(ServerCfg, String)>,
+    /// tool-filter names a server does not have (one note per server, `filter_notes`)
+    filter_notes: Vec<String>,
 }
 
 impl Default for Host {
-    fn default() -> Self { Host { servers: Vec::new(), setup: SETUP_TIMEOUT, pins: None } }
+    fn default() -> Self { Host { servers: Vec::new(), setup: SETUP_TIMEOUT, pins: None, down: Vec::new(), filter_notes: Vec::new() } }
 }
 
 /// Stops every server, in parallel (each may take up to `mcp::STOP_GRACE` + 0.5 s to stop by itself), and logs it.
@@ -166,13 +218,14 @@ fn exposed_name(server: &str, tool: &str, taken: &dyn Fn(&str) -> bool, used: &H
     }).find(|n| free(n)).unwrap_or(base)
 }
 
-/// The tools of one server's `tools/list`, named (see `exposed_name`; `bare`: a tool keeps its own name while that is
-/// free, for the built-in reasoning server's `think` / `calc`), the names added to `used`.
-fn tools_of(server: &str, list: &[Value], taken: &dyn Fn(&str) -> bool, used: &mut HashSet<String>, bare: bool) -> Vec<Tool> {
+/// The tools of one server's `tools/list` that its filter lets through, named (see `exposed_name`; `bare`: a tool
+/// keeps its own name while that is free, for the built-in reasoning server's `think` / `calc`), the names added to
+/// `used`. A filtered-out tool gets no name at all: it is never offered, and a call to it is an unknown tool.
+fn tools_of(server: &str, list: &[Value], taken: &dyn Fn(&str) -> bool, used: &mut HashSet<String>, bare: bool, filter: &ToolFilter) -> Vec<Tool> {
     let mut tools: Vec<Tool> = Vec::new();
     for t in list {
         let Some(remote) = t["name"].as_str() else { continue };
-        if tools.iter().any(|x| x.remote == remote) { continue; }
+        if tools.iter().any(|x| x.remote == remote) || !filter.allows(server, remote) { continue; }
         let own = sanitize(remote);
         let exposed = if bare && own == remote && !taken(&own) && !used.contains(&own) { own } else { exposed_name(server, remote, taken, used) };
         used.insert(exposed.clone());
@@ -187,6 +240,43 @@ fn tools_of(server: &str, list: &[Value], taken: &dyn Fn(&str) -> bool, used: &m
 fn remote_names(list: &[Value]) -> HashSet<String> {
     list.iter().filter_map(|t| t["name"].as_str().map(String::from)).collect()
 }
+
+/// a tool name without its server's prefix (`browser_navigate` → `navigate`), as a tool filter may name it
+fn short<'a>(server: &str, name: &'a str) -> &'a str {
+    name.strip_prefix(server).and_then(|r| r.strip_prefix('_')).filter(|r| !r.is_empty()).unwrap_or(name)
+}
+
+/// how a server is reached: `stdio npx` (the command's file name) or `http example.com` (the URL's host)
+fn transport(c: &ServerCfg) -> String {
+    if !c.url.is_empty() { return format!("http {}", crate::provider::host(&c.url)); }
+    let prog = c.command.first().map(|p| Path::new(p).file_name().map_or(p.clone(), |f| f.to_string_lossy().into_owned())).unwrap_or_default();
+    format!("stdio {prog}")
+}
+
+/// `words` joined with ", " in lines of at most `width` characters, each starting with `indent`
+fn wrap(words: &[String], indent: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut line = String::new();
+    for (i, w) in words.iter().enumerate() {
+        let piece = if i + 1 < words.len() { format!("{w},") } else { w.clone() };
+        if !line.is_empty() && indent.len() + line.len() + 1 + piece.len() > width {
+            out.push_str(&format!("{indent}{line}\n"));
+            line.clear();
+        }
+        if !line.is_empty() { line.push(' '); }
+        line.push_str(&piece);
+    }
+    if !line.is_empty() { out.push_str(&format!("{indent}{line}\n")); }
+    out
+}
+
+/// A server that is not running this session, for `/mcp`: switched off by config (`why` says by what).
+pub struct Off { pub name: String, pub builtin: bool, pub why: String }
+
+/// the width `/mcp` wraps tool names at (the app and the TUI wrap longer lines themselves)
+const REPORT_WIDTH: usize = 78;
+/// a tool description in `/mcp NAME`: its first line, at most this many characters
+const DESC_CHARS: usize = 100;
 
 impl Server {
     /// A new process / session for a stopped server, its tools listed again. The names stay; a tool it no longer
@@ -204,8 +294,10 @@ impl Server {
         let (conn, list) = r?;
         let have = remote_names(&list);
         for t in &mut self.tools { t.live = have.contains(&t.remote); }
-        // a pinned server that came back with other tools: it asks on every call from now on (`/trust` accepts)
-        if let Some(d) = self.pinned.as_ref().and_then(|old| crate::pins::changed(old, &list)) {
+        // a pinned server that came back with other tools: it asks on every call from now on (`/trust` accepts); a
+        // change to a tool its filter leaves out does not count
+        let (name, filter) = (&self.cfg.name, &self.cfg.filter);
+        if let Some(d) = self.pinned.as_ref().and_then(|old| crate::pins::changed_by(old, &list, &|t| filter.allows(name, t))) {
             if !self.untrusted { self.note = Some(changed_note(&self.cfg.name, &d)); }
             self.untrusted = true;
         }
@@ -262,7 +354,8 @@ impl Host {
             (rx, spawned.err())
         }).collect();
         let deadline = Instant::now() + setup + GRACE;
-        let mut host = Host { servers: Vec::new(), setup, pins: None };
+        let mut host = Host::default();
+        host.setup = setup;
         let mut notes = Vec::new();
         let mut used = HashSet::new();
         for (c, (rx, spawn_err)) in cfgs.iter().zip(pending) {
@@ -275,9 +368,18 @@ impl Host {
                 },
             };
             match r {
-                Err(e) => notes.push(format!("mcp {}: not started: {e}", c.name)),
+                Err(e) => {
+                    notes.push(format!("mcp {}: not started: {e}", c.name));
+                    host.down.push((c.clone(), e));
+                }
                 Ok((conn, list)) => {
-                    let tools = tools_of(&c.name, &list, taken, &mut used, is_builtin_reason(c));
+                    let tools = tools_of(&c.name, &list, taken, &mut used, is_builtin_reason(c), &c.filter);
+                    let remotes: Vec<&str> = list.iter().filter_map(|t| t["name"].as_str()).collect();
+                    let unknown = c.filter.unknown(&c.name, &remotes);
+                    if !unknown.is_empty() {
+                        host.filter_notes.push(format!("mcp {}: the server has no tool {} (named in its tools / exclude list; /mcp {} lists its tools)",
+                            c.name, unknown.join(", "), c.name));
+                    }
                     host.servers.push(Server { cfg: c.clone(), conn: Some(conn), tools, failed: None, cancelled: false, list,
                         pinned: None, untrusted: false, note: None, audit: crate::audit::Log::default() });
                 }
@@ -302,7 +404,10 @@ impl Host {
         let mut pins = Pins::load(path);
         let (mut notes, mut dirty) = (Vec::new(), false);
         for s in self.servers.iter_mut().filter(|s| !s.cfg.builtin) {
-            match pins.check(&crate::pins::key(&s.cfg.name, &s.cfg.command, &s.cfg.url), &s.list) {
+            // the whole tool list is pinned (a filter change is no server change); a change counts only for the tools
+            // the filter offers, or a new one
+            let (name, filter) = (&s.cfg.name, &s.cfg.filter);
+            match pins.check_by(&crate::pins::key(name, &s.cfg.command, &s.cfg.url), &s.list, &|t| filter.allows(name, t)) {
                 Seen::New => {
                     dirty = true;
                     s.pinned = Some(s.list.clone());
@@ -349,9 +454,99 @@ impl Host {
         self.servers.iter().find(|s| s.tools.iter().any(|t| t.exposed == name)).map(|s| s.cfg.name.as_str())
     }
 
-    /// one line per server for the startup info: `mcp web: web_search, web_fetch`
-    pub fn lines(&self) -> Vec<String> {
-        self.servers.iter().map(|s| format!("mcp {}: {}", s.cfg.name, s.tools.iter().map(|t| t.exposed.as_str()).collect::<Vec<_>>().join(", "))).collect()
+    /// tool-filter names a server does not have, one note per server (shown at startup)
+    pub fn filter_notes(&self) -> &[String] { &self.filter_notes }
+
+    /// a server of this name runs (or ran) in this session
+    pub fn running(&self, server: &str) -> bool { self.servers.iter().any(|s| s.cfg.name == server) }
+
+    /// one of the built-in gated servers (`docs`, `sec`) runs in this session
+    pub fn has_gated(&self) -> bool { self.servers.iter().any(|s| s.cfg.builtin && crate::mcp_reason::GATED.contains(&s.cfg.name.as_str())) }
+
+    /// estimated prompt tokens of these tool definitions, as the request carries them
+    fn defs_tokens<'a>(defs: impl Iterator<Item = &'a ToolDef>) -> usize {
+        crate::context::estimate_tokens(&serde_json::to_string(&defs.collect::<Vec<_>>()).unwrap_or_default())
+    }
+
+    /// The first line of a running server's `/mcp` entry: `browser · user · running · stdio npx · 8 of 22 tools ·
+    /// ~1.0K tokens · pinned`. `off_turn`: a built-in server's tools are left out of this turn (the relevance gate).
+    fn head(&self, s: &Server, off_turn: bool) -> String {
+        let state = match (&s.conn, &s.failed) {
+            (_, Some(e)) => format!("stopped, restart failed: {e}"),
+            (None, None) => "stopped (restarts on its next call)".into(),
+            _ if off_turn => "gated off this turn".into(),
+            _ => "running".into(),
+        };
+        let offered: Vec<&Tool> = s.tools.iter().filter(|t| t.live).collect();
+        let total = remote_names(&s.list).len();
+        let count = if s.cfg.filter.is_empty() && offered.len() == total { format!("{total} tool{}", if total == 1 { "" } else { "s" }) }
+            else { format!("{} of {total} tools", offered.len()) };
+        let mut parts = vec![s.cfg.name.clone(), if s.cfg.builtin { "built-in" } else { "user" }.into(), state, transport(&s.cfg), count,
+            format!("~{} tokens", crate::ui::k(Self::defs_tokens(offered.iter().map(|t| &t.def))))];
+        if !s.cfg.builtin {
+            parts.push(if s.untrusted { format!("changed — run /trust {}", s.cfg.name) } else if self.pins.is_some() { "pinned".into() } else { "not pinned".into() });
+        }
+        parts.join(" · ")
+    }
+
+    /// `/mcp`: every MCP server, one entry each: its head line (see `head`), then its offered tools (short names,
+    /// wrapped). Then the servers that failed to start and those switched off (`off`). `off_turn(name)`: that built-in
+    /// server's tools are not offered this turn.
+    pub fn report(&self, off: &[Off], off_turn: &dyn Fn(&str) -> bool) -> String {
+        let mut out = String::new();
+        let running = self.servers.iter().filter(|s| s.conn.is_some() && s.failed.is_none()).count();
+        let mut counts = vec![format!("{running} running")];
+        if !self.down.is_empty() { counts.push(format!("{} failed", self.down.len())); }
+        if !off.is_empty() { counts.push(format!("{} off", off.len())); }
+        out.push_str(&format!("MCP servers: {}\n", counts.join(" · ")));
+        for s in &self.servers {
+            out.push_str(&self.head(s, s.cfg.builtin && off_turn(&s.cfg.name)));
+            out.push('\n');
+            let names: Vec<String> = s.tools.iter().filter(|t| t.live).map(|t| short(&s.cfg.name, &t.exposed).to_string()).collect();
+            out.push_str(&wrap(&names, "  ", REPORT_WIDTH));
+        }
+        for (c, e) in &self.down {
+            out.push_str(&format!("{} · {} · failed to start: {e} · {}\n", c.name, if c.builtin { "built-in" } else { "user" }, transport(c)));
+        }
+        for o in off {
+            out.push_str(&format!("{} · {} · off by config ({})\n", o.name, if o.builtin { "built-in" } else { "user" }, o.why));
+        }
+        out.push_str("/mcp NAME: one server's tools with their descriptions");
+        out
+    }
+
+    /// `/mcp NAME`: one server's head line, its filter, each offered tool with its description (first line, cut), and
+    /// the tools its filter leaves out. Err: no server of that name (the names there are).
+    pub fn report_one(&self, name: &str, off: &[Off], off_turn: &dyn Fn(&str) -> bool) -> Result<String, String> {
+        if let Some(s) = self.servers.iter().find(|s| s.cfg.name == name) {
+            let mut out = self.head(s, s.cfg.builtin && off_turn(name));
+            out.push('\n');
+            if !s.cfg.filter.is_empty() { out.push_str(&format!("  filter: {}\n", s.cfg.filter.describe())); }
+            for t in s.tools.iter().filter(|t| t.live) {
+                let first = t.def.description.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+                let d = if first.chars().count() > DESC_CHARS { format!("{}…", first.chars().take(DESC_CHARS - 1).collect::<String>().trim_end()) } else { first.to_string() };
+                out.push_str(&format!("  {} — {d}\n", short(name, &t.exposed)));
+            }
+            let mut left: Vec<String> = Vec::new();
+            for r in s.list.iter().filter_map(|t| t["name"].as_str()) {
+                let r = short(name, r).to_string();
+                if !s.tools.iter().any(|t| short(name, &t.remote) == r) && !left.contains(&r) { left.push(r); }
+            }
+            if !left.is_empty() {
+                out.push_str(&format!("  not offered (filter), {}:\n", left.len()));
+                out.push_str(&wrap(&left, "    ", REPORT_WIDTH));
+            }
+            return Ok(out.trim_end().to_string());
+        }
+        if let Some((c, e)) = self.down.iter().find(|(c, _)| c.name == name) {
+            return Ok(format!("{name} · {} · failed to start: {e} · {}", if c.builtin { "built-in" } else { "user" }, transport(c)));
+        }
+        if let Some(o) = off.iter().find(|o| o.name == name) {
+            return Ok(format!("{name} · {} · off by config ({})", if o.builtin { "built-in" } else { "user" }, o.why));
+        }
+        let all: Vec<&str> = self.servers.iter().map(|s| s.cfg.name.as_str()).chain(self.down.iter().map(|(c, _)| c.name.as_str()))
+            .chain(off.iter().map(|o| o.name.as_str())).collect();
+        Err(format!("no MCP server {name:?} (servers: {})", if all.is_empty() { "none".to_string() } else { all.join(", ") }))
     }
 
     /// a tool of the built-in reasoning server: no side effects, so it runs without asking, and the session offers
@@ -370,10 +565,7 @@ impl Host {
 
     /// Estimated prompt tokens of each server's tool definitions (as the request carries them), largest first.
     pub fn costs(&self) -> Vec<(String, usize)> {
-        let mut v: Vec<(String, usize)> = self.servers.iter().map(|s| {
-            let defs: Vec<&ToolDef> = s.tools.iter().map(|t| &t.def).collect();
-            (s.cfg.name.clone(), crate::context::estimate_tokens(&serde_json::to_string(&defs).unwrap_or_default()))
-        }).collect();
+        let mut v: Vec<(String, usize)> = self.servers.iter().map(|s| (s.cfg.name.clone(), Self::defs_tokens(s.tools.iter().map(|t| &t.def)))).collect();
         v.sort_by_key(|x| std::cmp::Reverse(x.1));
         v
     }
@@ -470,6 +662,57 @@ mod tests {
         assert_eq!(c.env, [("BRAVE_API_KEY".to_string(), "sekret-123".to_string())]);
         // other engines get no key
         assert!(builtin_web("duckduckgo", "", "sekret-123").env.is_empty());
+    }
+
+    fn f(allow: &[&[&str]], deny: &[&str]) -> ToolFilter {
+        ToolFilter { allow: allow.iter().map(|l| l.iter().map(|s| s.to_string()).collect()).collect(), deny: deny.iter().map(|s| s.to_string()).collect() }
+    }
+
+    #[test]
+    fn filter_names_match_with_and_without_the_server_prefix() {
+        assert!(ToolFilter::names("browser", "navigate", "browser_navigate"));
+        assert!(ToolFilter::names("browser", "browser_navigate", "browser_navigate"));
+        // a server whose tools carry no prefix: the prefixed form (as the model sees it) matches too
+        assert!(ToolFilter::names("github", "github_create_issue", "create_issue"));
+        assert!(ToolFilter::names("github", "create_issue", "create_issue"));
+        assert!(!ToolFilter::names("browser", "navigate", "browser_navigate_back"));
+        assert!(!ToolFilter::names("browser", "back", "browser_navigate_back"));
+        assert!(!ToolFilter::names("other", "navigate", "browser_navigate"));
+    }
+
+    #[test]
+    fn allow_and_deny_together_and_every_allowlist_must_pass() {
+        assert!(f(&[], &[]).allows("b", "b_anything") && f(&[], &[]).is_empty());
+        let both = f(&[&["navigate", "b_click", "snapshot"]], &["snapshot"]);
+        assert!(both.allows("b", "b_navigate") && both.allows("b", "b_click"));
+        assert!(!both.allows("b", "b_snapshot"), "deny wins");
+        assert!(!both.allows("b", "b_hover"), "not in the allowlist");
+        // a second allowlist (a project's) only narrows: b_snapshot is not in the first, so it stays out
+        let narrowed = f(&[&["navigate", "click"], &["navigate", "snapshot"]], &[]);
+        assert!(narrowed.allows("b", "b_navigate"));
+        assert!(!narrowed.allows("b", "b_click") && !narrowed.allows("b", "b_snapshot"));
+        assert!(!f(&[&[]], &[]).allows("b", "b_navigate"), "an empty allowlist offers nothing");
+        assert_eq!(both.describe(), "tools = [navigate, b_click, snapshot] · exclude = [snapshot]");
+    }
+
+    #[test]
+    fn unknown_filter_names_are_listed_once() {
+        let x = f(&[&["navigate", "naviagte", "b_click"]], &["naviagte", "screenshot", "b_snapshot"]);
+        assert_eq!(x.unknown("b", &["b_navigate", "b_click", "b_snapshot"]), ["naviagte", "screenshot"]);
+    }
+
+    #[test]
+    fn tools_of_skips_filtered_tools_and_short_names_and_wrap() {
+        let list: Vec<Value> = ["b_navigate", "b_click", "b_hover"].iter().map(|n| json!({"name": n, "description": "d"})).collect();
+        let t = tools_of("b", &list, &|_| false, &mut HashSet::new(), false, &f(&[&["navigate", "hover"]], &["hover"]));
+        assert_eq!(t.iter().map(|t| t.exposed.as_str()).collect::<Vec<_>>(), ["b_navigate"]);
+        assert_eq!(short("browser", "browser_navigate"), "navigate");
+        assert_eq!(short("browser", "browser_"), "browser_");
+        assert_eq!(short("web", "mcp_web_search"), "mcp_web_search");
+        let words: Vec<String> = (0..12).map(|i| format!("tool_{i}")).collect();
+        let w = wrap(&words, "  ", 30);
+        assert!(w.lines().all(|l| l.len() <= 30 && l.starts_with("  ")), "{w}");
+        assert!(w.ends_with("tool_11\n") && w.contains("tool_0, tool_1,"), "{w}");
     }
 
     #[test]

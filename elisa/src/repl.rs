@@ -381,7 +381,7 @@ impl<'f> Session<'f> {
         }
     }
 
-    fn new(fe: &'f mut dyn Frontend, cfg: Config, client: Client, cwd: PathBuf, max_ctx: usize, interactive: bool, yes: bool) -> Session<'f> {
+    fn new(fe: &'f mut dyn Frontend, mut cfg: Config, client: Client, cwd: PathBuf, max_ctx: usize, interactive: bool, yes: bool) -> Session<'f> {
         let store = Store::new(&cwd);
         let tctx = ToolCtx { cwd: cwd.clone(), max_chars: cfg.tool_output_max_chars, bash_timeout_s: cfg.bash_timeout_s, ast_guard: cfg.ast_guard };
         crate::sandbox::set_mode(crate::sandbox::Mode::parse(&cfg.shell_sandbox).unwrap_or(crate::sandbox::Mode::platform_default()));
@@ -407,9 +407,13 @@ impl<'f> Session<'f> {
         // the reasoning tools for small models, last, unless `reason = "off"` or replaced (offered per turn: `reason_turn`)
         let reason_srv = cfg.reason != "off" && !cfg.mcp_off.iter().any(|n| n == crate::mcp_reason::NAME);
         if reason_srv && !servers.iter().any(|c| c.name == crate::mcp_reason::NAME) { servers.push(crate::mcp_host::builtin_reason()); }
+        // each server's tool filter (`[mcp.NAME] tools` / `exclude`; the built-in ones by their name too)
+        for c in &mut servers { if let Some(f) = cfg.mcp_filter.get(&c.name) { c.filter = f.clone(); } }
         let own: Vec<String> = tools::defs_for(true).into_iter().map(|d| d.name).collect();
         let (mut mcp, mcp_notes) = crate::mcp_host::Host::start(&servers, &|n| own.iter().any(|o| o == n));
         for n in &mcp_notes { fe.info(n); }
+        // filter names a server does not have: known only after its tools/list
+        for n in mcp.filter_notes() { fe.info(n); cfg.notes.push(n.clone()); }
         // the audit log (servers started, from here on every tool call) and the tool-list pins of the servers that
         // are not Elisa's own (`pins.rs`): a changed list warns, and that server asks on every call until /trust
         let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -530,15 +534,59 @@ impl<'f> Session<'f> {
     fn budget_warning(&mut self) {
         let (fixed, limit) = (self.fixed(), self.limit());
         if limit == 0 || fixed * 100 <= limit * FIXED_WARN_PCT { return; }
+        let parts = self.tool_costs();
+        let top: Vec<String> = parts.iter().take(3).map(|(n, t)| format!("{n} {}", ui::k(*t))).collect();
+        self.fe.info(&format!("context: system + tools take {} of the {} usable tokens ({}%) before any conversation; biggest: {} · \
+            a larger max_ctx, or fewer servers (web / sandbox = \"off\", [mcp.NAME] enabled = false), leaves more room",
+            ui::k(fixed), ui::k(limit), fixed * 100 / limit, top.join(", ")));
+    }
+
+    /// Estimated tokens of this request's tool definitions by owner: Elisa's own, then each MCP server whose tools
+    /// are offered this turn; largest first.
+    fn tool_costs(&self) -> Vec<(String, usize)> {
         let own: Vec<&ToolDef> = self.tools.iter().filter(|t| !self.mcp.owns(&t.name)).collect();
         let mut parts: Vec<(String, usize)> = self.mcp.costs().into_iter()
             .filter(|(srv, _)| self.tools.iter().any(|t| self.mcp.server_of(&t.name) == Some(srv.as_str()))).collect();
         parts.push(("Elisa's own tools".into(), estimate_tokens(&serde_json::to_string(&own).unwrap_or_default())));
         parts.sort_by_key(|p| std::cmp::Reverse(p.1));
-        let top: Vec<String> = parts.iter().take(3).map(|(n, t)| format!("{n} {}", ui::k(*t))).collect();
-        self.fe.info(&format!("context: system + tools take {} of the {} usable tokens ({}%) before any conversation; biggest: {} · \
-            a larger max_ctx, or fewer servers (web / sandbox = \"off\", [mcp.NAME] enabled = false), leaves more room",
-            ui::k(fixed), ui::k(limit), fixed * 100 / limit, top.join(", ")));
+        parts
+    }
+
+    /// The MCP servers that do not run because config switched them off (for `/mcp`): user servers with
+    /// `enabled = false`, and Elisa's own servers with the setting that keeps each out.
+    fn mcp_off(&self) -> Vec<crate::mcp_host::Off> {
+        use crate::mcp_host::Off;
+        let c = &self.cfg;
+        let off_by = |n: &str| c.mcp_off.iter().any(|o| o == n);
+        let mut v: Vec<Off> = Vec::new();
+        let builtins: [(&str, bool, String); 5] = [
+            ("web", c.web.is_empty() || c.web == "off", "web = \"off\"".into()),
+            ("docs", c.docs != "on", "docs = \"off\"".into()),
+            ("sec", c.security != "on", "security = \"off\"".into()),
+            ("run", c.sandbox != "colima", format!("sandbox = \"{}\"", c.sandbox)),
+            (crate::mcp_reason::NAME, c.reason == "off", "reason = \"off\"".into()),
+        ];
+        for (name, setting_off, why) in builtins.iter().cloned() {
+            if self.mcp.running(name) || c.mcp.iter().any(|s| s.name == name) { continue; }
+            if off_by(name) { v.push(Off { name: name.into(), builtin: true, why: format!("[mcp.{name}] enabled = false") }); }
+            else if setting_off { v.push(Off { name: name.into(), builtin: true, why }); }
+        }
+        for n in c.mcp_off.iter().filter(|n| !builtins.iter().any(|b| b.0 == n.as_str())) {
+            v.push(Off { name: n.clone(), builtin: false, why: format!("[mcp.{n}] enabled = false") });
+        }
+        v
+    }
+
+    /// `/mcp [NAME]`: the MCP servers, or one of them with its tools' descriptions (`mcp_host::Host::report`)
+    fn mcp_command(&mut self, name: &str) {
+        let off = self.mcp_off();
+        let (gate, reason_on) = (self.gate, self.reason_on);
+        let off_turn = |srv: &str| match srv { "docs" => !gate.0, "sec" => !gate.1, n if n == crate::mcp_reason::NAME => !reason_on, _ => false };
+        if name.is_empty() { return self.fe.info(&self.mcp.report(&off, &off_turn)); }
+        match self.mcp.report_one(name, &off, &off_turn) {
+            Ok(t) => self.fe.info(&t),
+            Err(e) => self.fe.error(&e),
+        }
     }
 
     fn banner(&mut self, resumed: Option<usize>) {
@@ -691,7 +739,9 @@ impl<'f> Session<'f> {
                     ui::k(self.limit()), ui::k(self.max_ctx), ui::k(self.reserve()), ui::k(self.fold_point()));
                 if let Some(l) = self.ast_stats.line() { self.fe.info(&l); }
                 self.fe.info(&msg);
-                if self.cfg.gate_tools == "auto" && self.mcp.lines().iter().any(|l| l.starts_with("mcp docs:") || l.starts_with("mcp sec:")) {
+                let by: Vec<String> = self.tool_costs().iter().map(|(n, t)| format!("{n} {}", ui::k(*t))).collect();
+                self.fe.info(&format!("tools by owner (this turn): {} · /mcp for each server", by.join(" · ")));
+                if self.cfg.gate_tools == "auto" && self.mcp.has_gated() {
                     self.fe.info(&format!("documents tools {} · security tools {} this turn (gate_tools = \"auto\": only on turns about them)",
                         if self.gate.0 { "offered" } else { "not offered" }, if self.gate.1 { "offered" } else { "not offered" }));
                 }
@@ -731,6 +781,7 @@ impl<'f> Session<'f> {
                 }
             }
             "/audit" => self.audit_command(line[cmd.len()..].trim()),
+            "/mcp" => self.mcp_command(line[cmd.len()..].trim()),
             "/allow" => {
                 if line[cmd.len()..].trim() == "clear" {
                     self.always.clear();
