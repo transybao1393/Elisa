@@ -34,6 +34,26 @@ const SEL_BG: Color = bc(P.sel);
 const OUTSIDE: &str = "\u{1}outside:";
 /// an MCP tool's approval: `{MCP}server\u{1}tool` (the box offers "always allow MCP server …")
 const MCP: &str = "\u{1}mcp:";
+/// a yes / no question (plugin setup, project trust), not a tool call: the summary is the question
+const QUESTION: &str = "\u{1}question:";
+/// after the tool: the pattern offered for "always allow this pattern" (`Frontend::approve_rule`)
+const RULE: char = '\u{2}';
+
+/// The choices of an approval box, in order (the last is always No): Yes / Always / [always allow PATTERN] / No, or
+/// Yes / No for a question.
+fn approve_choices(tool: &str) -> Vec<(String, Approval)> {
+    if tool.starts_with(QUESTION) { return vec![("Yes".into(), Approval::Yes), ("No".into(), Approval::No)]; }
+    let (tool, rule) = match tool.split_once(RULE) { Some((t, r)) => (t, Some(r)), None => (tool, None) };
+    let (tool, is_out) = match tool.strip_prefix(OUTSIDE) { Some(t) => (t, true), None => (tool, false) };
+    let (tool, server) = match tool.strip_prefix(MCP).and_then(|r| r.split_once('\u{1}')) { Some((s, t)) => (t, Some(s)), None => (tool, None) };
+    let always = if is_out { "Yes, allow these paths for this session".to_string() }
+        else if let Some(srv) = server { format!("Yes, always allow MCP server {srv} in this project") }
+        else { format!("Yes, always allow {} in this project", cap(tool)) };
+    let mut v = vec![((if is_out { "Yes, once" } else { "Yes" }).to_string(), Approval::Yes), (always, Approval::Always)];
+    if let Some(r) = rule { v.push((format!("Yes, and always allow {r} (saved to ~/.config/elisa/config.toml)"), Approval::Rule)); }
+    v.push(("No".into(), Approval::No));
+    v
+}
 const CODE_BG: Color = bc(P.bg2);
 const BG: Color = bc(P.bg);
 const BG2: Color = bc(P.bg2);
@@ -95,6 +115,13 @@ impl Frontend for ChannelFrontend {
     /// shown by the same permission box: the tool carries the OUTSIDE mark, the summary the outside line after `\n`
     fn approve_outside(&mut self, tool: &str, summary: &str, o: &Outside) -> Approval {
         self.ask(|t| Ev::Approve(format!("{OUTSIDE}{tool}"), format!("{summary}\n{}", o.line()), t), Approval::No)
+    }
+    fn approve_rule(&mut self, tool: &str, summary: &str, server: Option<&str>, rule: &str) -> Approval {
+        let tool = match server { Some(s) => format!("{MCP}{s}\u{1}{tool}"), None => tool.to_string() };
+        self.ask(|t| Ev::Approve(format!("{tool}{RULE}{rule}"), summary.into(), t), Approval::No)
+    }
+    fn ask_yes_no(&mut self, what: &str, question: &str) -> bool {
+        self.ask(|t| Ev::Approve(format!("{QUESTION}{what}"), question.into(), t), Approval::No) == Approval::Yes
     }
     fn info(&mut self, s: &str) { self.send(Ev::Info(s.into())) }
     fn error(&mut self, s: &str) { self.send(Ev::Error(s.into())) }
@@ -637,18 +664,23 @@ impl App {
                 if code == KeyCode::Esc && self.menu().is_empty() { self.cancel(); } else { self.edit(code, m); }
             }
             Some(Pending::Approve(t, s, mut i, tx)) => {
+                let choices = approve_choices(&t);
+                let n = choices.len();
                 let pick = match code {
-                    KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => { i = (i + 2) % 3; None }
-                    KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => { i = (i + 1) % 3; None }
+                    KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => { i = (i + n - 1) % n; None }
+                    KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => { i = (i + 1) % n; None }
                     KeyCode::Enter => Some(i),
-                    KeyCode::Char('1' | 'y' | 'Y') => Some(0),
-                    KeyCode::Char('2' | 'a' | 'A') => Some(1),
-                    KeyCode::Char('3' | 'n' | 'N') | KeyCode::Esc => Some(2),
+                    KeyCode::Char('y' | 'Y') => Some(0),
+                    KeyCode::Char('a' | 'A') => choices.iter().position(|c| c.1 == Approval::Always),
+                    KeyCode::Char('r' | 'R') => choices.iter().position(|c| c.1 == Approval::Rule),
+                    KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(n - 1),
+                    KeyCode::Char(c @ '1'..='9') => Some(c as usize - '1' as usize).filter(|&k| k < n),
                     _ => None,
                 };
                 match pick {
                     Some(p) => {
-                        let a = [Approval::Yes, Approval::Always, Approval::No][p];
+                        let a = choices[p].1;
+                        if a == Approval::Rule { self.flash("pattern saved"); }
                         if let Some(t) = self.last_act() { t.wait = false; t.t0 = Instant::now(); }
                         if a == Approval::Always { self.flash(if t.starts_with(OUTSIDE) { "allowed for this session" } else { "always allowed" }); }
                         let now = self.now();
@@ -1036,10 +1068,23 @@ impl App {
         f.render_widget(Paragraph::new(lines), Rect { y: r.y + th, height: h as u16, ..r });
     }
 
-    /// approval box body: title, optional Write/Edit detail, the three choices (`sel` highlighted)
+    /// approval box body: title, optional Write/Edit detail, the choices (`approve_choices`, `sel` highlighted)
     fn approve_lines(&self, tool: &str, summary: &str, sel: usize, w: usize) -> Vec<Line<'static>> {
-        let (tool, is_out) = match tool.strip_prefix(OUTSIDE) { Some(t) => (t, true), None => (tool, false) };
-        let (tool, server) = match tool.strip_prefix(MCP).and_then(|r| r.split_once('\u{1}')) { Some((s, t)) => (t, Some(s)), None => (tool, None) };
+        let choices = approve_choices(tool);
+        let choice_lines = |out: &mut Vec<Line<'static>>| for (i, (l, _)) in choices.iter().enumerate() {
+            let on = i == sel;
+            let sty = if on { st(FG).bg(SEL_BG).bold() } else { st(FG) };
+            let mut c = cells(if on { "› " } else { "  " }, if on { st(ACCENT).bg(SEL_BG).bold() } else { sty });
+            c.extend(cells(&format!("{}. {l}", i + 1), sty));
+            out.push(group(fit(c, w, if on { Style::new().bg(SEL_BG) } else { Style::new() })));
+        };
+        if tool.starts_with(QUESTION) {
+            let mut out: Vec<Line<'static>> = summary.lines().map(|l| group(cut(cells(l, st(TITLE).bold()), w))).collect();
+            choice_lines(&mut out);
+            return out;
+        }
+        let tool = tool.split_once(RULE).map_or(tool, |(t, _)| t);
+        let is_out = tool.starts_with(OUTSIDE);
         let (summary, where_) = summary.split_once('\n').unwrap_or((summary, ""));
         let act = self.entries.iter().rev().find_map(|i| match &i.e { Entry::Tool(a) => Some(&**a), _ => None });
         let (verb, target) = act.map_or_else(|| { let (n, t) = summary.split_once(' ').unwrap_or((summary, "")); (cap(n), one(t)) },
@@ -1059,18 +1104,12 @@ impl App {
             _ => None,
         };
         if let Some(d) = det { out.push(group(cut(cells(&d, st(DIM)), w))); }
-        if !where_.is_empty() { out.push(group(cut(cells(&format!("⚠ {where_}"), st(YELLOW).bold()), w))); }
-        let always = if is_out { "Yes, allow these paths for this session".to_string() }
-            else if let Some(srv) = server { format!("Yes, always allow MCP server {srv} in this project") }
-            else { format!("Yes, always allow {} in this project", cap(tool)) };
-        let yes = if is_out { "Yes, once" } else { "Yes" };
-        for (i, l) in [yes, &always, "No"].iter().enumerate() {
-            let on = i == sel;
-            let sty = if on { st(FG).bg(SEL_BG).bold() } else { st(FG) };
-            let mut c = cells(if on { "› " } else { "  " }, if on { st(ACCENT).bg(SEL_BG).bold() } else { sty });
-            c.extend(cells(&format!("{}. {l}", i + 1), sty));
-            out.push(group(fit(c, w, if on { Style::new().bg(SEL_BG) } else { Style::new() })));
+        // the summary's later lines: the outside line (⚠), or a note such as the rule that asked
+        for l in where_.lines().filter(|l| !l.trim().is_empty()) {
+            let warn = is_out && l.starts_with("outside the project");
+            out.push(group(cut(cells(&if warn { format!("⚠ {l}") } else { l.to_string() }, if warn { st(YELLOW).bold() } else { st(DIM) }), w)));
         }
+        choice_lines(&mut out);
         out
     }
 
@@ -2514,6 +2553,25 @@ mod watch_tests {
         a.on_ev(Ev::Approve(format!("{MCP}fake\u{1}fake_greet"), "fake_greet {}".into(), tx));
         let rows = screen(&mut a);
         assert!(rows.iter().any(|r| r.contains("2. Yes, always allow MCP server fake in this project")), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_rule_choice_and_a_question_box() {
+        let (mut a, _rx) = replied();
+        let (tx, arx) = mpsc::channel();
+        a.on_ev(Ev::Approve(format!("bash{RULE}shell(cargo test *)"), "bash cargo test\nasked by nothing".into(), tx));
+        let rows = screen(&mut a);
+        assert!(rows.iter().any(|r| r.contains("3. Yes, and always allow shell(cargo test *)")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("4. No")), "{rows:#?}");
+        a.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert_eq!(arx.recv().unwrap(), Approval::Rule);
+        let (tx, arx) = mpsc::channel();
+        a.on_ev(Ev::Approve(format!("{QUESTION}plugin add notes"), "Install plugin notes 1.0.0?".into(), tx));
+        let rows = screen(&mut a);
+        assert!(rows.iter().any(|r| r.contains("Install plugin notes 1.0.0?")) && rows.iter().any(|r| r.contains("2. No")), "{rows:#?}");
+        assert!(!rows.iter().any(|r| r.contains("always")), "{rows:#?}");
+        a.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(arx.recv().unwrap(), Approval::No);
     }
 
     #[test]

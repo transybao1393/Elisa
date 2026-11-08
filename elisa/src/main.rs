@@ -15,5 +15,7 @@ fn main() {
             None => { eprintln!("elisa --mcp-serve: name the server to serve (known: web, run, docs, reason, sec)"); 2 }
         });
     }
+    // a plugin's server (`elisa --plugin-run PLUGIN SERVER`): checks the plugin, then becomes its `docker run`
+    if a.first().map(String::as_str) == Some(elisa::plugins::RUN_ARG) { std::process::exit(elisa::plugins::run_server(&a[1..])); }
     std::process::exit(elisa::repl::main_entry());
 }

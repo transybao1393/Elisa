@@ -5,6 +5,10 @@ use crate::context::{self, estimate_messages, estimate_tokens, Store};
 use crate::checks;
 use crate::frontend::{Approval, Args, Banner, CheckEvent, CheckStatus, Frontend, Outside, Progress, COMMANDS};
 use crate::outside;
+use crate::perms::Level;
+use crate::commands::FileCommand;
+use crate::plugins;
+use serde_json::json;
 use crate::metrics;
 use crate::tools::{self, Access, ToolCtx};
 use crate::types::{Block, Message, Reply, Role, ToolDef};
@@ -23,7 +27,7 @@ pub static CANCEL: AtomicBool = AtomicBool::new(false);
 pub static AT_PROMPT: AtomicBool = AtomicBool::new(false);
 pub static ASKING: AtomicBool = AtomicBool::new(false);
 
-const USAGE: &str = "usage: elisa [-p PROMPT] [--yes] [--continue] [--provider NAME] [--base-url U [--type T]] [--model M] [--max-ctx N] [--cwd DIR] [--no-character] [--companion] [--serve-jsonl] [--no-checks] [--theme dark|light] [--demo-states [STATE]] [--version] [-h]\n       elisa eval [--suite NAME|all] [--case ID] [--model M] [--json FILE] [--keep]";
+const USAGE: &str = "usage: elisa [-p PROMPT] [--yes] [--continue] [--provider NAME] [--base-url U [--type T]] [--model M] [--max-ctx N] [--cwd DIR] [--no-character] [--companion] [--serve-jsonl] [--no-checks] [--theme dark|light] [--demo-states [STATE]] [--version] [-h]\n       elisa eval [--suite NAME|all] [--case ID] [--model M] [--json FILE] [--keep]\n       elisa plugin list | add PATH [--yes] | remove NAME | enable NAME | disable NAME | update NAME [--yes] | trust NAME [--yes]";
 const COMPACT_SYSTEM: &str = "You write short, concrete session notes for a coding agent.";
 const COMPACT_OUT: usize = 800;
 const TOOL_PREAMBLE: usize = 240;
@@ -161,6 +165,7 @@ pub fn main_entry() -> i32 {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = crate::provider::cli(&raw) { return code; }
     if raw.first().map(String::as_str) == Some("eval") { return crate::eval::cli(&raw[1..]); }
+    if matches!(raw.first().map(String::as_str), Some("plugin" | "plugins")) { return crate::plugins::cli(&raw[1..]); }
     let args = match parse_args() { Ok(a) => a, Err(c) => return c };
     if args.serve_jsonl { return crate::jsonl::run(args); }
     let tty = unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 };
@@ -360,6 +365,21 @@ struct Session<'f> {
     audit: crate::audit::Log,
     /// how the user answered the approval of the call in progress (None: no one was asked), for the audit log
     answer: Option<&'static str>,
+    /// the home folder (plugins, the user config a saved rule goes to); None without HOME
+    home: Option<PathBuf>,
+    /// the file slash commands in effect (`commands.rs`), merged from the user's, the plugins' and the project's
+    file_cmds: Vec<FileCommand>,
+    cmd_user: Vec<FileCommand>,
+    cmd_plugins: Vec<FileCommand>,
+    cmd_project: Vec<FileCommand>,
+    /// the installed plugins (as /plugin list shows them) and the (plugin, server) pairs running in this session
+    plugin_infos: Vec<plugins::Info>,
+    plugin_servers: Vec<(String, String)>,
+    /// the project's own commands and plugins, waiting for the one-time trust prompt (None: none, or loaded)
+    proj_pending: Option<plugins::Project>,
+    proj_infos: Vec<plugins::Info>,
+    /// the user said no to the project's trust prompt in this session: not asked again until /plugin trust project
+    proj_declined: bool,
 }
 
 struct ReqRun { ts: u64, t0: Instant, prompt: String }
@@ -404,12 +424,20 @@ impl<'f> Session<'f> {
         }
         // the code sandbox (`run_code`): only when the user switched it on (`sandbox = "colima"`)
         let run_on = cfg.sandbox == "colima" && !cfg.mcp_off.iter().any(|n| n == "run");
-        if run_on && !servers.iter().any(|c| c.name == "run") { servers.push(crate::mcp_host::builtin_run(cfg.sandbox_timeout_s)); }
+        if run_on && !servers.iter().any(|c| c.name == "run") { servers.push(crate::mcp_host::builtin_run(cfg.sandbox_timeout_s, cfg.sandbox_fetch_timeout_s)); }
         // the reasoning tools for small models, last, unless `reason = "off"` or replaced (offered per turn: `reason_turn`)
         let reason_srv = cfg.reason != "off" && !cfg.mcp_off.iter().any(|n| n == crate::mcp_reason::NAME);
         if reason_srv && !servers.iter().any(|c| c.name == crate::mcp_reason::NAME) { servers.push(crate::mcp_host::builtin_reason()); }
         // each server's tool filter (`[mcp.NAME] tools` / `exclude`; the built-in ones by their name too)
         for c in &mut servers { if let Some(f) = cfg.mcp_filter.get(&c.name) { c.filter = f.clone(); } }
+        // enabled plugins (`plugins.rs`): their servers next to the configured ones, their rules and commands
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let taken: Vec<String> = servers.iter().map(|c| c.name.clone()).chain(crate::config::BUILTIN_SERVERS.iter().map(|s| s.to_string())).collect();
+        let pl = home.as_ref().map(|h| plugins::load_user(h, &cwd, &|n| taken.iter().any(|t| t == n))).unwrap_or_default();
+        for n in &pl.notes { fe.info(n); }
+        for (lv, p, src) in &pl.rules { if let Err(e) = cfg.perms.add(*lv, p, src) { fe.info(&format!("{src}: rule {p:?} skipped: {e}")); } }
+        let plugin_servers: Vec<(String, String)> = pl.servers.iter().map(|(p, c)| (p.clone(), c.name.clone())).collect();
+        servers.extend(pl.servers.into_iter().map(|(_, c)| c));
         let own: Vec<String> = tools::defs_for(true).into_iter().map(|d| d.name).collect();
         let (mut mcp, mcp_notes) = crate::mcp_host::Host::start(&servers, &|n| own.iter().any(|o| o == n));
         for n in &mcp_notes { fe.info(n); }
@@ -417,7 +445,6 @@ impl<'f> Session<'f> {
         for n in mcp.filter_notes() { fe.info(n); cfg.notes.push(n.clone()); }
         // the audit log (servers started, from here on every tool call) and the tool-list pins of the servers that
         // are not Elisa's own (`pins.rs`): a changed list warns, and that server asks on every call until /trust
-        let home = std::env::var_os("HOME").map(PathBuf::from);
         let audit = match &home { Some(h) if cfg.audit == "on" => crate::audit::Log::open(h, &cwd), _ => crate::audit::Log::default() };
         for n in &mcp_notes { audit.note("server_start", &[("outcome", "error"), ("detail", n)]); }
         mcp.audit_to(&audit);
@@ -437,7 +464,12 @@ impl<'f> Session<'f> {
             req: None, stats: metrics::Stats::default(),
             card_log: Vec::new(), goal: None, user_req: String::new(), warm: Arc::new(AtomicU8::new(WARM_UNKNOWN)),
             reason_on: false, gate: (false, false), ledger: context::Ledger::default(), audit, answer: None,
+            home, file_cmds: Vec::new(), cmd_user: Vec::new(), cmd_plugins: pl.commands, cmd_project: Vec::new(),
+            plugin_infos: pl.infos, plugin_servers, proj_pending: None, proj_infos: Vec::new(), proj_declined: false,
         };
+        s.load_commands();
+        // the app's plugin pane: what is installed, from the start (nothing installed: no event; `/plugin list` asks)
+        if !s.plugin_infos.is_empty() || !s.proj_infos.is_empty() { s.plugins_event(); }
         s.outside_mode = outside::Mode::parse(&s.cfg.outside).unwrap_or(outside::Mode::Ask);
         if s.cfg.gate_tools == "off" { s.gate = (true, true); }
         s.rebuild_system();
@@ -482,7 +514,8 @@ impl<'f> Session<'f> {
     /// The `<untrusted>` fence source for a result of tool `name`, None when it is trusted (`untrusted::source`).
     fn untrusted_source(&self, name: &str, input: &serde_json::Value) -> Option<String> {
         let server = self.mcp.server_of(name);
-        let user = server.is_some_and(|s| self.cfg.mcp.iter().any(|c| c.name == s));
+        // a plugin's server is third-party code like a configured one
+        let user = server.is_some_and(|s| self.cfg.mcp.iter().any(|c| c.name == s) || self.plugin_servers.iter().any(|(_, n)| n == s));
         crate::untrusted::source(name, server, user, input)
     }
 
@@ -626,14 +659,21 @@ impl<'f> Session<'f> {
             let line = line.trim();
             if line.is_empty() { continue; }
             self.fe.user(line);
+            let mut prompt = line.to_string();
             if line.starts_with('/') {
-                let go_on = self.command(line);
-                self.fe.turn_done();
-                if !go_on { break; }
-                continue;
+                match self.expand_command(line) {
+                    Some(Some(p)) => prompt = p,
+                    Some(None) => { self.fe.turn_done(); continue; }
+                    None => {
+                        let go_on = self.command(line);
+                        self.fe.turn_done();
+                        if !go_on { break; }
+                        continue;
+                    }
+                }
             }
             self.req_begin(line);
-            let end = self.turn(line.to_string());
+            let end = self.turn(prompt);
             let outcome = end_name(&end);
             if let TurnEnd::Failed(e) = end { self.fe.error(&e); }
             self.save();
@@ -648,6 +688,12 @@ impl<'f> Session<'f> {
     }
 
     fn run_print(&mut self, prompt: String) -> i32 {
+        // `-p "/review src"`: a file command becomes its prompt (a project one needs its trust given before)
+        let prompt = match prompt.starts_with('/').then(|| self.expand_command(prompt.trim())).flatten() {
+            Some(Some(p)) => p,
+            Some(None) => return 1,
+            None => prompt,
+        };
         self.req_begin(&prompt);
         let end = self.turn(prompt);
         self.req_end(end_name(&end));
@@ -662,11 +708,277 @@ impl<'f> Session<'f> {
         0
     }
 
+    // ----- plugins, file commands, pattern rules (plugins.rs, commands.rs, perms.rs) -----
+
+    /// the user's config file, where "always allow this pattern" saves its rule
+    fn user_config(&self) -> Option<PathBuf> { self.home.as_ref().map(|h| h.join(".config/elisa/config.toml")) }
+
+    /// Startup: the user's command files, and the project's commands and plugins — loaded when the user trusted this
+    /// exact content before, else kept back until the trust prompt (asked lazily: the first time one of its commands
+    /// runs, or on `/plugin trust project`).
+    fn load_commands(&mut self) {
+        let mut notes = Vec::new();
+        if let Some(h) = &self.home { self.cmd_user = crate::commands::load_dir(&h.join(".elisa/commands"), &crate::commands::Source::User, &mut notes); }
+        if let Some(p) = plugins::load_project(&self.cwd) {
+            let trusted = self.home.as_ref().is_some_and(|h| plugins::project_trusted(h, &self.cwd, &p.hash));
+            if trusted { self.apply_project(p); } else {
+                self.fe.info(&format!("this project has its own commands or rules ({}); they load once you trust them: run one, or /plugin trust project",
+                    project_summary(&p)));
+                self.proj_infos = p.infos.clone();
+                self.proj_pending = Some(p);
+            }
+        }
+        for n in notes { self.fe.info(&n); }
+        let notes = self.merge_commands();
+        for n in notes { self.fe.info(&n); }
+    }
+
+    /// the file commands merged again (Elisa's own commands win a clash); the notes say what was left out
+    fn merge_commands(&mut self) -> Vec<String> {
+        let mut notes = Vec::new();
+        let lists = vec![self.cmd_user.clone(), self.cmd_plugins.clone(), self.cmd_project.clone()];
+        self.file_cmds = crate::commands::merge(lists, &builtin_command, &mut notes);
+        notes
+    }
+
+    /// a trusted project's commands and deny / ask rules, in effect from now on
+    fn apply_project(&mut self, p: plugins::Project) {
+        for (lv, pat, src) in &p.rules {
+            if let Err(e) = self.cfg.perms.add(*lv, pat, src) { self.fe.info(&format!("{src}: rule {pat:?} skipped: {e}")); }
+        }
+        for n in &p.notes { self.fe.info(n); }
+        self.cmd_project = p.commands;
+        self.proj_infos = p.infos.into_iter().map(|mut i| { i.trusted = true; i }).collect();
+    }
+
+    /// The one-time trust prompt for the project's commands and plugins: their full text, then yes / no. True: loaded.
+    fn trust_project(&mut self) -> bool {
+        let Some(p) = self.proj_pending.take() else { self.fe.info("this project has no commands or plugins waiting for trust"); return false };
+        let Some(home) = self.home.clone() else { self.fe.error("no home folder: the trust cannot be kept"); self.proj_pending = Some(p); return false };
+        if !self.interactive { self.fe.error("trusting a project's commands needs a person to say yes (interactive session)"); self.proj_pending = Some(p); return false; }
+        self.fe.info(&p.text);
+        self.fe.event("project_trust", &json!({"path": self.cwd.display().to_string(), "hash": p.hash, "text": p.text,
+            "commands": p.commands.iter().map(|c| json!({"name": c.name, "description": c.description, "source": c.source.kind()})).collect::<Vec<_>>(),
+            "rules": p.rules.iter().map(|(l, pat, src)| json!({"level": l.word(), "pattern": pat, "source": src})).collect::<Vec<_>>(),
+            "plugins": p.infos.iter().map(|i| i.name.clone()).collect::<Vec<_>>()}));
+        let yes = self.fe.ask_yes_no("project commands", "Trust this project's commands and rules? (kept in ~/.elisa; any change asks again)");
+        let path = self.cwd.display().to_string();
+        if !yes {
+            self.audit.note("plugin", &[("summary", "trust project"), ("outcome", "declined"), ("detail", &path)]);
+            self.fe.info("not trusted: the project's commands stay off (/plugin trust project to review again)");
+            self.proj_declined = true;
+            self.proj_pending = Some(p);
+            return false;
+        }
+        if let Err(e) = plugins::trust_project(&home, &self.cwd, &p.hash) { self.fe.error(&format!("the trust was not saved: {e}")); }
+        self.audit.note("plugin", &[("summary", "trust project"), ("outcome", "ok"), ("detail", &path)]);
+        self.proj_declined = false;
+        self.apply_project(p);
+        for n in self.merge_commands() { self.fe.info(&n); }
+        self.fe.info("project commands and rules loaded");
+        self.plugins_event();
+        true
+    }
+
+    /// A line that names a file command: the turn it becomes (Some(None): handled here, nothing to send — a declined
+    /// trust prompt). None: not a file command.
+    fn expand_command(&mut self, line: &str) -> Option<Option<String>> {
+        let (cmd, args) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        if builtin_command(cmd) { return None; }
+        if let Some(c) = self.file_cmds.iter().find(|c| c.name == cmd) { return Some(Some(c.prompt(args))); }
+        // a project command not trusted yet: the trust prompt first
+        if self.proj_pending.as_ref().is_some_and(|p| p.commands.iter().any(|c| c.name == cmd)) {
+            if self.proj_declined {
+                self.fe.error(&format!("{cmd} is a project command you have not trusted: /plugin trust project to review it"));
+                return Some(None);
+            }
+            if !self.trust_project() { return Some(None); }
+            return Some(self.file_cmds.iter().find(|c| c.name == cmd).map(|c| c.prompt(args)));
+        }
+        None
+    }
+
+    /// /help: Elisa's commands, then the file commands with where each comes from
+    fn help(&self) -> String {
+        let mut s = help_text();
+        if !self.file_cmds.is_empty() {
+            s.push_str("\nFile commands:\n");
+            for c in &self.file_cmds { s.push_str(&c.help_line()); s.push('\n'); }
+            s.pop();
+        }
+        if let Some(p) = &self.proj_pending {
+            s.push_str(&format!("\nProject commands waiting for trust: {}", p.commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(" ")));
+        }
+        s
+    }
+
+    /// every plugin, the user's and the project's
+    fn all_plugins(&mut self) -> Vec<plugins::Info> {
+        if let Some(h) = self.home.clone() { self.plugin_infos = plugins::load_user(&h, &self.cwd, &|_| false).infos; }
+        self.plugin_infos.iter().chain(&self.proj_infos).cloned().collect()
+    }
+
+    /// the `plugins` event (the app's plugin pane)
+    fn plugins_event(&mut self) {
+        let all = self.all_plugins();
+        let list: Vec<serde_json::Value> = all.iter().map(|i| {
+            let mut v = plugins::info_json(i);
+            // a running server's tool count and cost as this session sees them
+            if let Some(a) = v["servers"].as_array_mut() {
+                for s in a.iter_mut() {
+                    if let Some((n, t)) = s["name"].as_str().and_then(|n| self.mcp.server_tools(n).filter(|_| self.plugin_servers.iter().any(|(_, x)| x == n))) {
+                        s["tools"] = json!(n);
+                        s["tokens"] = json!(t);
+                        s["running"] = json!(true);
+                    }
+                }
+                let (tools, tokens) = a.iter().fold((0, 0), |(x, y), s| (x + s["tools"].as_u64().unwrap_or(0), y + s["tokens"].as_u64().unwrap_or(0)));
+                v["tools"] = json!(tools);
+                v["tokens"] = json!(tokens);
+            }
+            v
+        }).collect();
+        self.fe.event("plugins", &json!({"plugins": list}));
+    }
+
+    /// The enabled plugins' servers, rules and commands brought in line with what is installed: servers of plugins
+    /// that are gone or off stop, new ones start (`touched`: that plugin's servers restart either way).
+    fn reload_plugins(&mut self, touched: Option<&str>) {
+        let Some(home) = self.home.clone() else { return };
+        let config_names: Vec<String> = self.cfg.mcp.iter().map(|c| c.name.clone()).collect();
+        let running_other: Vec<String> = self.mcp_names().into_iter().filter(|n| !self.plugin_servers.iter().any(|(_, s)| s == n)).collect();
+        let taken = |n: &str| config_names.iter().any(|c| c == n) || running_other.iter().any(|c| c == n) || crate::config::BUILTIN_SERVERS.contains(&n);
+        let l = plugins::load_user(&home, &self.cwd, &taken);
+        let keep: Vec<(String, crate::mcp_host::ServerCfg)> = l.servers;
+        // stop: plugin servers no longer wanted, and the touched plugin's
+        let stop: Vec<String> = self.plugin_servers.iter()
+            .filter(|(p, s)| Some(p.as_str()) == touched || !keep.iter().any(|(kp, c)| kp == p && &c.name == s))
+            .map(|(_, s)| s.clone()).collect();
+        if !stop.is_empty() { self.mcp.remove(&stop); }
+        let own: Vec<String> = tools::defs_for(true).into_iter().map(|d| d.name).collect();
+        let start: Vec<crate::mcp_host::ServerCfg> = keep.iter().map(|(_, c)| c.clone()).collect();
+        for (warn, n) in self.mcp.extend(&start, &|n| own.iter().any(|o| o == n)) { if warn { self.fe.error(&n) } else { self.fe.info(&n) } }
+        self.plugin_servers = keep.iter().map(|(p, c)| (p.clone(), c.name.clone())).collect();
+        self.cfg.perms.rules.retain(|r| !r.source.starts_with("plugin "));
+        for (lv, p, src) in &l.rules { if let Err(e) = self.cfg.perms.add(*lv, p, src) { self.fe.info(&format!("{src}: rule {p:?} skipped: {e}")); } }
+        for n in &l.notes { self.fe.info(n); }
+        self.cmd_plugins = l.commands;
+        self.plugin_infos = l.infos;
+        for n in self.merge_commands() { self.fe.info(&n); }
+        self.rebuild_system();
+    }
+
+    fn mcp_names(&self) -> Vec<String> { self.mcp.costs().into_iter().map(|(n, _)| n).collect() }
+
+    /// one plugin operation's outcome: the app's `plugin_result` event, the audit line, and a line for the user
+    fn plugin_result(&mut self, op: &str, name: &str, r: Result<String, String>) {
+        let (ok, text) = match &r { Ok(t) => (true, t.clone()), Err(e) => (false, e.clone()) };
+        plugins::audit(&self.audit, op, name, if ok { "ok" } else if text == DECLINED { "declined" } else { "error" }, if ok { "" } else { &text });
+        if ok { self.fe.info(&text) } else { self.fe.error(&text) }
+        self.fe.event("plugin_result", &json!({"op": op, "name": name, "ok": ok, "text": text}));
+        if ok { self.plugins_event(); }
+    }
+
+    /// the setup screen: the preview text, the app's `plugin_preview` event, then yes / no. Err: why not.
+    fn plugin_setup(&mut self, op: &str, m: &plugins::Manifest, p: &plugins::Preview) -> Result<(), String> {
+        self.fe.info(&p.text);
+        self.fe.event("plugin_preview", &json!({"op": op, "name": m.name, "preview": p.json, "text": p.text}));
+        if !p.problems.is_empty() { return Err(format!("plugin {}: cannot {op} now — {}", m.name, p.problems.join("; "))); }
+        if !self.interactive { return Err(format!("plugin {}: a person has to approve the setup (run /plugin {op} in an interactive session, or elisa plugin {op} … --yes)", m.name)); }
+        let q = match op { "update" => format!("Update plugin {} to {}?", m.name, m.version), "trust" => format!("Trust plugin {}'s current files?", m.name),
+            _ => format!("Install plugin {} {}?", m.name, m.version) };
+        if self.fe.ask_yes_no(&format!("plugin {op} {}", m.name), &q) { Ok(()) } else { Err(DECLINED.into()) }
+    }
+
+    /// after an install or update: the servers started once to learn their tools and cost (written to the lock)
+    fn plugin_probe(&mut self, name: &str) -> String {
+        let Some(home) = self.home.clone() else { return String::new() };
+        let lines: Vec<String> = plugins::probe(&home, &self.cwd, name).into_iter().map(|(s, r)| match r {
+            Ok((n, t)) => format!("{s}: {n} tool{} · ~{} tokens", if n == 1 { "" } else { "s" }, ui::k(t)),
+            Err(e) => format!("{s}: did not start: {e}"),
+        }).collect();
+        lines.join("\n")
+    }
+
+    /// `/plugin list | add PATH | remove NAME | enable NAME | disable NAME | update NAME | trust NAME|project`
+    fn plugin_command(&mut self, arg: &str) {
+        let (op, rest) = arg.split_once(char::is_whitespace).map(|(a, b)| (a, b.trim())).unwrap_or((arg, ""));
+        let Some(home) = self.home.clone() else { self.fe.error("no home folder: plugins live in ~/.elisa/plugins"); return };
+        let need = |s: &mut Self, what: &str| { s.fe.error(&format!("usage: /plugin {op} {what}")); };
+        match op {
+            "" | "list" => {
+                let all = self.all_plugins();
+                self.fe.info(&plugins::list_text(&all));
+                self.plugins_event();
+            }
+            "add" => {
+                if rest.is_empty() { return need(self, "PATH"); }
+                let (m, src, p) = match plugins::prepare_add(&home, &self.cwd, rest) { Ok(x) => x, Err(e) => return self.plugin_result("add", rest, Err(e)) };
+                if let Err(e) = self.plugin_setup("add", &m, &p) { return self.plugin_result("add", &m.name, Err(e)); }
+                let fe = &mut *self.fe;
+                if let Err(e) = plugins::install(&home, &src, &m, &mut |l| fe.info(l)) { return self.plugin_result("add", &m.name, Err(e)); }
+                let probe = self.plugin_probe(&m.name);
+                self.reload_plugins(Some(&m.name));
+                let mut t = format!("plugin {} {} installed and on", m.name, m.version);
+                if !probe.is_empty() { t = format!("{probe}\n{t}"); }
+                self.plugin_result("add", &m.name, Ok(t));
+            }
+            "remove" => {
+                if rest.is_empty() { return need(self, "NAME"); }
+                let mine: Vec<String> = self.plugin_servers.iter().filter(|(p, _)| p == rest).map(|(_, s)| s.clone()).collect();
+                if !mine.is_empty() { self.mcp.remove(&mine); }
+                let r = plugins::remove(&home, rest).map(|notes| {
+                    let mut t = format!("plugin {rest} removed");
+                    for n in notes { t.push_str(&format!("\n{n}")); }
+                    t
+                });
+                self.reload_plugins(None);
+                self.plugin_result("remove", rest, r);
+            }
+            "enable" | "disable" => {
+                if rest.is_empty() { return need(self, "NAME"); }
+                let r = plugins::set_enabled(&home, rest, op == "enable");
+                if r.is_ok() { self.reload_plugins(Some(rest)); }
+                self.plugin_result(op, rest, r);
+            }
+            "update" => {
+                if rest.is_empty() { return need(self, "NAME"); }
+                let (m, src, p) = match plugins::prepare_update(&home, rest) { Ok(x) => x, Err(e) => return self.plugin_result("update", rest, Err(e)) };
+                if let Err(e) = self.plugin_setup("update", &m, &p) { return self.plugin_result("update", rest, Err(e)); }
+                let mine: Vec<String> = self.plugin_servers.iter().filter(|(pl, _)| pl == rest).map(|(_, s)| s.clone()).collect();
+                if !mine.is_empty() { self.mcp.remove(&mine); }
+                let fe = &mut *self.fe;
+                let r = plugins::update(&home, &src, &m, &mut |l| fe.info(l));
+                let probe = if r.is_ok() { self.plugin_probe(rest) } else { String::new() };
+                self.reload_plugins(Some(rest));
+                self.plugin_result("update", rest, r.map(|()| {
+                    let t = format!("plugin {rest} updated to {}", m.version);
+                    if probe.is_empty() { t } else { format!("{probe}\n{t}") }
+                }));
+            }
+            "trust" if rest == "project" => {
+                if self.proj_pending.is_none() { self.fe.info("this project has no commands or plugins waiting for trust"); return; }
+                self.proj_declined = false;
+                self.trust_project();
+            }
+            "trust" => {
+                if rest.is_empty() { return need(self, "NAME | project"); }
+                let (m, p) = match plugins::prepare_trust(&home, rest) { Ok(x) => x, Err(e) => return self.plugin_result("trust", rest, Err(e)) };
+                if let Err(e) = self.plugin_setup("trust", &m, &p) { return self.plugin_result("trust", rest, Err(e)); }
+                let r = plugins::trust(&home, rest);
+                if r.is_ok() { self.reload_plugins(Some(rest)); }
+                self.plugin_result("trust", rest, r);
+            }
+            _ => self.fe.error("usage: /plugin list | add PATH | remove NAME | enable NAME | disable NAME | update NAME | trust NAME|project"),
+        }
+    }
+
     /// Returns false to quit.
     fn command(&mut self, line: &str) -> bool {
         let cmd = line.split_whitespace().next().unwrap_or("");
         match cmd {
-            "/help" => self.fe.info(&help_text()),
+            "/help" => { let h = self.help(); self.fe.info(&h) }
+            "/plugin" | "/plugins" => self.plugin_command(line[cmd.len()..].trim()),
             "/exit" | "/quit" => return false,
             "/clear" | "/compact" => {
                 if self.history.is_empty() { self.fe.info("history is empty; notes unchanged"); return true; }
@@ -771,10 +1083,15 @@ impl<'f> Session<'f> {
             },
             "/trust" => {
                 let name = line[cmd.len()..].trim();
+                let changed_plugins: Vec<String> = self.home.clone().map(|h| self.all_plugins().into_iter()
+                    .filter(|i| i.source == "user" && !i.trusted && plugins::changed(&h, &i.name)).map(|i| i.name).collect()).unwrap_or_default();
                 if name.is_empty() {
                     let u = self.mcp.untrusted_servers();
                     self.fe.info(&if u.is_empty() { "every MCP server's tool list matches its pin (~/.elisa/mcp-pins.json)".to_string() }
                         else { format!("tool list changed since it was pinned: {} · /trust NAME accepts the new list", u.join(", ")) });
+                    if !changed_plugins.is_empty() { self.fe.info(&format!("plugin files changed since you approved them: {} · /trust NAME reviews them", changed_plugins.join(", "))); }
+                } else if changed_plugins.iter().any(|p| p == name) {
+                    self.plugin_command(&format!("trust {name}"));
                 } else {
                     match self.mcp.trust(name) {
                         Ok(m) => { self.audit.note("trust", &[("server", name), ("outcome", "ok")]); self.fe.info(&m); }
@@ -2093,21 +2410,31 @@ impl<'f> Session<'f> {
         if !self.mcp.owns(name) {
             if let Err(e) = tools::precheck(name, input, &self.tctx) { self.answer = Some("invalid"); return Err(e); }
         }
-        if let Some(o) = outside::check(name, input, &self.cwd) { return self.approve_outside(name, summary, &o); }
-        self.approve_inside(name, summary)
+        // pattern rules (`[permissions]`, plugins; `perms.rs`): a deny stops the call here, an ask always asks, an
+        // allow skips the prompt (never for a server whose tool list changed)
+        let server = self.mcp.server_of(name).map(String::from);
+        let remote = self.mcp.remote_of(name).map(String::from);
+        let rule = self.cfg.perms.decide(name, input, server.as_deref(), remote.as_deref(), &self.cwd)
+            .map(|r| RuleHit { level: r.level, pattern: r.pattern.clone(), source: r.source.clone() });
+        if let Some(r) = rule.as_ref().filter(|r| r.level == Level::Deny) {
+            self.answer = Some("rule");
+            return Err(format!("denied by the rule deny {} ({}): {NO_RETRY}", r.pattern, r.source));
+        }
+        if let Some(o) = outside::check(name, input, &self.cwd) { return self.approve_outside(name, summary, &o, input, rule); }
+        self.approve_inside(name, summary, input, rule)
     }
 
     /// Outside the project (config `outside`): deny → denied; allow → the normal rules; read-ok → reads take the
     /// normal rules, writes ask; ask → ask (Yes once / Always = these paths for this session / No). Writes outside
     /// (and bash naming outside paths) under `--yes` / approve-all are denied unless `outside = "allow"`; with nobody
     /// to ask (-p without a terminal) the call is denied. Paths granted for the session pass without asking.
-    fn approve_outside(&mut self, name: &str, summary: &str, o: &Outside) -> Result<(), String> {
+    fn approve_outside(&mut self, name: &str, summary: &str, o: &Outside, input: &serde_json::Value, rule: Option<RuleHit>) -> Result<(), String> {
         let list = o.paths.join(", ");
         let what = o.access_word();
         match self.outside_mode {
             outside::Mode::Deny => return Err(format!("denied: {what} outside the project folder ({list}); config outside = \"deny\"")),
-            outside::Mode::Allow => return self.approve_inside(name, summary),
-            outside::Mode::ReadOk if !o.write() => return self.approve_inside(name, summary),
+            outside::Mode::Allow => return self.approve_inside(name, summary, input, rule),
+            outside::Mode::ReadOk if !o.write() => return self.approve_inside(name, summary, input, rule),
             _ => {}
         }
         if outside::covered(&self.outside_ok, o) { return Ok(()); }
@@ -2132,6 +2459,7 @@ impl<'f> Session<'f> {
                 self.fe.info(&format!("allowed for this session ({}): {list}", if o.write() { "read + write" } else { "read" }));
                 Ok(())
             }
+            Approval::Rule => Ok(()),
             Approval::No => Err(format!("denied by user ({what} outside the project folder: {list}): {NO_RETRY}")),
         }
     }
@@ -2158,7 +2486,7 @@ impl<'f> Session<'f> {
         }
     }
 
-    fn approve_inside(&mut self, name: &str, summary: &str) -> Result<(), String> {
+    fn approve_inside(&mut self, name: &str, summary: &str, input: &serde_json::Value, rule: Option<RuleHit>) -> Result<(), String> {
         // outline / read_symbol go with `read`, edit_symbol with `edit`; an MCP tool goes with its server (`web`)
         // MCP keys live in their own namespace (`mcp:web`), so a server named like one of Elisa's tools can never
         // share its always-allow / auto_approve entry; auto_approve matches MCP tools only by `mcp:SERVER`
@@ -2174,16 +2502,49 @@ impl<'f> Session<'f> {
             return Err(format!("denied: MCP server {s}'s tool list changed since it was pinned, so each call needs a person to approve it; \
                 check the server, then /trust {s} in an interactive session"));
         }
-        if !untrusted && (self.yolo || self.always.contains(key) || self.cfg.auto_approve.iter().any(|a| a == key || (server.is_none() && a == name))) { return Ok(()); }
-        if !self.interactive {
-            // nobody to ask: local reads run; MCP tools (the web too) are denied like a write
-            return if tools::access(name) == Access::ReadOnly && server.is_none() { Ok(()) } else { Err("denied (non-interactive; use --yes)".into()) };
+        // an ask rule: a person decides each time (no --yes, no always-allow, no allow rule gets past it)
+        let ask = rule.as_ref().filter(|r| r.level == Level::Ask);
+        if let Some(r) = ask {
+            if !self.interactive {
+                return Err(format!("denied: the rule ask {} ({}) needs a person to approve each call (non-interactive)", r.pattern, r.source));
+            }
+        } else {
+            if !untrusted && rule.as_ref().is_some_and(|r| r.level == Level::Allow) { self.answer = Some("rule"); return Ok(()); }
+            if !untrusted && (self.yolo || self.always.contains(key) || self.cfg.auto_approve.iter().any(|a| a == key || (server.is_none() && a == name))) { return Ok(()); }
+            if !self.interactive {
+                // nobody to ask: local reads run; MCP tools (the web too) are denied like a write
+                return if tools::access(name) == Access::ReadOnly && server.is_none() { Ok(()) } else { Err("denied (non-interactive; use --yes)".into()) };
+            }
         }
-        let a = self.fe.approve(name, summary, server.as_deref());
+        let summary = match ask { Some(r) => format!("{summary}\nasked by the rule ask {} ({})", r.pattern, r.source), None => summary.to_string() };
+        // "always allow this pattern": offered when nothing forces a prompt and there is a narrow pattern for the call
+        let offer = if ask.is_none() && !untrusted && self.user_config().is_some() {
+            crate::perms::suggest(name, input, server.as_deref(), self.mcp.remote_of(name), &self.cwd)
+        } else { None };
+        let a = match &offer {
+            Some(p) => self.fe.approve_rule(name, &summary, server.as_deref(), p),
+            None => self.fe.approve(name, &summary, server.as_deref()),
+        };
         self.answer = Some(answer_word(&a));
         if CANCEL.load(Ordering::SeqCst) { self.answer = Some("cancelled"); return Err("cancelled by user".into()); }
         match a {
             Approval::Yes => Ok(()),
+            Approval::Always | Approval::Rule if ask.is_some() => {
+                self.fe.info("allowed once: an ask rule asks every time");
+                Ok(())
+            }
+            Approval::Rule => {
+                let (Some(p), Some(path)) = (offer, self.user_config()) else { return Ok(()) };
+                match crate::perms::save_allow(&path, &p) {
+                    Ok(()) => {
+                        let _ = self.cfg.perms.add(Level::Allow, &p, &path.display().to_string());
+                        self.audit.note("rule", &[("summary", &format!("allow {p}")), ("outcome", "saved"), ("detail", &path.display().to_string())]);
+                        self.fe.info(&format!("always allowed: {p} (saved to {})", path.display()));
+                    }
+                    Err(e) => self.fe.error(&format!("the rule {p} was not saved: {e}")),
+                }
+                Ok(())
+            }
             Approval::Always if untrusted => {
                 self.fe.info(&format!("allowed once: \"always\" stays off for MCP server {} until /trust {0}", server.as_deref().unwrap_or("")));
                 Ok(())
@@ -2201,8 +2562,29 @@ impl<'f> Session<'f> {
 
 /// an approval answer as the audit log writes it
 fn answer_word(a: &Approval) -> &'static str {
-    match a { Approval::Yes => "yes", Approval::Always => "always", Approval::No => "no" }
+    match a { Approval::Yes => "yes", Approval::Always => "always", Approval::Rule => "rule", Approval::No => "no" }
 }
+
+/// what `plugin_setup` returns when the user said no
+const DECLINED: &str = "nothing was changed: the setup was declined";
+
+/// a slash command Elisa has built in (a file command of the same name is not loaded)
+fn builtin_command(name: &str) -> bool {
+    COMMANDS.iter().any(|(c, _)| *c == name) || ["/quit", "/plugins", "/chat", "/code", "/mode", "/food", "/toy"].contains(&name)
+}
+
+/// `2 commands · 1 plugin · 3 rules` for the project's trust notice
+fn project_summary(p: &plugins::Project) -> String {
+    let n = |k: usize, w: &str| format!("{k} {w}{}", if k == 1 { "" } else { "s" });
+    let mut v = vec![n(p.commands.len(), "command")];
+    if !p.infos.is_empty() { v.push(n(p.infos.len(), "plugin")); }
+    if !p.rules.is_empty() { v.push(n(p.rules.len(), "rule")); }
+    v.join(" · ")
+}
+
+/// the permission rule that decided a call (`perms::Rules::decide`)
+#[derive(Clone)]
+struct RuleHit { level: Level, pattern: String, source: String }
 
 /// added to a denial so the model does not ask again for the same thing
 const NO_RETRY: &str = "do not call this tool again for this request; answer without it or ask the user";

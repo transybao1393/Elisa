@@ -135,7 +135,8 @@ impl CheckEvent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Approval { Yes, No, Always }
+/// `Rule`: yes, and always allow the pattern offered with `approve_rule` (saved to the user's config)
+pub enum Approval { Yes, No, Always, Rule }
 
 /// A tool call that reaches outside the project folder (src/outside.rs). Asked with `approve_outside`, where
 /// `Approval::Yes` = allow once, `Approval::Always` = allow these paths for this session (never saved), `No` = deny.
@@ -167,7 +168,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/notes", "show the saved notes"),
     ("/allow", "list always-allowed tools; /allow clear resets them"),
     ("/mcp", "MCP servers: state, tools, token cost; /mcp NAME for one server's tools"),
-    ("/trust", "accept an MCP server's changed tool list: /trust NAME (no name: list changed servers)"),
+    ("/trust", "accept an MCP server's changed tool list or a changed plugin: /trust NAME (no name: list them)"),
+    ("/plugin", "plugins: /plugin list · add PATH · remove · enable · disable · update NAME · trust NAME|project"),
     ("/audit", "the last tool calls and approvals in the audit log, and its chain check: /audit [N]"),
     ("/forget", "delete the saved notes and unpin the pinned facts"),
     ("/resume", "pick a past session to continue"),
@@ -209,6 +211,19 @@ pub trait Frontend {
     fn approve_outside(&mut self, tool: &str, summary: &str, o: &Outside) -> Approval {
         self.approve(tool, &format!("{summary}\n{}", o.line()), None)
     }
+    /// blocking: `approve`, with a fourth choice — yes, and always allow `rule` (a permission pattern the core
+    /// picked, shown as is; `Approval::Rule` saves it to the user's config). Default: `approve` without that choice.
+    fn approve_rule(&mut self, tool: &str, summary: &str, server: Option<&str>, rule: &str) -> Approval {
+        let _ = rule;
+        self.approve(tool, summary, server)
+    }
+    /// blocking: a yes / no question about `what` (a plugin's setup, a project's commands), after the full detail was
+    /// shown with `info`. Default: through `approve` (Yes or Always = yes).
+    fn ask_yes_no(&mut self, what: &str, question: &str) -> bool {
+        matches!(self.approve(what, question, None), Approval::Yes | Approval::Always | Approval::Rule)
+    }
+    /// a structured event for frontends that carry them (`--serve-jsonl`: `{"type": kind, …fields}`); others ignore it
+    fn event(&mut self, kind: &str, fields: &serde_json::Value) { let _ = (kind, fields); }
     fn info(&mut self, s: &str);
     fn error(&mut self, s: &str);
     /// a summary was written to notes (/clear, /compact, auto-compact): show it in full

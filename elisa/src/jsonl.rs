@@ -31,6 +31,23 @@
 //!   belongs to an MCP server (`{"type":"approve","tool":"fake_greet","summary":"…","outside":false,"server":"fake"}`);
 //!   then always = always allow every tool of that server in this project (saved as `mcp:fake` in `.elisa/allow`).
 //!   Absent for Elisa's own tools.
+//!   `rule` (string, optional): the core offers "always allow this pattern" for this call (`shell(cargo test *)`,
+//!   `write(src/**)`, `mcp:browser:navigate(https://github.com/*)`); answer `rule` to allow once and save the pattern to
+//!   the user's `~/.config/elisa/config.toml` `[permissions] allow`. A summary line `asked by the rule ask …` means an
+//!   ask rule forced the prompt (always / rule then allow once only). `question: true`: not a tool call but a yes / no
+//!   question (a plugin's setup, a project's trust prompt): `tool` names it, `summary` is the question; yes / no.
+//! - `plugins` {plugins: [{name, version, description, source: "user"|"project", enabled, trusted, servers: [{name,
+//!   runs: "container"|"host", installed, tools, tokens, running?}], tools, tokens, rules, commands: ["/x"], notes}]}
+//!   — at startup (when a plugin is installed or the project has one), after every plugin change and on `/plugin list`. `tools` / `tokens`: the tool definitions' count and
+//!   estimated prompt cost (a running server's as this session sees it, else as recorded at install; null if unknown)
+//! - `plugin_preview` {op: "add"|"update"|"trust", name, text, preview: {name, version, old_version, description,
+//!   source, host, servers: [{name, runs, installer, package, version, image, image_present, command, mounts:
+//!   [{path, write}], env: [names], tools}], rules: [{level, pattern, broad}], commands: [{name, description}], notes,
+//!   problems}} — the setup screen, sent before anything is installed; a yes / no `approve` (question) follows unless
+//!   `problems` is non-empty (no Colima, a missing image: each says what to run)
+//! - `plugin_result` {op, name, ok, text} — the outcome of add / remove / enable / disable / update / trust
+//! - `project_trust` {path, hash, text, commands: [{name, description, source}], rules: [{level, pattern, source}],
+//!   plugins} — the project's own commands and plugins in full, before its one-time trust question
 //! - `pick` {sessions: [{title, n_msgs, ts}]} — blocking: answer with `pick` below
 //! - `info` {text}, `error` {text}, `notes` {text}, `compacted` {from, to} (the context shrank — a fold, /compact or
 //!   /clear: `to` is the context size now, so the ctx meter shows it right away instead of at the next reply), `progress` {label, frac, elapsed_s, done} | {clear: true},
@@ -52,7 +69,9 @@
 //! - `send` {text, images?: [{media_type, data}]} — a user message or slash command (queued while a turn runs; /water
 //!   /feed /play /poke are care). `images`: base64 PNG / JPEG / GIF / WebP, at most 4, each at most 5 MB of base64;
 //!   only a model with vision (`banner.vision`) gets them
-//! - `approve` {answer: "yes"|"always"|"no"} ("once" = yes, "session" = always), `pick` {index: n | null}
+//! - `approve` {answer: "yes"|"always"|"rule"|"no"} ("once" = yes, "session" = always), `pick` {index: n | null}
+//! - `plugin` {op: "list"|"add"|"remove"|"enable"|"disable"|"update"|"trust", path?: "…" (add), name?: "…"} — the same
+//!   as sending `/plugin OP ARG` (queued like a message); `trust` with name "project" trusts the project's commands
 //! - `interrupt` {} — Esc: cancels the request / tool / approval, drops queued messages
 //! - `care` {action: "poke"|"water"|"food"|"toy"}, `typing` {nonempty}, `theme` {theme: "dark"|"light"}, `quit` {}
 //!
@@ -82,7 +101,13 @@ const CARE: &[(&str, &str)] = &[("/water", "water"), ("/feed", "food"), ("/food"
 pub enum Ev {
     Banner(Banner), User(String), Waiting, Delta(String), Done(Status), ToolStart(String),
     Detail { name: String, target: Option<String>, detail: Option<Value> },
-    ToolDone(String, bool), Approve { tool: String, summary: String, outside: Option<Outside>, server: Option<String>, tx: Sender<Approval> }, Info(String), Error(String), Notes(String),
+    ToolDone(String, bool),
+    /// `rule`: the pattern offered for "always allow this pattern"; `question`: a yes / no question (plugin setup,
+    /// project trust), not a tool call
+    Approve { tool: String, summary: String, outside: Option<Outside>, server: Option<String>, rule: Option<String>, question: bool, tx: Sender<Approval> },
+    /// a structured event (`Frontend::event`): its type and fields
+    Event(String, Value),
+    Info(String), Error(String), Notes(String),
     Compacted(usize, usize), Progress(Option<Progress>), Recalled(Vec<String>), Card(String, Option<u64>), Watch(WatchUpdate),
     WatchView(Option<WatcherView>), Full(String, String), Check(CheckEvent), Pick(Vec<SessionInfo>, Sender<Option<usize>>),
     Input(Sender<Option<String>>), TurnDone, Exit(i32),
@@ -141,11 +166,19 @@ impl Frontend for JsonlFrontend {
     }
     fn tool_done(&mut self, o: &str, e: bool) { self.send(Ev::ToolDone(o.into(), e)) }
     fn approve(&mut self, tool: &str, summary: &str, server: Option<&str>) -> Approval {
-        self.ask(|tx| Ev::Approve { tool: tool.into(), summary: summary.into(), outside: None, server: server.map(String::from), tx }, Approval::No)
+        self.ask(|tx| Ev::Approve { tool: tool.into(), summary: summary.into(), outside: None, server: server.map(String::from), rule: None, question: false, tx }, Approval::No)
     }
     fn approve_outside(&mut self, tool: &str, summary: &str, o: &Outside) -> Approval {
-        self.ask(|tx| Ev::Approve { tool: tool.into(), summary: summary.into(), outside: Some(o.clone()), server: None, tx }, Approval::No)
+        self.ask(|tx| Ev::Approve { tool: tool.into(), summary: summary.into(), outside: Some(o.clone()), server: None, rule: None, question: false, tx }, Approval::No)
     }
+    fn approve_rule(&mut self, tool: &str, summary: &str, server: Option<&str>, rule: &str) -> Approval {
+        self.ask(|tx| Ev::Approve { tool: tool.into(), summary: summary.into(), outside: None, server: server.map(String::from), rule: Some(rule.into()), question: false, tx }, Approval::No)
+    }
+    fn ask_yes_no(&mut self, what: &str, question: &str) -> bool {
+        let a = self.ask(|tx| Ev::Approve { tool: what.into(), summary: question.into(), outside: None, server: None, rule: None, question: true, tx }, Approval::No);
+        a != Approval::No
+    }
+    fn event(&mut self, kind: &str, fields: &Value) { self.send(Ev::Event(kind.into(), fields.clone())) }
     fn info(&mut self, s: &str) { self.send(Ev::Info(s.into())) }
     fn error(&mut self, s: &str) { self.send(Ev::Error(s.into())) }
     fn notes_saved(&mut self, n: &str) { self.send(Ev::Notes(n.into())) }
@@ -197,7 +230,12 @@ pub fn check_json(c: &CheckEvent) -> Value {
 
 /// A command line from the app. None: not a v1 command.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { Send(String), SendImages(String, Vec<Block>), Approve(Approval), Pick(Option<usize>), Interrupt, Care(&'static str), Typing(bool), Theme(bool), Quit }
+pub enum Cmd { Send(String), SendImages(String, Vec<Block>), Approve(Approval), Pick(Option<usize>), Interrupt, Care(&'static str), Typing(bool), Theme(bool), Quit,
+    /// `{"type":"plugin","op":…,"name"|"path":…}`: the same as sending the line `/plugin OP ARG`
+    Plugin(String, String) }
+
+/// the `plugin` command's operations
+const PLUGIN_OPS: [&str; 7] = ["list", "add", "remove", "enable", "disable", "update", "trust"];
 
 pub fn parse_cmd(line: &str) -> Option<Cmd> {
     let j: Value = serde_json::from_str(line.trim()).ok()?;
@@ -210,7 +248,14 @@ pub fn parse_cmd(line: &str) -> Option<Cmd> {
                 Some(a) => Cmd::SendImages(text, a.iter().map(|i| Block::image(i["media_type"].as_str().unwrap_or(""), i["data"].as_str().unwrap_or(""))).collect()),
             }
         }
-        "approve" => Cmd::Approve(match j["answer"].as_str()? { "yes" | "once" => Approval::Yes, "always" | "session" => Approval::Always, "no" => Approval::No, _ => return None }),
+        "approve" => Cmd::Approve(match j["answer"].as_str()? { "yes" | "once" => Approval::Yes, "always" | "session" => Approval::Always, "rule" => Approval::Rule, "no" => Approval::No, _ => return None }),
+        "plugin" => {
+            let op = j["op"].as_str()?;
+            if !PLUGIN_OPS.contains(&op) { return None; }
+            let arg = j["path"].as_str().or(j["name"].as_str()).unwrap_or("");
+            if arg.contains(['\n', '\r']) { return None; }
+            Cmd::Plugin(op.to_string(), arg.to_string())
+        }
         "pick" => Cmd::Pick(j["index"].as_u64().map(|i| i as usize)),
         "interrupt" => Cmd::Interrupt,
         "care" => Cmd::Care(match j["action"].as_str()? { "poke" => "poke", "water" => "water", "food" => "food", "toy" => "toy", _ => return None }),
@@ -227,7 +272,8 @@ pub fn encode_cmd(c: &Cmd) -> String {
         Cmd::Send(t) => ("send", json!({"text": t})),
         Cmd::SendImages(t, imgs) => ("send", json!({"text": t, "images": imgs.iter().filter_map(|b| match b {
             Block::Image { source } => Some(json!({"media_type": source.media_type, "data": source.data})), _ => None }).collect::<Vec<_>>()})),
-        Cmd::Approve(a) => ("approve", json!({"answer": match a { Approval::Yes => "yes", Approval::Always => "always", Approval::No => "no" }})),
+        Cmd::Approve(a) => ("approve", json!({"answer": match a { Approval::Yes => "yes", Approval::Always => "always", Approval::Rule => "rule", Approval::No => "no" }})),
+        Cmd::Plugin(op, arg) => ("plugin", if op == "add" { json!({"op": op, "path": arg}) } else if arg.is_empty() { json!({"op": op}) } else { json!({"op": op, "name": arg}) }),
         Cmd::Pick(i) => ("pick", json!({"index": i})),
         Cmd::Interrupt => ("interrupt", json!({})),
         Cmd::Care(a) => ("care", json!({"action": a})),
@@ -461,6 +507,7 @@ impl<W: Write> Server<W> {
             Cmd::Typing(b) => if self.input.is_some() { let now = self.now(); self.shade.typing(now, b); },
             Cmd::Theme(l) => self.light = l,
             Cmd::Quit => self.quit(),
+            Cmd::Plugin(op, arg) => self.submit(format!("/plugin {op} {arg}").trim_end().to_string(), Vec::new()),
         }
     }
 
@@ -515,13 +562,17 @@ impl<W: Write> Server<W> {
                 self.shade.tool_done(now, failed, &o);
                 self.emit("tool_done", json!({"is_error": e, "note": note, "red": red, "preview": preview, "more": more, "output": cap(&o, OUT_MAX)}));
             }
-            Ev::Approve { tool: t, summary: s, outside: o, server, tx } => {
+            Ev::Approve { tool: t, summary: s, outside: o, server, rule, question, tx } => {
                 if self.quitting { let _ = tx.send(Approval::No); return None; }
                 self.sh(ShEv::Permission);
                 self.shade_frame();
                 self.approve = Some(tx);
-                self.emit("approve", approve_json(&t, &s, o.as_ref(), server.as_deref()));
+                let mut v = approve_json(&t, &s, o.as_ref(), server.as_deref());
+                if let Some(r) = rule { v["rule"] = json!(r); }
+                if question { v["question"] = json!(true); }
+                self.emit("approve", v);
             }
+            Ev::Event(kind, fields) => self.emit(&kind, fields),
             Ev::Info(s) => self.emit("info", json!({"text": s})),
             Ev::Error(s) => {
                 self.sh(if s.starts_with("unknown command") { ShEv::UnknownCommand } else { ShEv::Failed });
@@ -706,13 +757,16 @@ mod tests {
     fn commands_round_trip_and_bad_lines_are_ignored() {
         let all = [Cmd::Send("fix it \"now\"\nplease — ü".into()), Cmd::Approve(Approval::Yes), Cmd::Approve(Approval::Always),
             Cmd::Approve(Approval::No), Cmd::Pick(Some(2)), Cmd::Pick(None), Cmd::Interrupt, Cmd::Care("water"), Cmd::Care("poke"),
-            Cmd::Typing(true), Cmd::Theme(true), Cmd::Theme(false), Cmd::Quit];
+            Cmd::Typing(true), Cmd::Theme(true), Cmd::Theme(false), Cmd::Quit, Cmd::Approve(Approval::Rule),
+            Cmd::Plugin("add".into(), "/Users/me/my plugin".into()), Cmd::Plugin("list".into(), String::new()), Cmd::Plugin("trust".into(), "project".into())];
         for c in all {
             let l = encode_cmd(&c);
             assert!(l.ends_with('\n') && l.matches('\n').count() == 1, "one line: {l}");
             assert_eq!(parse_cmd(&l), Some(c), "{l}");
         }
-        for bad in ["", "nope", "{}", r#"{"type":"send"}"#, r#"{"type":"approve","answer":"maybe"}"#, r#"{"type":"care","action":"pizza"}"#, r#"{"type":"plan_choice","answer":"yes"}"#, r#"{"type":"dance"}"#] {
+        for bad in ["", "nope", "{}", r#"{"type":"send"}"#, r#"{"type":"approve","answer":"maybe"}"#, r#"{"type":"care","action":"pizza"}"#, r#"{"type":"plan_choice","answer":"yes"}"#, r#"{"type":"dance"}"#,
+            r#"{"type":"plugin","op":"install","name":"x"}"#, r#"{"type":"plugin","op":"add","path":"a
+b"}"#] {
             assert_eq!(parse_cmd(bad), None, "{bad}");
         }
     }

@@ -272,12 +272,173 @@ celebration. `--serve-jsonl` sends a `check` event (`src/jsonl.rs`).
 | `/resume` | load the last saved session (`.elisa/sessions/`) |
 | `/stats` | metrics of the last request (each model call: kind agent / fold / summary, input, cached and output tokens, first-token time, total time, decode tok/s; wall time split into model time and the rest) and the session totals. One JSON line per request goes to `.elisa/metrics.jsonl` |
 | `/yolo` | toggle approve-all |
-| `/trust [NAME]` | accept an MCP server's changed tool list (see "MCP servers"); without a name, list the servers whose list changed |
+| `/trust [NAME]` | accept an MCP server's changed tool list (see "MCP servers"), or review and accept a plugin whose installed files changed (see "Plugins"); without a name, list both |
+| `/plugin …` | plugins (see "Plugins"): `list`, `add PATH`, `remove NAME`, `enable NAME`, `disable NAME`, `update NAME`, `trust NAME`, `trust project` |
 | `/audit [N]` | the last N (20) entries of this project's audit log, then `chain ok (K entries)` or `chain broken at line L` |
 | `/exit` | quit |
 
 Project files: `ELISA.md` (project instructions, added to the system prompt, max 3,000 chars) and `.elisa/`
 (notes, sessions, optional `config.toml`).
+
+**File commands.** A Markdown file becomes a slash command named after the file (`review.md` → `/review`):
+
+```text
+---
+description: Review one file
+args: "[path]"
+---
+Review the file $ARGS and list problems by severity.
+```
+
+`$ARGS` is what you type after the command (without `$ARGS`, it is added at the end); the text is sent as a normal
+turn. They load from `~/.elisa/commands/*.md`, the `commands/` folders of enabled plugins, and — after a one-time
+trust prompt — the project's `.elisa/commands/*.md` and its project plugins. Elisa's own commands win a name clash;
+between files the first source wins (yours, plugins, the project). `/help` lists them with where each comes from. A
+project's command text comes from the repository, so it reaches the model inside an `<untrusted>` fence, framed as a
+task description it may not take as permission to reach outside the project, change settings or reveal secrets.
+Front matter keys: `description`, `args` (any other key is an error, shown as a startup note); a file over 64 KB is
+skipped.
+
+## Permission rules
+
+`[permissions]` in `~/.config/elisa/config.toml` decides tool calls by pattern before anyone is asked:
+
+```toml
+[permissions]
+allow = ["shell(git status*)", "shell(cargo test *)", "write(src/**)", "mcp:browser:navigate(https://github.com/*)"]
+ask   = ["shell(git push *)", "mcp:fs"]
+deny  = ["shell(rm *)", "read(**/*.env)", "mcp:browser:evaluate"]
+```
+
+- **Kinds.** `shell(…)` (or `bash`) matches the `bash` command; `read(…)` matches read, grep, glob, outline and
+  read_symbol paths; `write(…)` (or `edit`) matches write, edit and edit_symbol; `mcp:SERVER`, `mcp:SERVER:TOOL` and
+  `mcp:SERVER:TOOL(…)` match an MCP server's tools (the argument checks the call's `url`, `path`, `file`, `query` or
+  `command`, else its first text value). A kind without `(…)` matches every call of that kind.
+- **Globs.** In a path, `*` stays inside one folder and `**` crosses folders (`src/**`, `**/*.env`); paths are
+  relative to the project (`..` worked out, a symlink checked by its real path too), `~/…` and `/…` are absolute. In a
+  command or an MCP argument `*` matches anything, and a trailing ` *` also matches nothing (`shell(cargo test *)`
+  covers `cargo test`).
+- **Precedence.** deny > ask > allow > the normal approval. A deny refuses the call before any prompt (the model is
+  told which rule). An ask always asks — even under `--yes`, `/yolo`, an "always" answer or a matching allow; with
+  nobody to ask the call is denied. An allow runs the call without asking.
+- **Safety.** An allow never covers a compound shell command (`;`, `&&`, `|`, redirects, `$(…)`, backticks, a second
+  line): `shell(git status*)` does not allow `git status; rm -rf ~`. A deny or ask checks every part of one
+  (`echo hi; rm -rf build` is denied by `shell(rm *)`). A relative path allow never covers a path outside the
+  project. The other hard limits still win: unknown tools are refused before any approval, the shell sandbox still
+  applies, an MCP server whose tool list changed asks on every call whatever the rules say, and a call outside the
+  project still gets its own prompt.
+- **Who may add what.** Your config: allow, ask and deny. A project `.elisa/config.toml`: deny and ask only (an allow
+  there is ignored with a note). A plugin you install: all three, listed on its setup screen first. A project plugin:
+  deny and ask only. A malformed pattern is skipped with a startup note.
+- **"Always allow this pattern".** When nothing forces the prompt, the approval box offers a fourth choice with a
+  narrow pattern Elisa picks for that call — `shell(cargo test *)` (program and subcommand), `write(src/**)` (the
+  file's folder), `mcp:browser:navigate(https://github.com/*)` (the URL's host) — shown exactly before you choose it.
+  It is saved to `[permissions] allow` in `~/.config/elisa/config.toml` (your other lines are kept) and applies at
+  once. No pattern is offered for compound commands, commands that run arbitrary code or delete (`rm`, `sudo`, `sh`,
+  `curl`, `python`, …), paths outside the project or in `.elisa` / `.git`, or a server whose tool list changed. Saved
+  rules and every denial by rule go into the audit log.
+
+Code: `src/perms.rs`.
+
+## Plugins
+
+A plugin is a local folder with a `plugin.toml`. It bundles MCP servers, slash commands and permission rules, and
+plugs into Elisa the way an `[mcp.NAME]` server does: MCP is the base, every capability comes in as an MCP server.
+This version takes local folders only (no git, URLs or registry).
+
+```toml
+# my-plugin/plugin.toml
+[plugin]
+name = "thinking"                   # lowercase letters, digits, - and _
+version = "1.0.0"
+description = "Sequential thinking in a container"
+
+[[server]]
+name = "thinking"                   # its tools become thinking_<tool>; approval key mcp:thinking
+installer = "npm"                   # npm | pip | cargo
+package = "@modelcontextprotocol/server-sequential-thinking"
+version = "2025.12.18"              # one exact version: no ranges, no tags
+command = ["mcp-server-sequential-thinking"]
+tools = ["sequentialthinking"]      # optional filter, as for [mcp.NAME]; exclude = [..] too
+env = { DISABLE_THOUGHT_LOGGING = "true" }
+mounts = [{ path = "{project}" }, { path = "~/notes", write = true }]   # read-only unless write = true
+
+# [[server]] … runs = "host" with only name + command: runs directly on the Mac (warned on the setup screen)
+
+[permissions]                       # optional: listed on the setup screen
+allow = ["mcp:thinking"]
+deny = ["shell(rm *)"]
+```
+
+Slash commands go in the plugin's `commands/` folder (`commands/review.md`, see "File commands").
+
+```sh
+/plugin add ~/plugins/thinking      # or: elisa plugin add ~/plugins/thinking [--yes]
+/plugin list                        # name, version, user / project, on / off / changed, servers (container / host,
+                                    # tools, token cost), rules, commands
+/plugin disable thinking · /plugin enable thinking · /plugin update thinking · /plugin remove thinking
+```
+
+- **Setup screen first.** `add` (and `update`, `trust`) shows each server's package and version, installer, image
+  (and whether it is on this machine), command, mounts, environment names, the tools it offers, the rules it adds
+  (a broad allow such as `shell(*)` is marked) and its commands — and a warning for anything that runs on the Mac.
+  Nothing is installed until you say yes. It goes through the normal approval box, so it works in the terminal, in
+  plain mode and in the app (`plugin_preview`, then a yes / no `approve` with `question: true`). The CLI
+  (`elisa plugin add PATH`) asks y/N on a terminal; without one it needs `--yes`.
+- **Installed inside Colima, never on the Mac.** A throwaway container (`docker run --rm --pull never`, the network
+  on for this step only, npm with `--ignore-scripts`) installs the pinned package into a docker volume Elisa owns
+  (`elisa-plugin-PLUGIN-SERVER-<home tag>`). A second container with no network hashes the installed tree. The
+  images are the code sandbox's (`node:22-alpine` npm, `python:3.13-alpine` pip, `rust:1.91-alpine` cargo) and must
+  already be on the machine: if one is missing the setup screen says `pull it once with: docker pull …`. If Colima
+  is not running it says to run `colima start` — Elisa never starts it. `~/.elisa/plugins/NAME/plugin.lock` records
+  each server's installer, package, version, image, volume, sha256 of the installed tree, and its tool count and
+  token cost (learnt by starting it once after the install).
+- **Run locked down.** A session starts each server as `elisa --plugin-run PLUGIN SERVER`, which checks the plugin
+  is on, unchanged and installed as declared, then becomes `docker run -i --rm --pull never --network none
+  --read-only --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 --memory 512m --pids-limit 128 …`
+  with the package volume read-only and only the declared mounts (read-only unless `write = true`; `{project}` is
+  the session's folder, `~/…` your home). No other host path, never the docker socket; your home itself, its
+  parents, `~/.ssh`, `~/.aws`, `~/.config`, `~/.elisa`, `~/.docker`, `~/.colima`, `~/Library`, `/etc`, `/var/run` and
+  the like are refused. Colima shares only your home folder with its VM by default, so a mount elsewhere fails to
+  start. Environment values reach the container by name, never on a command line. There is no network option for a
+  running server. Servers stop when the session ends (closing their input ends the container; a container left by a
+  killed session is removed the next time one starts).
+- **`runs = "host"`.** Only when declared; the setup screen warns that it runs directly on the Mac. It runs like an
+  `[mcp.NAME]` server (clean environment, its own process group) and Elisa installs nothing for it.
+- **Like an `[mcp.NAME]` server.** Tool names, `tools` / `exclude`, approval key `mcp:NAME`, tool-list pins, `/mcp`,
+  untrusted-text fences on its output. A plugin server may not take the name of one of Elisa's own servers or a
+  configured one.
+- **Pinned.** The installed copy (`~/.elisa/plugins/NAME/`: `plugin.toml` and the commands, nothing else) is
+  hash-pinned. If it changes, the plugin is off until `/trust NAME` (or `/plugin trust NAME`), which shows the setup
+  screen again. Changing the source folder changes nothing until `/plugin update NAME`.
+- **Audited.** Every add, remove, enable, disable, update and trust (and a declined one) goes into the audit log.
+- **In a session.** `/plugin add` / `enable` / `disable` / `update` / `remove` take effect at once: servers start
+  or stop, rules and commands come and go, the tool list is rebuilt.
+
+**Project plugins.** A repository may carry `.elisa/plugins/NAME/plugin.toml`, but a project plugin may only bring
+slash commands and deny / ask rules: a `[[server]]` there is ignored with a note, and so is an allow rule. The
+project's commands and plugins load only after a one-time trust prompt showing their full content (asked the first
+time you run one of its commands, or with `/plugin trust project`). The trust is kept in
+`~/.elisa/project-trust.json` (the repository's path and a hash of the content), never in the repository; any change
+asks again.
+
+**In the app (`--serve-jsonl`, full protocol in `src/jsonl.rs`).** Events:
+
+- `plugins` {plugins: [{name, version, description, source: "user"|"project", enabled, trusted, servers: [{name,
+  runs: "container"|"host", installed, tools, tokens, running?}], tools, tokens, rules, commands, notes}]} — at
+  startup (when any plugin is installed or the project has one), after every change and on `/plugin list`
+- `plugin_preview` {op: "add"|"update"|"trust", name, text, preview: {name, version, old_version, description,
+  source, host, servers: [{name, runs, installer, package, version, image, image_present, command, mounts, env,
+  tools}], rules: [{level, pattern, broad}], commands, notes, problems}} — the setup screen; a yes / no `approve`
+  with `question: true` follows unless `problems` is non-empty
+- `plugin_result` {op, name, ok, text} — after add / remove / enable / disable / update / trust
+- `project_trust` {path, hash, text, commands, rules, plugins} — before the project's trust question
+- `approve` gains `rule` (the pattern "always allow this pattern" would save; answer `"rule"`) and `question`
+
+Request: `{"type":"plugin","op":"list"|"add"|"remove"|"enable"|"disable"|"update"|"trust", "path": "…"}` (add) or
+`"name": "…"` (the rest; `trust` with `"project"` trusts the project's commands) — the same as sending `/plugin OP ARG`.
+
+Code: `src/plugins.rs`, `src/commands.rs`, `src/perms.rs`.
 
 ## Model connections
 
@@ -359,12 +520,13 @@ max_ctx = 8192
 | `auto_approve` | `["read","glob","grep"]` | tools that never ask (`read` covers outline and read_symbol; an "always" for `edit` covers edit_symbol; MCP tools only by `mcp:SERVER`, so `mcp:web` covers web_search and web_fetch; a bare name never covers an MCP tool) |
 | `web` | `"duckduckgo"` | the search engine of Elisa's built-in web MCP server: `"duckduckgo"`, `"searxng"` (with `searxng_url`), `"brave"` (the Brave Search API, with a key: `brave_api_key`), or `"off"` (no web tools). The model decides when to search or open a page; each call is shown in the chat and asks first. Any other value, `searxng` without an http(s) `searxng_url`, or `brave` without a key, turns web off with a startup note. A project config can only turn it off (another value there is ignored, with a note). DuckDuckGo rate-limits automated searches (it may answer with a bot check); SearXNG (its settings.yml must allow `json` in `search.formats`) and Brave are the reliable choices |
 | `brave_api_key` | none | the Brave Search API key for `web = "brave"`. The environment variable `BRAVE_API_KEY` wins over it when set; the setting is for when there is no shell environment (the macOS app started from Finder). Only `~/.config/elisa/config.toml` may hold it: a project config's `brave_api_key` is ignored with a note. Elisa hands it to the web server in that process's environment, never on its command line, and never prints it. A refused key (HTTP 401/403) or the rate limit (429) comes back to the model as one line |
-| `sandbox` | `"off"` | `"colima"` turns on the built-in code sandbox (`run_code`: python, javascript, bash, rust in a locked-down container on Colima; see "MCP servers"). Off by default; only `~/.config/elisa/config.toml` can switch it on, a project config can only switch it off (`sandbox = "off"`). Any other value is off with a startup note |
+| `sandbox` | `"off"` | `"colima"` turns on the built-in code sandbox (`run_code`: python, javascript, bash, rust, go in a locked-down container on Colima, with optional pinned `deps` fetched online first; see "MCP servers"). Off by default; only `~/.config/elisa/config.toml` can switch it on, a project config can only switch it off (`sandbox = "off"`). Any other value is off with a startup note |
 | `gate_tools` | `"auto"` | Relevance gating for the built-in documents and security servers (`mcp_reason::gate`, a check of your words, no model call, decided once per turn like `reason`): `"auto"` offers `docs_pdf` / `docs_sheet` only on a turn that mentions a document, PDF, spreadsheet, sheet, CSV / XLSX (or such a file is in the last few messages), and the `sec_*` tools only on a turn about security, secrets, leaks, credentials, vulnerabilities / CVEs, dependencies, JWTs or binaries; a follow-up ("continue", "yes") keeps the last turn's choice. Web, run_code, your own servers and Elisa's tools are always offered. The gated tools sit after every stable tool (documents, then security, then the reasoning tools), so a flip changes only the end of the tool list. A call to a gated tool on a turn without it is refused once and the tool is offered from the next request on. `"off"`: every tool on every turn. A plain coding turn at 8K: tools 1.0K instead of 1.4K (soak config with run_code and a time server: 2.4K before). A project config can only set it `"auto"` |
 | `reason` | `"auto"` | The built-in reasoning tools for small models (`think`, `steps`, `step_done`, `calc`; see "MCP servers"): `"auto"` offers them only on turns whose request looks like a multi-step task (a check of your words, no model call), `"always"` on every turn, `"off"` never (the server is not started). A project config can only switch it off; any other value is `"auto"` with a startup note |
 | `docs` | `"on"` | Elisa's built-in documents MCP server (`docs_pdf`, `docs_sheet`: PDF text and spreadsheets inside the project folder; see "MCP servers"). `"off"` removes its two tools (about 180 tokens of tool definitions). Any other value is off with a startup note; a project config can only switch it off (`docs = "on"` there is ignored, with a note, when the user config has it off) |
 | `security` | `"on"` | Elisa's built-in security MCP server (`sec_secrets`, `sec_deps`, `sec_binary`, `sec_jwt`; see "MCP servers"). `sec_deps` sends package names and versions from your lockfiles to osv.dev. `"off"` removes its four tools (about 210 tokens of tool definitions). Any other value is off with a startup note; a project config can only switch it off |
 | `sandbox_timeout` | 10 | wall-clock limit per `run_code` call in seconds (1–30); on timeout the container is killed and what it printed so far comes back. A project config may only lower it |
+| `sandbox_fetch_timeout` | 60 | limit in seconds (5–80) for fetching a `run_code` call's `deps` (the online phase, before the offline run); on timeout the fetch container is killed and the code is not run. A project config may only lower it |
 | `max_steps` | 30 | model calls per user turn (the loop guard usually stops a stuck turn much earlier: see "Run") |
 | `system_prompt_file` | none | replaces `prompts/system.md` |
 | `think` | false | request thinking |
@@ -381,6 +543,7 @@ max_ctx = 8192
 | `metrics` | true | per-request metrics: `.elisa/metrics.jsonl` and `/stats` (`src/metrics.rs`) |
 | `outside` | `ask` | tool calls outside the project folder: `ask`, `read-ok` (outside reads run, writes ask), `deny`, `allow` (no outside prompt; `--yes` then allows outside writes). A project config can only tighten it |
 | `shell_sandbox` | `write` (macOS) | Seatbelt sandbox around `bash` and the checks (see "Shell sandbox"): `write` (writes only in the project, temp folders, build caches; secret stores unreadable), `strict` (also no network but localhost), `off`. A project config can only tighten it; a no-op off macOS |
+| `[permissions]` | none | `allow` / `ask` / `deny` lists of tool-call patterns (see "Permission rules"). A project config may add only `deny` and `ask` |
 | `audit` | `"on"` | the audit log of tool calls, approvals and MCP server starts / stops (`~/.elisa/audit/`, `/audit`; see "MCP servers"). A project config can only switch it off; any other value keeps it on with a note |
 | `redact` | `"remote"` | secrets in tool output (`src/secrets.rs`: AWS, GitHub, OpenAI/Anthropic, Slack, Google, Stripe keys, private key blocks, JWTs, `password = "…"` assignments and `.env` lines with random-looking values) are replaced by `[redacted:<rule>]` before the model sees them: `"remote"` when the connection leaves this machine (a cloud provider, or a non-loopback `base_url`), `"always"` also for local models, `"off"` never. One info line says how many were hidden (`[2 secrets hidden from the model]`), never the value; your own view of the output is unchanged. Whatever Elisa writes to disk — `.elisa/notes.md`, saved sessions, memory turns / cards / notes / pinned facts, `.elisa/metrics.jsonl`, session titles — is redacted in every mode. `KEY=value` / `key: value` count inside a sentence too ("my db password is DB_PASSWORD=…"; mid-line the value must also hold a digit and a letter). Every secret value the session has seen (in tool output, a file read, your own message) is remembered in memory only — never written anywhere — and hidden wherever it appears again, so a model restating it in prose ("…app.cfg with the value Zp…") is redacted on disk and, when redaction applies, in tool output for the model (values under 8 characters or not random-looking are not remembered). A project config can only make it stricter (off < remote < always); any other value is an error |
 
@@ -477,13 +640,14 @@ env = { GITHUB_TOKEN = "..." }             # extra environment for a command ser
   - Malware scanning (YARA-X) was removed; it will return after the ratatui upgrade allows yara-x ≥ 1.19.
     No network.
 - **Built-in code sandbox (opt-in).** With `sandbox = "colima"` in `~/.config/elisa/config.toml` the session also
-  starts `elisa --mcp-serve run --timeout N` (`src/mcp_run.rs`), whose one tool `run_code(language, code, stdin?)`
+  starts `elisa --mcp-serve run --timeout N --fetch-timeout M` (`src/mcp_run.rs`), whose one tool
+  `run_code(language, code, stdin?, deps?)` (language: python, javascript, bash, rust, go)
   runs a short snippet in a throwaway container and returns the exit code, the time, stdout and stderr (stdout cut at
   4000 characters with a `[… cut …]` note; stderr at 2000, keeping its first quarter and its end, where a traceback
   says what went wrong; a run that prints more than 1 MB is stopped). A non-zero exit or a timeout is an error result
   (a red row). The approval
-  line shows the language and the code's first line (`run_code python: import math (+1 lines)`); "always" is
-  `mcp:run`. Setup, once:
+  line shows the language and the code's first line (`run_code python: import math (+1 lines)`), and any deps with
+  the fact that they are fetched online (`… · fetches online: six==1.16.0`); "always" is `mcp:run`. Setup, once:
 
   ```sh
   brew install colima docker
@@ -492,6 +656,7 @@ env = { GITHUB_TOKEN = "..." }             # extra environment for a command ser
   docker pull node:22-alpine       # javascript  (235 MB)
   docker pull bash:5.2             # bash        (26 MB)
   docker pull rust:1.91-alpine     # rust, optional: compile + run (1.4 GB)
+  docker pull golang:1.25-alpine   # go, optional: compile + run
   ```
 
   The daemon is `DOCKER_HOST` if set, else `~/.colima/default/docker.sock`, else `/var/run/docker.sock`, handed to the
@@ -505,7 +670,39 @@ env = { GITHUB_TOKEN = "..." }             # extra environment for a command ser
   /tmp inside the container; `stdin` is the snippet's stdin. Elisa enforces the time limit (`sandbox_timeout`) and a
   cancelled call with `docker kill`, and a `timeout` inside the container is the backstop. A fork bomb hits the
   64-process limit, an endless loop the time limit, a big allocation the memory limit. Container start is about
-  0.1 s; a small rust program compiles and runs in 0.2–0.6 s. `[mcp.run] enabled = false` also switches it off.
+  0.1 s; a small rust program compiles and runs in 0.2–0.6 s. Go (`go`, `golang`) gets a 256 MB /tmp (exec) and
+  512 MB memory, since `go run` builds its standard library into a cache there; it runs with `GOPROXY=off`,
+  `GOTOOLCHAIN=local`, `CGO_ENABLED=0`. `[mcp.run] enabled = false` also switches it off.
+
+  **Dependencies (`deps`): fetched online, run offline.** `deps` is a list of exact pins, at most 10:
+  python `six==1.16.0` (extras: `requests[socks]==2.32.3`), javascript `left-pad@1.3.0` (`@scope/name@1.2.3`), rust
+  `itoa@1.0.11` or `itoa = "=1.0.11"` (features: `serde[derive]@1.0.210`), go `golang.org/x/text@v0.14.0` (a release
+  or pseudo-version). Refused before anything runs, with the reason and the right form: ranges and unpinned names
+  (`six`, `six>=1.16`, `left-pad@^1.3.0`, `@latest`, a go branch), URLs, paths, git refs, `npm:` / `github:` aliases,
+  anything starting with `-`, spaces and shell characters; bash takes no deps. Two containers per call:
+  1. **Fetch (online).** The same image, memory, CPU and process limits, read-only root and tmpfs, but on Docker's
+     default network, as root with no capabilities (the cache volume is root's), no stdin, no code, no project files.
+     Its only mount is Elisa's cache: one named Docker volume per language, `elisa-deps-python`,
+     `elisa-deps-javascript`, `elisa-deps-rust`, `elisa-deps-go`. A volume lives inside the Colima VM, so nothing is
+     downloaded onto the Mac and there are no file-ownership problems with a host folder. Each set of deps goes into
+     its own folder `/deps/KEY` (KEY: 16 hex digits of sha256 over the image and the sorted pins), installed in a
+     staging folder and renamed into place when complete; a set already there is reused at once (`deps cached`).
+     Nothing in the fetch runs package code: pip installs wheels only (`--only-binary=:all:`, so an sdist-only
+     package is refused), npm runs with `--ignore-scripts`, rust uses `cargo generate-lockfile` + `cargo fetch` (MSRV
+     fallback to the image's rust; build scripts run later, offline), go uses `go get` through `proxy.golang.org`
+     with the checksum database (no VCS). Its limit is `sandbox_fetch_timeout` (60 s; at most 80, so fetch plus run
+     stays under the 120 s per tool call).
+  2. **Run (offline).** Exactly the run above, `--network none` and all, plus the volume mounted **read-only** at
+     /deps: python `PYTHONPATH=/deps/KEY`, javascript `NODE_PATH=/deps/KEY/node_modules` (so `require` works; ESM
+     `import` does not read NODE_PATH), rust a Cargo project in /tmp with the fetched manifest and `Cargo.lock`, the
+     registry linked in from the cache and `cargo run --offline --locked` (debug info and incremental off; /tmp is
+     256 MB for this case: serde + serde_json with derive builds in about 5 s and 33 MB), go `GOMODCACHE=/deps/KEY/mod`,
+     `GOPROXY=off`, `GOFLAGS=-mod=mod`, `GOSUMDB=off` (the sums were checked during the fetch).
+
+  The status line says how the deps came (`exit 0 · 0.11 s · deps fetched in 1.9 s`, or `deps cached`); a failed
+  fetch comes back with the registry's own error (`No matching distribution found for six==99.0.0`) and the code is
+  not run. Since that output now includes code from the internet, a `run_code` result with deps is fenced as
+  untrusted text. The cache is never pruned by Elisa; `docker volume rm elisa-deps-python` (etc.) empties it.
 - **Built-in reasoning server (for small models).** `elisa --mcp-serve reason` (`src/mcp_reason.rs`) gives four tiny
   tools, each with one required input: `think(thought)` (a scratchpad: records the thought and answers "now act"; the
   app shows it as a "Thinking" row), `steps(list)` with `"a; b; c"` and `step_done(n)` (n as a number or a string;
@@ -654,13 +851,16 @@ platform = "macos"                 # optional: skipped elsewhere
 [[case.files]]                     # fixture files (content repeated `repeat` times)
 path = "a.txt"
 content = "DB_PASSWORD={{secret1}}\n"
+[[case.home_files]]                # optional: files in the temp HOME (e.g. .elisa/commands/review.md)
+path = ".elisa/commands/review.md"
+content = "Review $ARGS."
 [[case.script]]                    # fake cases: the model's replies, in order
 tool = { name = "write", input = { path = "new.txt", content = "hi\n" } }
 [[case.script]]
 text = "wrote it"                  # also: tools = [..], stop, out_tokens, repeat, repeat_text, slow
 [[case.turns]]
 send = "make new.txt"
-approvals = ["yes"]                # yes | always | no, in order
+approvals = ["yes"]                # yes | always | rule | no, in order (rule = yes + save the offered pattern)
 # restart = true / continue = true: a new session (with --continue) before this turn; interrupt = true: Esc at the first text
 [[case.checks]]
 type = "file_contains"

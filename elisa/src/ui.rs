@@ -204,6 +204,26 @@ impl Frontend for Plain {
             }
         }
     }
+    fn approve_rule(&mut self, tool: &str, summary: &str, server: Option<&str>, rule: &str) -> Approval {
+        let what = match server { Some(s) => format!("MCP server {s}"), None => tool.to_string() };
+        for l in summary.lines().skip(1) { dim(l); }
+        loop {
+            let ans = ask(&format!("allow? [y]es / [n]o / [a]lways for {what} / [r] always allow {rule} (saved to ~/.config/elisa/config.toml)"));
+            if crate::repl::CANCEL.load(Ordering::SeqCst) { return Approval::No; }
+            match ans.as_deref().map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+                Some("y" | "yes") => return Approval::Yes,
+                Some("a" | "always") => return Approval::Always,
+                Some("r" | "rule") => return Approval::Rule,
+                Some("n" | "no") | None => return Approval::No,
+                _ => {}
+            }
+        }
+    }
+    fn ask_yes_no(&mut self, _what: &str, question: &str) -> bool {
+        let ans = ask(&format!("{question} [y/N]"));
+        if crate::repl::CANCEL.load(Ordering::SeqCst) { return false; }
+        matches!(ans.as_deref().map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("y" | "yes"))
+    }
     fn approve_outside(&mut self, _tool: &str, summary: &str, o: &crate::frontend::Outside) -> Approval {
         dim(&format!("{summary}\n{}", o.line()));
         loop {

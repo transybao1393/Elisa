@@ -15,7 +15,8 @@
 //! injection phrasings add a one-line warning inside the fence (and the session shows the user an info line).
 //!
 //! Not fenced: Elisa's own tools (read, grep, bash … operate on the user's project), the reasoning server (no outside
-//! text) and the code sandbox (`run_code` output of model-written code, no network).
+//! text) and the code sandbox (`run_code` output of model-written code, no network) — unless the call fetched `deps`,
+//! whose package code came from the internet.
 
 use regex::Regex;
 use std::sync::OnceLock;
@@ -36,7 +37,9 @@ const TRUSTED_BUILTINS: [&str; 2] = [crate::mcp_reason::NAME, "run"];
 /// from the user's config (so not the built-in of the same name).
 pub fn source(tool: &str, server: Option<&str>, user_server: bool, input: &serde_json::Value) -> Option<String> {
     let server = server?;
-    if !user_server && TRUSTED_BUILTINS.contains(&server) {
+    // run_code with deps runs packages fetched from the internet: their output is outside text
+    let fetched = tool == "run_code" && !crate::mcp_run::deps_of(input).is_empty();
+    if !user_server && TRUSTED_BUILTINS.contains(&server) && !fetched {
         return None;
     }
     let arg = ["url", "query", "path", "file"].iter().find_map(|k| input.get(k).and_then(|v| v.as_str()));
@@ -102,6 +105,7 @@ mod tests {
         assert_eq!(source("read", None, false, &json!({"path": "a"})), None);
         assert_eq!(source("think", Some("reason"), false, &json!({})), None);
         assert_eq!(source("run_code", Some("run"), false, &json!({})), None);
+        assert_eq!(source("run_code", Some("run"), false, &json!({"deps": ["six==1.16.0"]})).as_deref(), Some("run_code"));
         // a user's own server that took a built-in's name is untrusted
         assert!(source("run_code", Some("run"), true, &json!({})).is_some());
         assert_eq!(source("docs_pdf", Some("docs"), false, &json!({"path": "x.pdf"})).as_deref(), Some("docs_pdf x.pdf"));

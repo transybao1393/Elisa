@@ -145,7 +145,7 @@ pub fn summary(name: &str, input: &Value) -> String {
             if first.chars().count() > 80 { t.push('…'); }
             let more = code.lines().filter(|l| !l.trim().is_empty()).count().saturating_sub(1);
             let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
-            format!("{name} {}: {t}{more}", sv(input, "language"))
+            format!("{name} {}: {t}{more}{}", sv(input, "language"), crate::mcp_run::deps_summary(input))
         }
         // an MCP tool: its name and its first text argument
         _ => match input.as_object().and_then(|o| o.values().find_map(|v| v.as_str())) {

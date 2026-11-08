@@ -226,3 +226,28 @@ text = "cut off: `write game.html`"
 type = "no_approval_for"
 tool = "write"
 
+
+[[case]]
+id = "core.user_file_command"
+description = "~/.elisa/commands/review.md becomes /review: $ARGS replaced, sent as a normal turn, listed in /help with its source"
+[[case.home_files]]
+path = ".elisa/commands/review.md"
+content = "---\ndescription: Review one file\nargs: \"[path]\"\n---\nReview the file $ARGS and list problems by severity.\n"
+[[case.script]]
+text = "No problems."
+[[case.turns]]
+send = "/help"
+[[case.turns]]
+send = "/review src/a.rs"
+[[case.checks]]
+type = "info_contains"
+text = "Review one file  (~/.elisa/commands)"
+turn = 1
+[[case.checks]]
+type = "request_contains"
+text = "Review the file src/a.rs and list problems by severity."
+turn = 2
+[[case.checks]]
+type = "reply_contains"
+text = "No problems."
+turn = 2

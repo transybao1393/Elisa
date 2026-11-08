@@ -99,12 +99,13 @@ pub fn builtin_web(engine: &str, searxng_url: &str, brave_key: &str) -> ServerCf
     ServerCfg { name: "web".into(), command, env, env_pass, builtin: true, ..ServerCfg::default() }
 }
 
-/// Elisa's code sandbox (`elisa --mcp-serve run --timeout SECS`, `mcp_run.rs`), on when config `sandbox = "colima"`.
-/// Named `run` so its one tool keeps the name `run_code`; its approval key is `mcp:run`.
-pub fn builtin_run(timeout_s: u64) -> ServerCfg {
+/// Elisa's code sandbox (`elisa --mcp-serve run --timeout SECS --fetch-timeout SECS`, `mcp_run.rs`), on when config
+/// `sandbox = "colima"`. Named `run` so its one tool keeps the name `run_code`; its approval key is `mcp:run`.
+pub fn builtin_run(timeout_s: u64, fetch_timeout_s: u64) -> ServerCfg {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "elisa".into());
     // the docker daemon the user chose (`mcp_run::find_daemon`); HOME and PATH come with every server
-    ServerCfg { name: "run".into(), command: vec![exe, "--mcp-serve".into(), "run".into(), "--timeout".into(), timeout_s.to_string()],
+    ServerCfg { name: "run".into(), command: vec![exe, "--mcp-serve".into(), "run".into(), "--timeout".into(), timeout_s.to_string(),
+        "--fetch-timeout".into(), fetch_timeout_s.to_string()],
         env_pass: vec!["DOCKER_HOST".into()], builtin: true, ..ServerCfg::default() }
 }
 
@@ -181,10 +182,12 @@ pub struct Host {
     down: Vec<(ServerCfg, String)>,
     /// tool-filter names a server does not have (one note per server, `filter_notes`)
     filter_notes: Vec<String>,
+    /// the session's audit log (`audit_to`), for servers added later (`extend`)
+    audit: Option<crate::audit::Log>,
 }
 
 impl Default for Host {
-    fn default() -> Self { Host { servers: Vec::new(), setup: SETUP_TIMEOUT, pins: None, down: Vec::new(), filter_notes: Vec::new() } }
+    fn default() -> Self { Host { servers: Vec::new(), setup: SETUP_TIMEOUT, pins: None, down: Vec::new(), filter_notes: Vec::new(), audit: None } }
 }
 
 /// Stops every server, in parallel (each may take up to `mcp::STOP_GRACE` + 0.5 s to stop by itself), and logs it.
@@ -388,8 +391,50 @@ impl Host {
         (host, notes)
     }
 
+    /// More servers for a running session (a plugin added or switched on): started like `start`, their tool names
+    /// clear of Elisa's own (`taken`) and of every name already given out; logged and pinned as the others are.
+    /// Notes: (warning, text).
+    pub fn extend(&mut self, cfgs: &[ServerCfg], taken: &dyn Fn(&str) -> bool) -> Vec<(bool, String)> {
+        let cfgs: Vec<ServerCfg> = cfgs.iter().filter(|c| !self.running(&c.name)).cloned().collect();
+        let used: HashSet<String> = self.servers.iter().flat_map(|s| s.tools.iter().map(|t| t.exposed.clone())).collect();
+        let (mut more, notes) = Self::start_with_timeout(&cfgs, &|n| taken(n) || used.contains(n), self.setup);
+        let mut out: Vec<(bool, String)> = notes.into_iter().map(|n| (true, n)).collect();
+        if let Some(p) = self.pins.clone() { out.extend(more.check_pins(&p)); }
+        if let Some(a) = self.audit.clone() { more.audit_to(&a); }
+        self.servers.append(&mut more.servers);
+        self.down.retain(|(c, _)| !cfgs.iter().any(|n| n.name == c.name));
+        self.down.append(&mut more.down);
+        self.filter_notes.append(&mut more.filter_notes);
+        out
+    }
+
+    /// Stops and forgets these servers (a plugin removed or switched off); their tools are unknown from now on.
+    pub fn remove(&mut self, names: &[String]) {
+        let (gone, keep): (Vec<Server>, Vec<Server>) = std::mem::take(&mut self.servers).into_iter().partition(|s| names.contains(&s.cfg.name));
+        self.servers = keep;
+        self.down.retain(|(c, _)| !names.contains(&c.name));
+        let mut stop = Host::default();
+        stop.servers = gone;
+        drop(stop);
+    }
+
+    /// the server's own name of a tool (`browser_navigate` → `navigate`), for permission rules
+    pub fn remote_of(&self, name: &str) -> Option<&str> {
+        self.servers.iter().flat_map(|s| s.tools.iter()).find(|t| t.exposed == name).map(|t| t.remote.as_str())
+    }
+
+    /// a running server's offered tools: (count, estimated tokens)
+    pub fn server_tools(&self, server: &str) -> Option<(usize, usize)> {
+        let s = self.servers.iter().find(|s| s.cfg.name == server)?;
+        Some((s.tools.len(), Self::defs_tokens(s.tools.iter().map(|t| &t.def))))
+    }
+
+    /// why a server did not start
+    pub fn down_reason(&self, server: &str) -> Option<String> { self.down.iter().find(|(c, _)| c.name == server).map(|(_, e)| e.clone()) }
+
     /// Logs to `audit` from now on (restarts, stops), starting with a `server_start` line for each running server.
     pub fn audit_to(&mut self, audit: &crate::audit::Log) {
+        self.audit = Some(audit.clone());
         for s in &mut self.servers {
             s.audit = audit.clone();
             audit.note("server_start", &[("server", &s.cfg.name), ("outcome", "ok")]);

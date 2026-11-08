@@ -35,6 +35,12 @@ pub mod sandbox;
 pub mod secrets;
 /// `<untrusted source=…>` fences around web / third-party MCP results, with injection-phrase warnings
 pub mod untrusted;
+/// pattern permissions (`[permissions] allow / ask / deny`: `shell(git status*)`, `write(src/**)`, `mcp:S:T(url)`)
+pub mod perms;
+/// file slash commands (`~/.elisa/commands/*.md`, plugins, a trusted project's `.elisa/commands`)
+pub mod commands;
+/// plugins: local folders with a plugin.toml bundling MCP servers (installed and run inside Colima), commands, rules
+pub mod plugins;
 /// work outside the project folder asks first (path resolution, bash parse, config `outside`)
 pub mod outside;
 /// tree-sitter outlines, symbols by name, the parse guard, touched symbols (tools outline / read_symbol / edit_symbol)

@@ -73,6 +73,9 @@ pub struct Case {
     pub project_config: String,
     #[serde(default)]
     pub files: Vec<Fixture>,
+    /// files in the temp HOME (user command files `.elisa/commands/x.md`, an installed plugin), paths relative to it
+    #[serde(default)]
+    pub home_files: Vec<Fixture>,
     /// the answer to approvals a turn does not list (default "no")
     pub approve: Option<String>,
     /// the window the fake model's /health reports (fake cases; default 32768)
@@ -127,7 +130,7 @@ pub struct ScriptItem {
 pub struct Turn {
     /// the user message or slash command
     pub send: Option<String>,
-    /// answers to this turn's approvals, in order: yes | always | no
+    /// answers to this turn's approvals, in order: yes | always | rule (yes + always allow the offered pattern) | no
     #[serde(default)]
     pub approvals: Vec<String>,
     /// quit and start a new session (same project and home) before this turn
@@ -174,6 +177,9 @@ pub const CHECKS: &[&str] = &[
     "request_not_contains", "event",
 ];
 
+/// the approval answers a case may give
+const ANSWERS: [&str; 4] = ["yes", "always", "rule", "no"];
+
 /// Cases from TOML text (one file); `file` names it in errors.
 pub fn parse_cases(file: &str, text: &str) -> Result<Vec<Case>, String> {
     let f: FileSpec = toml::from_str(text).map_err(|e| format!("{file}: {e}"))?;
@@ -191,9 +197,9 @@ pub fn parse_cases(file: &str, text: &str) -> Result<Vec<Case>, String> {
             if !CHECKS.contains(&ch.kind.as_str()) { return Err(format!("{at}: unknown check type {:?} (known: {})", ch.kind, CHECKS.join(", "))); }
         }
         for t in &c.turns {
-            for a in &t.approvals { if !["yes", "always", "no"].contains(&a.as_str()) { return Err(format!("{at}: approval {a:?} is not yes | always | no")); } }
+            for a in &t.approvals { if !ANSWERS.contains(&a.as_str()) { return Err(format!("{at}: approval {a:?} is not yes | always | rule | no")); } }
         }
-        if let Some(a) = &c.approve { if !["yes", "always", "no"].contains(&a.as_str()) { return Err(format!("{at}: approve {a:?} is not yes | always | no")); } }
+        if let Some(a) = &c.approve { if !ANSWERS.contains(&a.as_str()) { return Err(format!("{at}: approve {a:?} is not yes | always | rule | no")); } }
         out.push(c);
     }
     Ok(out)
@@ -545,6 +551,11 @@ fn drive(c: &Case, opts: &Options, root: &Path, v: &Vars, r: &mut CaseResult) ->
     let (project, home) = (root.join("project"), root.join("home"));
     for f in &c.files {
         let p = project.join(&f.path);
+        if let Some(d) = p.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
+        std::fs::write(&p, v.s(&f.content).repeat(f.repeat.unwrap_or(1).max(1))).map_err(|e| format!("{}: {e}", f.path))?;
+    }
+    for f in &c.home_files {
+        let p = home.join(&f.path);
         if let Some(d) = p.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
         std::fs::write(&p, v.s(&f.content).repeat(f.repeat.unwrap_or(1).max(1))).map_err(|e| format!("{}: {e}", f.path))?;
     }
@@ -1201,7 +1212,7 @@ mod tests {
     #[test]
     fn builtin_cases_parse_and_have_unique_ids() {
         let all = load_cases(None).unwrap();
-        assert!((20..=40).contains(&all.len()), "{} cases", all.len());
+        assert!((20..=80).contains(&all.len()), "{} cases", all.len());
         assert!(all.iter().any(|c| c.kind == "model") && all.iter().any(|c| c.kind == "fake"));
         assert_eq!(select(&all, "model", None).unwrap().iter().filter(|c| c.kind != "model").count(), 0);
         assert!(select(&all, "nope", None).is_err());

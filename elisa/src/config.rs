@@ -102,6 +102,9 @@ pub struct Config {
     pub sandbox: String,
     /// wall-clock limit per `run_code` call, seconds (config `sandbox_timeout`, 1 ..= 30; a project config may only lower it)
     pub sandbox_timeout_s: u64,
+    /// limit for fetching a `run_code` call's `deps`, seconds (config `sandbox_fetch_timeout`, 5 ..= 80; a project
+    /// config may only lower it)
+    pub sandbox_fetch_timeout_s: u64,
     /// the documents server (`docs_pdf` / `docs_sheet`, `mcp_docs.rs`): "on" (default) reads PDFs and spreadsheets
     /// inside the project folder; "off" (or "") leaves it out. A project config can only switch it off
     pub docs: String,
@@ -132,6 +135,9 @@ pub struct Config {
     /// problems that did not stop loading (a skipped `[mcp.NAME]`, a bad `web` value, a project setting that was
     /// ignored): shown once as info lines when the session starts. Empty on a clean config
     pub notes: Vec<String>,
+    /// pattern permissions (`[permissions] allow / ask / deny`, `perms.rs`): the user's config may add all three; a
+    /// project config only deny and ask (an allow there is ignored with a note). Plugins add theirs in the session
+    pub perms: crate::perms::Rules,
 }
 
 fn home() -> PathBuf { std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from) }
@@ -181,6 +187,7 @@ impl Default for Config {
             mcp: Vec::new(),
             mcp_off: Vec::new(),
             mcp_filter: Default::default(),
+            perms: Default::default(),
             ast_targeted_checks: true,
             metrics: true,
             warm: "auto".into(),
@@ -195,6 +202,7 @@ impl Default for Config {
             brave_api_key: String::new(),
             sandbox: "off".into(),
             sandbox_timeout_s: crate::mcp_run::DEFAULT_TIMEOUT_S,
+            sandbox_fetch_timeout_s: crate::mcp_run::DEFAULT_FETCH_TIMEOUT_S,
             docs: "on".into(),
             security: "on".into(),
             reason: "auto".into(),
@@ -223,7 +231,7 @@ struct McpFile {
 }
 
 /// Elisa's own servers, which `[mcp.NAME]` can give a tool filter without a command
-const BUILTIN_SERVERS: [&str; 5] = ["web", "docs", "sec", "run", crate::mcp_reason::NAME];
+pub const BUILTIN_SERVERS: [&str; 5] = ["web", "docs", "sec", "run", crate::mcp_reason::NAME];
 
 fn names_list(v: &toml::Value, key: &str) -> Result<Vec<String>, String> {
     let a = v.as_array().ok_or_else(|| format!("{key} must be a list of tool names: {key} = [\"name\", …]"))?;
@@ -292,6 +300,7 @@ struct FileConfig {
     brave_api_key: Option<String>,
     sandbox: Option<String>,
     sandbox_timeout: Option<u64>,
+    sandbox_fetch_timeout: Option<u64>,
     docs: Option<String>,
     security: Option<String>,
     reason: Option<String>,
@@ -324,6 +333,8 @@ struct FileConfig {
     ast_guard: Option<bool>,
     /// checked by hand (`parse_mcp`): a mistake there skips one server, it does not fail the file
     mcp: Option<toml::Value>,
+    /// checked by hand (`perms::parse_table`): a bad pattern is a note, not a failed file
+    permissions: Option<toml::Value>,
     ast_targeted_checks: Option<bool>,
     warm: Option<String>,
     metrics: Option<bool>,
@@ -450,6 +461,11 @@ impl Config {
             let t = self.sandbox_timeout_s.clamp(1, MAX_TIMEOUT_S);
             if self.sandbox == "colima" { self.notes.push(format!("sandbox_timeout = {} out of range: using {t} s (1 ..= {MAX_TIMEOUT_S})", self.sandbox_timeout_s)); }
             self.sandbox_timeout_s = t;
+        }
+        let f = self.sandbox_fetch_timeout_s.clamp(5, crate::mcp_run::MAX_FETCH_TIMEOUT_S);
+        if f != self.sandbox_fetch_timeout_s {
+            if self.sandbox == "colima" { self.notes.push(format!("sandbox_fetch_timeout = {} out of range: using {f} s (5 ..= {})", self.sandbox_fetch_timeout_s, crate::mcp_run::MAX_FETCH_TIMEOUT_S)); }
+            self.sandbox_fetch_timeout_s = f;
         }
     }
 
@@ -617,6 +633,11 @@ impl Config {
                 self.notes.push(format!("{}: sandbox_timeout = {t} ignored: a project config can only lower it (now {} s)", p.display(), self.sandbox_timeout_s));
             }
         }
+        if let Some(t) = f.sandbox_fetch_timeout.take() {
+            if !project || t <= self.sandbox_fetch_timeout_s { self.sandbox_fetch_timeout_s = t; } else {
+                self.notes.push(format!("{}: sandbox_fetch_timeout = {t} ignored: a project config can only lower it (now {} s)", p.display(), self.sandbox_fetch_timeout_s));
+            }
+        }
         // the documents server reads project files: a project may switch it off, never on (only the user's config)
         if let Some(d) = f.docs.take() {
             if !project || d.is_empty() || d == "off" || d == self.docs { self.docs = d; } else {
@@ -659,6 +680,7 @@ impl Config {
             }
         }
         self.apply_mcp(p, project, f.mcp.take());
+        self.apply_perms(p, project, f.permissions.take());
         if f.max_ctx.is_some() { self.max_ctx = f.max_ctx; }
         if f.system_prompt_file.is_some() { self.system_prompt_file = f.system_prompt_file; }
         if let Some(d) = f.memory_dir { self.memory_dir = expand(d); }
@@ -667,6 +689,23 @@ impl Config {
             checks, check_rounds, check_timeout_s, check_test_timeout_s, check_output_max_chars, ast, ast_guard, ast_targeted_checks, metrics, warm);
         if !matches!(self.warm.as_str(), "auto" | "on" | "off") { return Err(format!("{}: warm = {:?}: use \"auto\", \"on\" or \"off\"", p.display(), self.warm)); }
         Ok(())
+    }
+
+    /// `[permissions]`: each pattern a rule; a malformed one is skipped with a note. A project config can only make
+    /// things stricter: its `allow` patterns are ignored.
+    fn apply_perms(&mut self, p: &Path, project: bool, v: Option<toml::Value>) {
+        let Some(v) = v else { return };
+        let list = match crate::perms::parse_table(&v) { Ok(l) => l, Err(e) => { self.notes.push(format!("{}: {e}", p.display())); return; } };
+        let source = if project { "project config".to_string() } else { p.display().to_string() };
+        for (level, pat) in list {
+            if project && level == crate::perms::Level::Allow {
+                self.notes.push(format!("{}: [permissions] allow = {pat:?} ignored: a project config can only add deny and ask rules", p.display()));
+                continue;
+            }
+            if let Err(e) = self.perms.add(level, &pat, &source) {
+                self.notes.push(format!("{}: [permissions] {} {pat:?} skipped: {e}", p.display(), level.word()));
+            }
+        }
     }
 
     /// `[mcp.NAME]` tables. MCP servers run commands: only the user's own config adds them; a project config may only
@@ -736,6 +775,16 @@ mod tests {
     use super::*;
 
     /// a temp home with `user` as its config, and a project with `project` as its `.elisa/config.toml`
+    #[test]
+    fn permissions_from_the_user_and_the_project() {
+        let c = load("perms", "[permissions]\nallow = [\"shell(git status*)\"]\ndeny = [\"read(**/*.env)\", \"nope(x)\"]\n",
+            "[permissions]\nallow = [\"shell(*)\"]\nask = [\"write(src/**)\"]\n");
+        let r: Vec<(&str, &str, &str)> = c.perms.rules.iter().map(|r| (r.level.word(), r.pattern.as_str(), if r.source == "project config" { "project" } else { "user" })).collect();
+        assert_eq!(r, [("allow", "shell(git status*)", "user"), ("deny", "read(**/*.env)", "user"), ("ask", "write(src/**)", "project")]);
+        assert!(c.notes.iter().any(|n| n.contains("nope(x)") && n.contains("skipped")), "{:?}", c.notes);
+        assert!(c.notes.iter().any(|n| n.contains("allow = \"shell(*)\" ignored")), "{:?}", c.notes);
+    }
+
     fn load(tag: &str, user: &str, project: &str) -> Config {
         let d = std::env::temp_dir().join(format!("elisa-config-unit-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
