@@ -38,6 +38,53 @@ path = ".elisa/notes.md"
 text = "restock_cost"
 
 [[case]]
+id = "context.clear_keeps_facts_memory_on"
+description = "/clear with memory on (the default) after a tiny session keeps the earlier notes' facts, not only the file records; the next request carries the fact once (notes, not repeated as a pinned fact)"
+config = "memory = true\n"
+[[case.files]]
+path = ".elisa/notes.md"
+content = "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n"
+[[case.script]]
+tool = { name = "write", input = { path = "hello.txt", content = "hi there\n" } }
+[[case.script]]
+text = "Wrote it."
+[[case.script]]
+text = "## Done\n- Wrote hello.txt with a greeting. REAL-DONE\n- Added restock_cost(items) to core.py.\n\n## Files touched\nNo files were touched in this session.\n\n## Current state / next step\nnothing open"
+[[case.script]]
+text = "BLUE HERON."
+[[case.turns]]
+send = "create hello.txt saying hi there"
+approvals = ["yes"]
+[[case.turns]]
+send = "/clear"
+[[case.turns]]
+send = "what is the codename?"
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes.md"
+text = "Codename BLUE HERON, owner Mira Tanaka."
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes.md"
+text = "## Files changed (Elisa's own edit records)\n- hello.txt: written (new file)"
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes.md"
+text = "REAL-DONE"
+[[case.checks]]
+type = "file_not_contains"
+path = ".elisa/notes.md"
+text = "restock_cost"
+[[case.checks]]
+type = "request_contains"
+text = "Codename BLUE HERON"
+turn = 3
+[[case.checks]]
+type = "request_not_contains"
+text = "Pinned facts"
+turn = 3
+
+[[case]]
 id = "context.clear_shrinks_clean_notes"
 description = "/clear shrinks the context even with a long summary, keeps no template text, and the next request gets the notes as background (QA chat #4)"
 config = "memory = false\n"

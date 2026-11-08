@@ -714,6 +714,43 @@ fn notes_cap_drops_by_priority_not_position() {
     assert!(c.contains("NEXT-STEP") && c.contains("FACT codename") && c.contains("done item 39") && !c.contains("done item 0 "), "{c}");
 }
 
+/// /clear shrinks by dropping low-value lines only: never a fact, a line of the earlier notes or Elisa's file
+/// records (eval context.clear_merges_notes with memory on: the codename was cut so a tiny session could shrink).
+#[test]
+fn clear_shrink_drops_low_value_lines_never_facts() {
+    let old = "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n\nAlso known as: wc = word count";
+    let pad: String = (0..30).map(|i| format!("- detail line {i:02} PAD\n")).collect();
+    let n = format!("{}\n- hello.txt: written (new file)\n\n## Goal\n\"{}\"\n\n## Done\n- REAL-DONE\n\n## Current state / next step\nNEXT\n{pad}\n\
+        ## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n- NEW-FACT port 8080\n\n## Files touched\n- hello.txt: made\n\n\
+        Also known as: wc = word count; hb = hello banner",
+        context::FILES_NOTES, "a very long request quote ".repeat(8));
+    // impossible target: everything low-value goes, the rest stays (bigger than asked)
+    let c = context::shrink_for_clear(&n, Some(old), 1);
+    for keep in ["BLUE HERON", "NEW-FACT", "hello.txt: written (new file)", "REAL-DONE", "NEXT", "wc = word count"] {
+        assert!(c.contains(keep), "{keep} kept: {c}");
+    }
+    for gone in ["a very long request", "## Files touched", "hb = hello banner"] { assert!(!c.contains(gone), "{gone} dropped: {c}"); }
+    assert!(c.matches("PAD").count() <= 8, "an overlong section keeps its first lines only: {c}");
+    // a target it can reach: no more than needed is cut
+    let tidy = context::tidy_notes(&n);
+    let c = context::shrink_for_clear(&n, Some(old), estimate_tokens(&tidy) - 5);
+    assert!(c.contains("PAD") && c.contains("detail line 00") && estimate_tokens(&c) <= estimate_tokens(&tidy) - 5, "{c}");
+    assert_eq!(context::shrink_for_clear(&n, Some(old), 10_000), tidy);
+    // the earlier notes alone (a tiny session that added nothing): nothing to cut
+    assert_eq!(context::shrink_for_clear(old, Some(old), 1), context::tidy_notes(old));
+}
+
+/// with memory on a note's facts are pinned facts too: `[state]` does not repeat what the notes say
+#[test]
+fn pinned_facts_the_notes_already_say_are_not_repeated() {
+    let facts = vec!["Codename BLUE HERON, owner Mira Tanaka.".to_string(), "the release branch is trunk".to_string()];
+    let notes = "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.";
+    assert_eq!(context::facts_not_in(Some(notes), facts.clone()), vec![facts[1].clone()]);
+    assert_eq!(context::facts_not_in(None, facts.clone()), facts);
+    // whole words only: "trunk" in the notes does not hide "the release branch is trunk"
+    assert_eq!(context::facts_not_in(Some("trunk based"), facts.clone()), facts);
+}
+
 #[test]
 fn small_talk_and_plain_questions_set_no_session_goal() {
     use elisa::context::next_goal;

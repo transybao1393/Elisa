@@ -1430,6 +1430,72 @@ pub fn cap_notes_priority(notes: &str, max_tokens: usize) -> String {
     render(&secs, &aliases)
 }
 
+/// lines a long section of the new summary keeps when /clear shrinks the notes (`shrink_for_clear`)
+const CLEAR_FLOOR: usize = 8;
+
+/// `notes` (tidied) made smaller for /clear, dropping only low-value lines, never facts (eval
+/// `context.clear_merges_notes` with memory on: "Codename BLUE HERON" was cut so a two-turn session's context
+/// came out smaller). Never dropped: a line the earlier notes `old` had, Elisa's file records, any facts section.
+/// Dropped first, until the notes fit `max_tokens`: new `Also known as:` items, the model's own file list and the
+/// request quote (`## Files touched`, `## Goal`); then new lines of an overlong section (more than CLEAR_FLOOR lines:
+/// verbose prose), the lowest-ranked section first. When that is not enough the notes stay bigger than `max_tokens`:
+/// losing a fact costs more than a context that did not shrink.
+pub fn shrink_for_clear(notes: &str, old: Option<&str>, max_tokens: usize) -> String {
+    let notes = tidy_notes(notes);
+    if estimate_tokens(&notes) <= max_tokens { return notes; }
+    let old_keys: HashSet<String> = old.map(|o| o.lines().map(bullet_key).filter(|k| !k.is_empty()).collect()).unwrap_or_default();
+    let old_aliases: HashSet<String> = old.map(|o| {
+        let mut l: Vec<String> = o.lines().map(String::from).collect();
+        take_aliases(&mut l).iter().map(|a| norm_words(a)).collect()
+    }).unwrap_or_default();
+    let mut lines: Vec<String> = notes.lines().map(String::from).collect();
+    let mut aliases = take_aliases(&mut lines);
+    let mut secs = sections(&lines.join("\n"));
+    let render = |secs: &[(String, Vec<String>)], aliases: &[String]| {
+        let mut out: Vec<String> = Vec::new();
+        for (h, b) in secs {
+            if b.iter().all(|l| l.trim().is_empty()) { continue; }
+            if !h.is_empty() { out.push(h.clone()); }
+            out.extend(b.iter().cloned());
+            out.push(String::new());
+        }
+        if !aliases.is_empty() { out.push(format!("Also known as: {}", aliases.join("; "))); }
+        out.join("\n").trim().to_string()
+    };
+    // 0 = never cut, 1 = only its excess over CLEAR_FLOOR, 2 = low value
+    let class = |h: &str| {
+        let key = heading_key(h);
+        if key.starts_with("facts") || key.starts_with("files changed") { 0 }
+        else if key.starts_with("goal") || key.starts_with("files touched") { 2 }
+        else { 1 }
+    };
+    let rank_of = |h: &str| if h.is_empty() { 253 } else { rank(&heading_key(h)) };
+    while estimate_tokens(&render(&secs, &aliases)) > max_tokens {
+        if let Some(i) = aliases.iter().rposition(|a| !old_aliases.contains(&norm_words(a))) { aliases.remove(i); continue; }
+        let new_lines = |b: &[String]| b.iter().enumerate().filter(|(_, l)| { let k = bullet_key(l); !k.is_empty() && !old_keys.contains(&k) }).map(|(j, _)| j).collect::<Vec<_>>();
+        let pick = (0..secs.len()).filter(|&i| {
+            let (c, n) = (class(&secs[i].0), secs[i].1.iter().filter(|l| !l.trim().is_empty()).count());
+            !new_lines(&secs[i].1).is_empty() && (c == 2 || (c == 1 && n > CLEAR_FLOOR))
+        }).max_by_key(|&i| (class(&secs[i].0), rank_of(&secs[i].0), i));
+        let Some(i) = pick else { break };
+        let cand = new_lines(&secs[i].1);
+        let key = heading_key(&secs[i].0);
+        let oldest_first = key.starts_with("done") || key.starts_with("from state");
+        let p = if oldest_first { cand[0] } else { cand[cand.len() - 1] };
+        secs[i].1.remove(p);
+    }
+    render(&secs, &aliases)
+}
+
+/// `facts` without the ones `notes` already say (all of a fact's words, in order, in the notes): with memory on, a
+/// note's `Facts` lines are also pinned facts, and the same fact twice in one first message (in the notes and in
+/// `[state]`) made the context after /clear bigger than the conversation it replaced.
+pub fn facts_not_in(notes: Option<&str>, facts: Vec<String>) -> Vec<String> {
+    let Some(n) = notes.map(norm_words).filter(|n| !n.is_empty()) else { return facts };
+    let hay = format!(" {n} ");
+    facts.into_iter().filter(|f| { let k = norm_words(f); k.is_empty() || !hay.contains(&format!(" {k} ")) }).collect()
+}
+
 /// Words that make a message small talk, not a task (soak: "hi Elisa! how are you today?" became the session goal).
 const SMALL_TALK: &[&str] = &[
     "hi", "hello", "hey", "heya", "hiya", "yo", "howdy", "greetings", "good", "morning", "afternoon", "evening", "day",

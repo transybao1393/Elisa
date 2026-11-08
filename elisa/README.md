@@ -186,7 +186,7 @@ headings, are not stored.
   request is cut off).
 - The notes are capped at a quarter of the room left after system + tools (200–1200 tokens), by priority: the alias
   line, the model's file list, the request quote and the facts go before Elisa's file records, decisions and open tasks;
-  a done list loses its oldest items first.
+  a done list loses its oldest items first. (`/clear` shrinking for a short conversation is gentler: see `/clear`.)
 
 **Small windows** (soak 2026-11-08: 8K, 40 folds in 40 turns, 47 results "trimmed to fit (0 tokens left)"): the fold
 point follows the fixed cost (`fold_at`), a fold must free real room and never grows the prompt, and a step's tool
@@ -262,7 +262,7 @@ celebration. `--serve-jsonl` sends a `check` event (`src/jsonl.rs`).
 | Command | Action |
 |---|---|
 | `/help` | list the commands |
-| `/clear` | summarise to `.elisa/notes.md`, then empty the history and drop the state card (the notes become background, as in a new session); later saves go to a new session file, so the pre-clear one stays resumable. The summary is **merged** into the earlier notes (what folds and earlier summaries recorded stays), and its file list comes from Elisa's own edit records (see "Notes"), never from the model's claim. The context always comes out smaller: notes longer than the conversation are cut by priority (the alias line, the model's own file list and the request quote go first; Elisa's file records, decisions and open tasks last), else the earlier notes stay, or none for a tiny chat |
+| `/clear` | summarise to `.elisa/notes.md`, then empty the history and drop the state card (the notes become background, as in a new session); later saves go to a new session file, so the pre-clear one stays resumable. The summary is **merged** into the earlier notes (what folds and earlier summaries recorded stays), and its file list comes from Elisa's own edit records (see "Notes"), never from the model's claim. The context comes out smaller when it can without losing anything real: notes longer than the conversation lose only low-value lines (new alias items, the model's own file list and the request quote first, then the newest lines of an overlong section); facts, lines of the earlier notes and Elisa's file records are never cut, so after a very short chat the context may not shrink at all. With memory on, a pinned fact the notes already say is not repeated in `[state]` |
 | `/reset` | empty the history without a summary (notes kept); the state card is dropped for later sessions too (`.elisa/card-reset`) |
 | `/compact` | summarise now and continue with notes + empty history |
 | `/context` | estimated tokens of system / tools / history, the fold point, the tools' tokens by owner (Elisa's own, each MCP server offered this turn), whether the documents / security / reasoning tools are offered this turn, plus the gateway's real count |

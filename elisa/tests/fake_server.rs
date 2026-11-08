@@ -2505,6 +2505,46 @@ fn jsonl_clear_merges_notes_and_lists_the_files_really_changed() {
     s.quit();
 }
 
+/// eval `context.clear_merges_notes` with memory on (the default): the note's facts were also pinned facts, so the
+/// first message after /clear carried "Codename BLUE HERON" twice (notes + `[state]`), came out bigger than the
+/// two-turn conversation, and the "always shrink" rule cut the fact from the notes, leaving only the file records.
+/// Now: the fact stays in the notes, is not repeated as a pinned fact, and the context may simply not shrink.
+#[test]
+fn jsonl_clear_with_memory_keeps_the_earlier_facts() {
+    let dir = tmpdir("jsonl-clear-mem");
+    std::fs::create_dir_all(dir.join(".elisa")).unwrap();
+    std::fs::write(dir.join(".elisa/notes.md"), "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n").unwrap();
+    let summary = "## Done\n- Wrote hello.txt with a greeting. REAL-DONE\n\n## Files touched\nNo files were touched in this session.\n\n\
+        ## Current state / next step\nnothing open";
+    let f = Fake::start(vec![
+        Sse::new(800, 0).tool_input("t1", "write", json!({"path": "hello.txt", "content": "hi there\n"})).end("tool_use", 12),
+        text_reply("Wrote it."),
+        text_reply(summary),
+        text_reply("BLUE HERON."),
+    ]);
+    let mut s = Serve::start_cfg(&f.url(), &dir, "memory = true\n");
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "create hello.txt saying hi there"}));
+    s.until("approve");
+    s.cmd(json!({"type": "approve", "answer": "yes"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "/clear"}));
+    let evs = s.until("turn_done");
+    let info = evs.iter().filter(|e| e["type"] == "info").map(|e| e["text"].as_str().unwrap()).find(|t| t.starts_with("[cleared:")).unwrap();
+    assert!(info.contains("notes saved"), "{info}");
+    let notes = std::fs::read_to_string(dir.join(".elisa/notes.md")).unwrap();
+    assert!(notes.contains("Codename BLUE HERON, owner Mira Tanaka."), "earlier facts kept: {notes}");
+    assert!(notes.contains(&format!("{}\n- hello.txt: written (new file)", elisa::context::FILES_NOTES)), "{notes}");
+    assert!(notes.contains("REAL-DONE") && notes.contains("nothing open"), "{notes}");
+    s.cmd(json!({"type": "send", "text": "what is the codename?"}));
+    s.until("turn_done");
+    let reqs = f.messages();
+    let t = reqs[3]["messages"][0]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(t.matches("BLUE HERON").count(), 1, "the fact once, in the notes: {t}");
+    assert!(!t.contains("Pinned facts"), "{t}");
+    s.quit();
+}
+
 /// The documents / security tools come only on turns about them, after every stable tool (a flip changes the end of
 /// the tool list only); a plain turn has neither.
 #[test]

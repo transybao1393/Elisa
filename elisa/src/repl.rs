@@ -704,7 +704,8 @@ impl<'f> Session<'f> {
                         self.history.clear();
                         self.set_notes(Some(n));
                         self.notes_bg = clear;
-                        // /clear must come out smaller; /compact keeps the whole summary (it is the task's memory)
+                        // /clear comes out smaller when only low-value lines need to go; /compact keeps the whole
+                        // summary (it is the task's memory)
                         let after = if clear { self.shrink_notes(before, old.clone()) } else { self.estimate() };
                         if let Some(notes) = self.notes.clone() {
                             self.fe.notes_saved(&notes);
@@ -715,7 +716,7 @@ impl<'f> Session<'f> {
                         if clear {
                             let kept = match &self.notes {
                                 None => "no notes kept: the conversation was shorter than any summary",
-                                Some(n) if old.as_ref() == Some(n) => "earlier notes kept: the summary was longer than the conversation",
+                                Some(_) if after >= before => "notes saved to .elisa/notes.md, whole: the conversation was shorter than its facts, decisions and file changes",
                                 Some(_) => "notes saved to .elisa/notes.md",
                             };
                             self.fe.info(&format!("[cleared: {} → {} tokens; {kept}]", ui::k(before), ui::k(after)));
@@ -892,20 +893,20 @@ impl<'f> Session<'f> {
         self.stats.add(m);
     }
 
-    /// After /clear (history empty, new notes set): the context must come out smaller than `before`. Notes
-    /// longer than the conversation they replace (uitest: 2.5K → 2.9K after three short turns) are cut to whole lines
-    /// under it; if even that does not fit, the earlier notes stay. Returns the new context estimate.
+    /// After /clear (history empty, new notes set): the context should come out smaller than `before`. Notes
+    /// longer than the conversation they replace (uitest: 2.5K → 2.9K after three short turns) lose their low-value
+    /// lines (`context::shrink_for_clear`: new aliases, the model's file list and request quote, the excess of an
+    /// overlong section), never a fact, a line of the earlier notes or Elisa's file records. When that is not enough
+    /// the notes stay as they are and the context does not shrink (eval `context.clear_merges_notes`: a fact was cut
+    /// so a tiny session could shrink). Returns the new context estimate.
     fn shrink_notes(&mut self, before: usize, old: Option<String>) -> usize {
         let (bg, after) = (self.notes_bg, self.estimate());
         if after < before { return after; }
         let n = self.notes.clone().unwrap_or_default();
         let over = after - before + 1 + before / 50;
-        // by priority: Elisa's file records, decisions and open tasks are the last lines to go
-        let cut = context::cap_notes_priority(&n, estimate_tokens(&n).saturating_sub(over));
-        self.set_notes((!cut.is_empty()).then_some(cut));
-        self.notes_bg = bg;
-        if self.estimate() >= before {
-            self.set_notes(old);
+        let cut = context::shrink_for_clear(&n, old.as_deref(), estimate_tokens(&n).saturating_sub(over));
+        if !cut.is_empty() && estimate_tokens(&cut) < estimate_tokens(&n) {
+            self.set_notes(Some(cut));
             self.notes_bg = bg;
         }
         self.estimate()
@@ -1677,6 +1678,8 @@ impl<'f> Session<'f> {
     /// PINNED_CAP tokens, listed oldest first). None when there is neither.
     fn state_block(&self) -> Option<String> {
         let facts = self.mem.as_ref().map(|m| m.db.pinned_facts(&m.project)).unwrap_or_default();
+        // the first message carries the notes too: a fact they already say is not repeated here
+        let facts = context::facts_not_in(self.notes.as_deref(), facts);
         let (mut keep, mut used) = (Vec::new(), 0);
         for f in facts.iter().rev() {
             let l = format!("- {}", context::one_line(f, 200));
