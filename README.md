@@ -7,6 +7,19 @@
 
 <p align="center"><b>A personal assistant that lives on your Mac and runs on your models.</b></p>
 
+<p align="center">
+  <a href="https://github.com/transybao1393/Elisa/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/transybao1393/Elisa?style=flat&logo=github"></a>
+  <a href="https://github.com/transybao1393/Elisa/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/transybao1393/Elisa?include_prereleases&sort=semver"></a>
+  <a href="https://github.com/transybao1393/Elisa/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/transybao1393/Elisa"></a>
+  <a href="https://github.com/transybao1393/Elisa/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/transybao1393/Elisa"></a>
+  <img alt="Platform: macOS 14+" src="https://img.shields.io/badge/platform-macOS%2014%2B-black?logo=apple">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-core-orange?logo=rust">
+  <img alt="SwiftUI" src="https://img.shields.io/badge/SwiftUI-app-F05138?logo=swift&logoColor=white">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-plugins-6E56CF">
+  <img alt="Local first" src="https://img.shields.io/badge/local--first-private-2EA44F">
+  <a href="LICENSE"><img alt="License: proprietary" src="https://img.shields.io/badge/license-proprietary-lightgrey"></a>
+</p>
+
 
 Elisa is a small chat assistant for your Mac. It runs on a model you choose, in a native macOS app or the terminal,
 with Shade, a small companion who shows what Elisa is doing. With a local model nothing leaves your Mac.
