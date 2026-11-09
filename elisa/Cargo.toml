@@ -3,8 +3,8 @@ name = "elisa"
 version = "0.1.0"
 edition = "2021"
 description = "Elisa: a small terminal coding agent for local models (Anthropic Messages API)"
-license = "MIT"
-# MIT (../LICENSE); not published to crates.io
+license = "Apache-2.0"
+# Apache-2.0 (../LICENSE); not published to crates.io
 publish = false
 
 [dependencies]
