@@ -50,6 +50,13 @@ final class SelfTest {
     private var dir = ""
     private var quit = false
     private var steps: [Step] = []
+    /// elisa/tests/fixtures/docs, found from this source file's place (repo/app/ElisaApp/Sources/ElisaApp/SelfTest.swift)
+    static let fixtures: String = {
+        var u = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { u.deleteLastPathComponent() }
+        return u.appendingPathComponent("elisa/tests/fixtures/docs").path
+    }()
+
     /// the model this run is for, kept while a step switches to another one
     private var origin: String?
 
@@ -129,10 +136,10 @@ final class SelfTest {
             }
             steps.append(Step(name: "file-intent", text: "read notes.txt and tell me the meeting code", expect: "orchid-42|orchid 42", tools: ["^read$|read_file|^cat$|bash"]))
             steps.append(Step(name: "web-intent", text: "search the web: what is the capital of Australia?", expect: "canberra", tools: ["web"]))
-            let kit = "/Users/johnathan/Development/Elisa/elisa/tests/fixtures/docs"
+            let kit = SelfTest.fixtures
             let pdf = (cwd as NSString).appendingPathComponent("kronos.pdf")
             if !FileManager.default.fileExists(atPath: pdf) {
-                try? FileManager.default.copyItem(atPath: "/Users/johnathan/Development/elisa-test-2/.elisa/uploads/1794211488/2508.02739v1.pdf", toPath: pdf)
+                if let src = ProcessInfo.processInfo.environment["ELISA_SELFTEST_PDF"] { try? FileManager.default.copyItem(atPath: src, toPath: pdf) }
             }
             if FileManager.default.fileExists(atPath: pdf) {
                 steps.append(Step(name: "pdf-upload", text: "what is this paper about?", expect: "kronos|forecast|financial|candlestick|k-line|time series|market", docs: [pdf]))
@@ -153,7 +160,7 @@ final class SelfTest {
             steps.append(Step(name: "new-chat-hello", text: opener(), expect: "\\w", tools: []))
         }
         if more, let cwd = model.folder {
-            let kit = "/Users/johnathan/Development/Elisa/elisa/tests/fixtures/docs"
+            let kit = SelfTest.fixtures
             let filler = String(repeating: "The quarterly report lists shipping volumes, warehouse counts, staff rotas and supplier names for every region in detail. ", count: 110)
             steps = [
                 Step(name: "hey-new-chat", text: opener(), expect: "\\w", tools: []),
