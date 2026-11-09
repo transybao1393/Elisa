@@ -356,7 +356,7 @@ pub fn strip_echoed_notes(reply: &str) -> String {
     // REASONED_OUT_NUDGE, and the "… for this reply: …" ones: FINAL_ANSWER_NOTE, `retry_note`), not the user's words
     const MARKS: &[&str] = &["(the user asked ", "the user asked to save", "the user asked to read", "the user asked for a web search", "call write now",
         "call read on it now", "call web_search now", "had no text for the user", "reply in words; no tools", "ran out of room while reasoning",
-        "for this reply:", "answer this message in one plain sentence", "no long reasoning first", "the message below asks about", "about the person writing to you"];
+        "for this reply:", "answer this message in one plain sentence", "no long reasoning first", "the message below asks about", "not yours: in a short reply"];
     let hit = |t: &str| { let t = t.to_lowercase(); MARKS.iter().any(|m| t.contains(m)) };
     if !hit(reply) { return reply.to_string(); }
     // sentence by sentence: "The user asked to read a.txt: call read on it now. It says hi." keeps the last one

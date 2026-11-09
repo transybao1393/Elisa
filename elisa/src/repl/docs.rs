@@ -459,13 +459,15 @@ impl<'f> Session<'f> {
         self.history.pop();
         self.fe.reply_retracted();
         self.debug(&format!("[retry: the reply said the user's facts as Elisa's own ({}); asked again in words]", claimed.join(", ")));
-        // worded as a plain fact about the message, never as a verdict on a reply the model cannot see (it was taken
-        // back): "Your reply was not sent…" got "You're right, I should…" (BUGS #86), and "For this reply: Hanoi is
-        // the user's own, not yours" got "I'm sorry I didn't respond properly earlier" (2026-11-10), an apology for
-        // text the user never saw. No "the user" in the third person either (BUGS #52).
-        let (is, them) = if claimed.len() == 1 { ("is", "it") } else { ("are", "them") };
-        self.retry_note = Some(format!("({} {is} about the person writing to you, not about you, Elisa: say {them} with \"you\" and \
-            \"your\", never \"I\" or \"my\".)", claimed.join(", ")));
+        // worded as a plain fact, never as a verdict on a reply the model cannot see (it was taken back): "Your reply
+        // was not sent…" got "You're right, I should…" (BUGS #86); "For this reply: … the user's own, not yours"
+        // got an apology for text the user never saw and claims again ("I live in Hanoi too", 1 of 5 replays on
+        // qwen3-vl:2b-instruct, 2026-11-10); "about the person writing to you, not about you" got "I'm in Hanoi too"
+        // 2 of 5 and once a 2048-token description of the chat. This wording: no claim, no apology, short, 5 of 5.
+        // No "the user" in the third person either (BUGS #52).
+        let (is, facts, them) = if claimed.len() == 1 { ("is", "fact", "it") } else { ("are", "facts", "them") };
+        self.retry_note = Some(format!("({} {is} their {facts}, not yours: in a short reply, say {them} with \"you\" or \"your\", \
+            never \"I\" or \"my\".)", claimed.join(", ")));
         let end = self.agent_loop(CheckRun::default(), false);
         self.retry_note = None;
         Some(end)
