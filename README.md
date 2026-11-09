@@ -79,15 +79,6 @@ cd elisa && cargo build --release        # binary: elisa/target/release/elisa
 elisa/target/release/elisa               # chat in the terminal
 ```
 
-## Repository
-
-| Path | What |
-|---|---|
-| [`elisa/`](elisa/) | Elisa itself (Rust): chat, tools, MCP host and built-in servers, plugins, eval. Full documentation in [`elisa/README.md`](elisa/README.md). |
-| [`app/ElisaApp/`](app/ElisaApp/) | The native macOS app (SwiftUI). |
-| [`app/ElisaCompanion/`](app/ElisaCompanion/) | The small floating Shade companion window. |
-| [`designs/`](designs/) | App icon and logo artwork. |
-
 ## License
 
 Apache License 2.0. Copyright 2026 TRAN SY BAO. See [LICENSE](LICENSE), [NOTICE](NOTICE) and

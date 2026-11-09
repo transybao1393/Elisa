@@ -80,15 +80,6 @@ cd elisa && cargo build --release        # tệp chạy: elisa/target/release/el
 elisa/target/release/elisa               # trò chuyện trên terminal
 ```
 
-## Kho mã
-
-| Đường dẫn | Nội dung |
-|---|---|
-| [`elisa/`](elisa/) | Elisa (Rust): trò chuyện, công cụ, MCP host và các máy chủ có sẵn, plugin, đánh giá. Tài liệu đầy đủ trong [`elisa/README.md`](elisa/README.md). |
-| [`app/ElisaApp/`](app/ElisaApp/) | Ứng dụng macOS (SwiftUI). |
-| [`app/ElisaCompanion/`](app/ElisaCompanion/) | Cửa sổ nổi nhỏ của Shade. |
-| [`designs/`](designs/) | Biểu tượng ứng dụng và logo. |
-
 ## Giấy phép
 
 Apache License 2.0. Copyright 2026 TRAN SY BAO. Xem [LICENSE](LICENSE), [NOTICE](NOTICE) và

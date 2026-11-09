@@ -79,15 +79,6 @@ cd elisa && cargo build --release        # バイナリ：elisa/target/release/e
 elisa/target/release/elisa               # ターミナルでチャット
 ```
 
-## リポジトリ
-
-| パス | 内容 |
-|---|---|
-| [`elisa/`](elisa/) | Elisa 本体（Rust）：チャット、ツール、MCP ホストと組み込みサーバー、プラグイン、評価。詳しいドキュメントは [`elisa/README.md`](elisa/README.md)。 |
-| [`app/ElisaApp/`](app/ElisaApp/) | macOS ネイティブアプリ（SwiftUI）。 |
-| [`app/ElisaCompanion/`](app/ElisaCompanion/) | Shade の小さなフローティングウィンドウ。 |
-| [`designs/`](designs/) | アプリアイコンとロゴ。 |
-
 ## ライセンス
 
 Apache License 2.0。Copyright 2026 TRAN SY BAO. [LICENSE](LICENSE)、[NOTICE](NOTICE)、

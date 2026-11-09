@@ -27,6 +27,7 @@
 //                         later boxes, in order); boxes with no line left are answered yes, as before
 //   @esc S                press Esc S seconds after the prompt above is sent (once; cancels the request / tool, and
 //                         an open permission box is answered no, as the key does)
+//   @attach FILE          attach a picture or document as the paperclip does; the next prompt line is sent with it
 //   @paste FILE           paste FILE's text into the input box at once (as ⌘V does: a long text becomes a "pasted
 //                         text" chip) and send it
 //
@@ -68,6 +69,8 @@ final class Playback {
         case say(String)
         /// a file's text, pasted and sent
         case paste(String)
+        /// a picture or document attached as the paperclip does; the next prompt is sent with it
+        case attach(String)
         case scroll, edits, wait(Double)
     }
 
@@ -177,6 +180,7 @@ final class Playback {
             }
             if l.hasPrefix("@plan") || l.hasPrefix("@test") { print("playback: planning is gone, skipped: \(Self.shown(l, 60))"); continue }
             if l.hasPrefix("@paste ") { out.append(.paste(String(l.dropFirst(7)).trimmingCharacters(in: .whitespaces))); continue }
+            if l.hasPrefix("@attach ") { out.append(.attach(String(l.dropFirst(8)).trimmingCharacters(in: .whitespaces))); continue }
             if l.hasPrefix("@outside") { outside(String(l.dropFirst(8))) }
             else if l.hasPrefix("@answer") { answer(String(l.dropFirst(7))) }
             else if l == "@esc" || l.hasPrefix("@esc ") { esc(Double(l.dropFirst(4).trimmingCharacters(in: .whitespaces))) }
@@ -244,6 +248,10 @@ final class Playback {
             i += 1
             switch s {
             case .wait(let d): log("wait \(d)s"); await pause(d)
+            case .attach(let f):
+                m.attach(urls: [URL(fileURLWithPath: f)])
+                log("attached \((f as NSString).lastPathComponent)")
+                await pause(r(0.6, 1.2))
             case .scroll: await scroll()
             case .edits: await edits()
             case .paste(let f):
