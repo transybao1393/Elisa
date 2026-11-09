@@ -88,7 +88,9 @@ pub struct Config {
     pub outside: String,
     /// the shell sandbox around `bash` and the checks (src/sandbox.rs, macOS Seatbelt): "write" (default on macOS:
     /// writes only inside the project, temp folders and build caches; secret stores unreadable), "strict" (also no
-    /// network but localhost), "off". A project's `.elisa/config.toml` may only make it stricter; elsewhere a no-op
+    /// network but localhost), "colima" (no Seatbelt: bash in a throwaway container on Colima's docker that sees only the
+    /// project folder, no network; docs/sandbox.md), "off". A project's `.elisa/config.toml` may only make it stricter
+    /// (off < write < strict < colima); elsewhere a no-op
     pub shell_sandbox: String,
     /// the active connection of `providers.toml`; "" = none: `base_url` / `model` / `api_key` above as configured
     pub provider: String,
@@ -627,7 +629,7 @@ impl Config {
             use crate::sandbox::Mode;
             let cur = Mode::parse(&self.shell_sandbox).unwrap_or(Mode::platform_default());
             match Mode::parse(&w) {
-                None => self.notes.push(format!("{}: shell_sandbox = {w:?} is not a setting (use \"write\", \"strict\" or \"off\"): keeping \"{}\"", p.display(), cur.word())),
+                None => self.notes.push(format!("{}: shell_sandbox = {w:?} is not a setting (use \"write\", \"strict\", \"colima\" or \"off\"): keeping \"{}\"", p.display(), cur.word())),
                 Some(m) if project && cur.stricter(m) != m => self.notes.push(format!("{}: shell_sandbox = {w:?} ignored: a project config can only make the shell sandbox stricter (now \"{}\")", p.display(), cur.word())),
                 Some(m) => self.shell_sandbox = m.word().to_string(),
             }
@@ -844,6 +846,30 @@ mod tests {
         let c = load("outside-deny", "", "outside = \"deny\"\n");
         assert_eq!(c.outside, "deny");
         assert!(c.notes.is_empty(), "{:?}", c.notes);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shell_sandbox_colima_parses_and_ranks_strictest() {
+        // the user's own config picks it
+        let c = load("sbx-colima", "shell_sandbox = \"colima\"\n", "");
+        assert_eq!(c.shell_sandbox, "colima");
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        // a project may tighten "write" to "colima" ...
+        let c = load("sbx-proj-colima", "shell_sandbox = \"write\"\n", "shell_sandbox = \"colima\"\n");
+        assert_eq!(c.shell_sandbox, "colima");
+        // ... but not loosen "colima" to "strict" or "off"
+        for loose in ["strict", "off"] {
+            let c = load(&format!("sbx-loosen-{loose}"), "shell_sandbox = \"colima\"\n", &format!("shell_sandbox = \"{loose}\"\n"));
+            assert_eq!(c.shell_sandbox, "colima");
+            assert!(c.notes.iter().any(|n| n.contains("can only make the shell sandbox stricter") && n.contains("now \"colima\"")), "{:?}", c.notes);
+        }
+        // a bad value keeps the default and names every setting, colima included
+        let c = load("sbx-bad", "shell_sandbox = \"docker\"\n", "");
+        assert_eq!(c.shell_sandbox, crate::sandbox::Mode::platform_default().word());
+        assert!(c.notes.iter().any(|n| n.contains("\"colima\"") && n.contains("not a setting")), "{:?}", c.notes);
+        // nothing set: the default is unchanged ("write" on macOS)
+        assert_eq!(load("sbx-default", "", "").shell_sandbox, "write");
     }
 
     fn load(tag: &str, user: &str, project: &str) -> Config {

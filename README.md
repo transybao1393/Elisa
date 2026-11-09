@@ -70,6 +70,9 @@ offline container unless they need your Mac.
 Requirements: macOS 14 or later, Rust and Swift toolchains. Colima is optional, for the code sandbox and container
 plugins.
 
+No release has been published yet, so build from source as shown below. Once one is, an `Elisa-<version>.dmg` will be
+on the [Releases](https://github.com/transybao1393/Elisa/releases) page ([how releases are built](docs/release.md)).
+
 ```sh
 # macOS app (builds everything it needs)
 app/ElisaApp/run.sh                      # choose a model, then start chatting

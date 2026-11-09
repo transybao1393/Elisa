@@ -4,6 +4,8 @@
      string from here. No CFBundleIdentifier on purpose: the preferences domain stays "ElisaApp" (the process name). -->
 <plist version="1.0">
 <dict>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Elisa listens to the microphone only while the mic button is on, to turn your speech into text in the message field. Transcription runs on this Mac (whisper.cpp); audio never leaves it.</string>
 </dict>
