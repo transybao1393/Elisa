@@ -29,11 +29,16 @@ pub const PREFIX: &str = "(Situation: ";
 /// The "what can you do?" line for this model (bug #46: the fixed `ABOUT` claimed images on a model with no vision).
 /// Search, reading files and pages, saving and running commands are Elisa's own (`route::intent`): every model.
 pub fn about(vision: bool) -> String {
-    let see = if vision { ", read PDFs, spreadsheets and images" } else { ", read PDFs and spreadsheets you attach (not pictures: this model has no vision)" };
     // bug #69: "you can: chat …" was copied as the reply ("You can: - chat…"): the line says it in Elisa's own voice
-    format!("(Situation: asked about you · answer as Elisa, in the first person, \"I can …\": chat and answer questions, search the web for news and facts, read files and web pages{see}, \
-        save text to files, run commands with the user's OK, say what time it is anywhere, and help with code · list only these, in that order, briefly; \
-        claim nothing else)")
+    format!("(Situation: asked about you · answer as Elisa, in the first person, \"I can …\": {} · list only these, in that order, briefly; \
+        claim nothing else)", can_list(vision))
+}
+
+/// What Elisa can do on this model (vision from the detected caps)
+fn can_list(vision: bool) -> String {
+    let see = if vision { ", read PDFs, spreadsheets and images" } else { ", read PDFs and spreadsheets you attach (not pictures: this model has no vision)" };
+    format!("chat and answer questions, search the web for news and facts, read files and web pages{see}, \
+        save text to files, run commands with the user's OK, say what time it is anywhere, and help with code")
 }
 
 /// The current model as the earlier-turns block of a switched conversation says it (`context::other_model_view`).
@@ -47,10 +52,40 @@ pub fn model_facts(model: &str, vision: bool, native_tools: bool, thinking: bool
     // bug #66: after a model switch a small model copied the old model's answers from the history ("I am Qwen3-vl"):
     // the line says that earlier replies may be another model's and are never copied
     // ("you run on gemma3:1b" made gemma3:1b call itself Gemma: the model is what Elisa runs on, she stays Elisa)
-    format!("Model facts (detected, true now): Elisa runs on {model} · vision: {} · tool calling: {} · {}context {ctx} tokens. \
+    format!("Model facts (detected, true now): {}. \
         A question about the model is answered from these only, never from a document or an earlier reply (earlier replies \
-        may be another model's); write every answer fresh, never copy an earlier one.",
+        may be another model's); write every answer fresh, never copy an earlier one.", facts_head(model, vision, native_tools, thinking, ctx))
+}
+
+/// the facts themselves: what the model is and what it has
+fn facts_head(model: &str, vision: bool, native_tools: bool, thinking: bool, ctx: usize) -> String {
+    format!("Elisa runs on {model} · vision: {} · tool calling: {} · {}context {ctx} tokens",
         if vision { "yes" } else { "no" }, if native_tools { "yes" } else { "no" }, if thinking { "reasons first · " } else { "" })
+}
+
+/// The content words of the model facts (`model_facts`: "model", the model's name, what it has: "vision", "tool",
+/// "context" …; `topics::words`). A question made only of these is about the model Elisa runs on, not about an
+/// attached document that happens to use the same words (BUGS #47: "What can this model do for me?" after the Kronos
+/// paper got the paper's pages and was answered about the Kronos model).
+/// The message's content words are all the model facts' words (`model_words`): "What can this model do for me?",
+/// "which model is this?", "does this model have vision?".
+pub fn asks_about_model(model: &str, vision: bool, native_tools: bool, thinking: bool, ctx: usize, msg: &str) -> bool {
+    let w = crate::topics::words(msg);
+    !w.is_empty() && w.is_subset(&model_words(model, vision, native_tools, thinking, ctx))
+}
+
+/// The situation line of a turn asking about the model itself (`model_words_of`): the facts again, in this turn's
+/// message only, with the model named as what "this model" means and what Elisa can do on it (`about`'s list).
+/// BUGS #47: with the facts in the system prompt alone, "What can this model do for me?" after a summary of the
+/// Kronos paper was answered about Kronos (qwen3-vl:2b-instruct, granite4.2:3b, gemma3:1b). Replayed on granite4.2:3b:
+/// a line with the facts alone, 2 of 5 right; this one, 5 of 5.
+pub fn about_model(model: &str, vision: bool, native_tools: bool, thinking: bool, ctx: usize) -> String {
+    format!("(Situation: \"this model\" here means {model}, the AI model you run on, never a model from a document or an \
+        earlier reply · {} · say what {model} lets you do here: {})", facts_head(model, vision, native_tools, thinking, ctx), can_list(vision))
+}
+
+pub fn model_words(model: &str, vision: bool, native_tools: bool, thinking: bool, ctx: usize) -> std::collections::HashSet<String> {
+    crate::topics::words(&format!("model {}", facts_head(model, vision, native_tools, thinking, ctx)))
 }
 
 pub const ABOUT: &str = "(Situation: asked about you · you can: chat and answer questions, search the web for news and facts, read PDFs, spreadsheets and images, reason step by step and calculate, say what time it is anywhere, and help with code · list only these, in that order, briefly; claim nothing else)";
@@ -260,6 +295,20 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
+
+    #[test]
+    fn a_question_about_the_model_is_told_by_the_facts_words() {
+        // BUGS #47
+        let asks = |m: &str| asks_about_model("granite4.2:3b", false, true, true, 16384, m);
+        for m in ["What can this model do for me?", "which model is this?", "does this model have vision?", "does this model do tool calling?"] {
+            assert!(asks(m), "{m:?}");
+        }
+        for m in ["what can the Kronos model do?", "which model is best for coding?", "hey", "what is 15% of 240?"] {
+            assert!(!asks(m), "{m:?}");
+        }
+        let l = about_model("granite4.2:3b", false, true, true, 16384);
+        assert!(l.starts_with(PREFIX) && l.contains("granite4.2:3b") && l.contains("vision: no") && l.contains("context 16384 tokens"), "{l}");
+    }
 
     #[test]
     fn no_context_no_line() {

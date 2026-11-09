@@ -66,6 +66,13 @@ impl<'f> Session<'f> {
         }
     }
 
+    /// The model's detected facts (`situation::model_facts`): the model's name, vision, native tool calling, whether it
+    /// reasons first, and the window.
+    pub(super) fn facts(&self) -> (String, bool, bool, bool, usize) {
+        let c = self.client.caps();
+        (self.cfg.model.clone(), c.vision == Some(true), c.tools == crate::backend::Tools::Native, c.thinking, self.max_ctx)
+    }
+
     /// The hosted intent router's answer for this turn's words (`router.rs`), with only the contract's context: what
     /// is attached now, whether a document is in the chat, vision, a refused picture, an earlier session to resume,
     /// and the last user message and reply (cut to 400 characters). None when it is off (no key), `route` is not
@@ -275,6 +282,12 @@ impl<'f> Session<'f> {
         // what Elisa can do on this model, from the detected caps (bug #46: the fixed list claimed images with no vision)
         let vision = self.client.caps().vision == Some(true);
         let about = self.router_says("about_elisa").unwrap_or_else(|| crate::route::about_elisa(&input)).then(|| crate::situation::about(vision));
+        // a question about the model itself ("What can this model do for me?"): its detected facts (BUGS #47)
+        let about = about.or_else(|| {
+            let (m, v, t, th, ctx) = self.facts();
+            let own = context::own_words(context::request_body(&input)).unwrap_or(&input).to_string();
+            crate::situation::asks_about_model(&m, v, t, th, ctx, &own).then(|| crate::situation::about_model(&m, v, t, th, ctx))
+        });
         // (a tiny window gets none: a small model there read such lines back as its answer, BUGS #42)
         let hint = if self.tiny() { None } else { resume_hint.or(about).or_else(|| self.situation(&input)).or_else(|| self.follow_up_hint(&input)) };
         if let Some(l) = hint {
