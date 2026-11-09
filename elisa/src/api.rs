@@ -29,6 +29,65 @@ pub struct CallMetric {
 /// a simple turn's output cap (`Client::simple_cap`): a greeting or a short answer needs far less
 pub const SIMPLE_OUT: usize = 1024;
 
+/// How often a streaming call that waits on the server (for the response head or the next line) looks at the
+/// cancel flag.
+const CANCEL_POLL: Duration = Duration::from_millis(25);
+
+/// What `LineStream::next` got.
+pub(crate) enum Next { Line(String), End, Cancelled }
+
+/// The body of a streaming response, line by line, read on its own thread (`post_lines`).
+pub(crate) struct LineStream { rx: std::sync::mpsc::Receiver<Result<String, String>> }
+impl LineStream {
+    /// The next line, or Cancelled as soon as `cancel` is set (within CANCEL_POLL, even while the server sends
+    /// nothing), or End.
+    pub(crate) fn next(&mut self, cancel: &AtomicBool) -> Result<Next, String> {
+        use std::sync::mpsc::RecvTimeoutError;
+        loop {
+            if cancel.load(Ordering::Relaxed) { return Ok(Next::Cancelled); }
+            match self.rx.recv_timeout(CANCEL_POLL) {
+                Ok(Ok(l)) => return Ok(Next::Line(l)),
+                Ok(Err(e)) => return Err(e),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Ok(Next::End),
+            }
+        }
+    }
+}
+
+/// Send a streaming POST. The blocking network reads (the wait for the response head, then each line) run on a
+/// thread of their own, so the caller can stop the moment `cancel` is set: Esc before the first token used to wait
+/// for the server's first bytes (longrun2: 3.6 s). A cancelled call's thread ends with its connection, the next time
+/// the server sends or closes. Ok(None) = cancelled before the response head; an error status is Err("HTTP n: …").
+pub(crate) fn post_lines(rq: ureq::RequestBuilder<ureq::typestate::WithBody>, body: String, cancel: &AtomicBool) -> Result<Option<LineStream>, String> {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    let (htx, hrx) = channel::<Result<(), String>>();
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let r = match rq.send(body) { Ok(r) => r, Err(e) => { let _ = htx.send(Err(format!("request failed: {e}"))); return; } };
+        let status = r.status().as_u16();
+        if !(200..300).contains(&status) {
+            let text = r.into_body().read_to_string().unwrap_or_default();
+            let _ = htx.send(Err(format!("HTTP {status}: {}", err_message(&text))));
+            return;
+        }
+        if htx.send(Ok(())).is_err() { return; }
+        for l in BufReader::new(r.into_body().into_reader()).lines() {
+            let failed = l.is_err();
+            if tx.send(l.map_err(|e| format!("stream read: {e}"))).is_err() || failed { return; }
+        }
+    });
+    loop {
+        if cancel.load(Ordering::Relaxed) { return Ok(None); }
+        match hrx.recv_timeout(CANCEL_POLL) {
+            Ok(Ok(())) => return Ok(Some(LineStream { rx })),
+            Ok(Err(e)) => return Err(e),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err("request failed: the connection ended".into()),
+        }
+    }
+}
+
 /// Shown instead of sending a request when no model is configured: Elisa never picks one for the user.
 pub const NO_MODEL: &str = "No model chosen, so nothing was sent. Elisa doesn't pick a model for you: \
     in the app, choose one in Model Connections (or on the welcome screen); \
@@ -414,13 +473,7 @@ impl Client {
         publish(Phase::Sent);
         let _idle = PhaseGuard;
         let mut decoding = false;
-        let r = self.post("/v1/messages").header("accept", "text/event-stream").send(body)
-            .map_err(|e| format!("request failed: {e}"))?;
-        let status = r.status().as_u16();
-        if !(200..300).contains(&status) {
-            let text = r.into_body().read_to_string().unwrap_or_default();
-            return Err(format!("HTTP {status}: {}", err_message(&text)));
-        }
+        let mut lines = post_lines(self.post("/v1/messages").header("accept", "text/event-stream"), body, cancel)?;
 
         let mut parts: Vec<Option<Part>> = Vec::new();
         let mut done: Vec<(usize, Block)> = Vec::new();
@@ -432,13 +485,11 @@ impl Client {
         let mut id = String::new();
         let mut cache_seen = false;
 
-        let mut lines = BufReader::new(r.into_body().into_reader()).lines();
         loop {
-            if cancel.load(Ordering::Relaxed) { cancelled = true; break; }
-            let line = match lines.next() {
-                None => break,
-                Some(Ok(l)) => l,
-                Some(Err(e)) => return Err(format!("stream read: {e}")),
+            let line = match lines.as_mut().map(|l| l.next(cancel)).unwrap_or(Ok(Next::Cancelled))? {
+                Next::Line(l) => l,
+                Next::End => break,
+                Next::Cancelled => { cancelled = true; break; }
             };
             let line = line.trim_end_matches('\r');
             if let Some(e) = line.strip_prefix("event:") { event = e.trim().to_string(); continue; }

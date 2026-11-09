@@ -121,7 +121,8 @@ impl Vocab {
         for (k, _) in &e { o.extend(off.to_le_bytes()); off += k.len() as u32 } o.extend(off.to_le_bytes());
         for (_, id) in &e { o.extend(id.to_le_bytes()) }
         for (k, _) in &e { o.extend(k.as_bytes()) }
-        let tmp = out.with_extension("tmp");
+        // a per-process temp name: two workers building it at once must not write into one file
+        let tmp = out.with_extension(format!("{}.tmp", std::process::id()));
         std::fs::write(&tmp, &o)?; std::fs::rename(&tmp, out)
     }
     fn open(tok: &Path, cache: &Path) -> io::Result<Vocab> {

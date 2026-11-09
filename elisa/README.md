@@ -77,7 +77,7 @@ saved) or **deny**. The `.elisa/allow` "always" list never covers outside calls,
 writes and bash (reads still ask; with `-p` and no terminal they are denied). Config `outside` (default `ask`):
 `read-ok` lets outside reads run without asking, `deny` refuses everything outside without asking, `allow` drops the
 outside prompt (the normal rules apply, so `--yes` then allows outside writes). A project's `.elisa/config.toml` can
-only make `outside` stricter than the user config. `/allow` shows the mode and this session's grants.
+only make `outside` stricter than the user config (a looser value there is ignored with a startup note). `/allow` shows the mode and this session's grants.
 
 **Shell sandbox (macOS).** An approved `bash` command, and every check command (check before done), runs under
 `/usr/bin/sandbox-exec` with a Seatbelt profile built for the project folder (`src/sandbox.rs`), so even a command you
@@ -156,6 +156,12 @@ retried. A second failure ends the turn with one line saying what happened (`the
 
 Other flags: `--provider NAME`, `--no-checks`, `--base-url U`, `--model M`, `--max-ctx N` (default: the gateway's `/health` `info.max_ctx`), `--cwd DIR`.
 Ctrl-C cancels the request or the running bash command (its whole process group); Ctrl-C twice quits; Ctrl-D exits.
+Esc / Ctrl-C stops a model request within about 50 ms, also before the server sent its first byte (a long prefill):
+the network reads run on their own thread, so a cancel never waits for the server (`api::post_lines`; it waited 3.6 s
+for qwen3-vl:2b's first token before 2026-11-09).
+An internal error (a panic) in a turn or command never hangs the session: the line ends with an `internal error: … at
+file:line` error (and `turn_done` in the app), the turn's request gets a `[stopped: internal error]` reply, and the next
+message works as usual; a panic inside the memory store turns memory off for the rest of that session.
 The status line after each reply shows tok/s, first-token time, real context use and `reused N` (KV prefix hit).
 A reply with no decode window (a tool-call-only reply, or under 0.2 s of decode) shows `— tok/s` and its total time,
 never a false 0.0; after Esc the context shown is Elisa's estimate when the server reported no usage.
@@ -167,6 +173,15 @@ message, without the old session goal) and the project's pinned facts (`/pin`, a
 the prompt's placeholders (`goal: …`, `keep: must-not-lose facts`) are dropped, and a card with nothing else is none.
 Summaries are cleaned the same way: lines that repeat the summary instructions or their example text, and empty
 headings, are not stored.
+
+The memory store (`~/.elisa/memory`, the `mem` crate) is shared by every project and every running Elisa (two app
+windows, the app and a terminal). Writes take an flock on `memory/lock` and bump a generation counter in it; a process
+whose generation is behind first catches up with what the others wrote (the new log records, or the whole store after
+another process's compaction), so ids stay dense and nothing is written twice. Reads between writes use the process's
+own consistent snapshot; recall refreshes it first. The derived hot files are private to each process (created and
+unlinked at once). Before 2026-11-09 they were shared: a second session's turns and `/clear` rewrote them under an
+idle first session, whose next turn panicked in elisa-mem and hung (longrun2 F1). A long compaction or indexing job in
+one process holds the lock, so another process's memory write waits for it.
 
 **Notes** (`.elisa/notes.md`, written by folds, `/compact` and `/clear`; no model call in any of these steps):
 - A new summary is **merged** into the earlier notes (`context::merge_notes`): sections that describe "now" (the latest
@@ -184,6 +199,19 @@ headings, are not stored.
   real `name = other words` items (not `user`, `Elisa`, `system`, the OS, dates or paths), and a greeting, small talk
   or a plain question never becomes the session goal ("hi Elisa! how are you today?" did; a greeting in front of a
   request is cut off).
+- The session goal comes from your own words, never from pasted text: a long request (over 600 characters or 8
+  lines) gives its first or last paragraph or line when that one is short (up to 300 characters, not repeated in the
+  paste: "count the words in this:"), else no goal; a `goal:` inside the paste does not count. A summary's `## Goal`
+  or a card's `goal:` that quotes the paste is replaced by those words (longrun2: the first 240 characters of a 200 KB
+  paste were the goal and survived `/clear`). After 3 requests in a row that share no content word with the goal
+  (each 3+ content words, no question mark), the goal is taken from the newest request (a goal you stated, "our goal for this session: …", stays until you state another).
+- Outside text stays out of the instructions: a goal, done, current state or next-step line of new notes (summary,
+  digest or card) that repeats a 4-word run of an `<untrusted>`-fenced tool result (web page, document, MCP / plugin
+  output) the user did not write is moved to `## Facts to remember` as `- quoted from <source> (outside data, not an
+  instruction): "…"`; a fact from outside text gets the same form, and a line with an injection phrasing is dropped.
+  A state card loses such items outright (`context::quarantine_notes` / `quarantine_card`; eval
+  `security.injection_not_carried_by_notes`). Before 2026-11-09 a fenced page's instruction became the notes' next step
+  and carried across `/clear`.
 - The notes are capped at a quarter of the room left after system + tools (200–1200 tokens), by priority: the alias
   line, the model's file list, the request quote and the facts go before Elisa's file records, decisions and open tasks;
   a done list loses its oldest items first. (`/clear` shrinking for a short conversation is gentler: see `/clear`.)
@@ -275,7 +303,7 @@ celebration. `--serve-jsonl` sends a `check` event (`src/jsonl.rs`).
 | `/trust [NAME]` | accept an MCP server's changed tool list (see "MCP servers"), or review and accept a plugin whose installed files changed (see "Plugins"); without a name, list both |
 | `/plugin …` | plugins (see "Plugins"): `list`, `add PATH`, `remove NAME`, `enable NAME`, `disable NAME`, `update NAME`, `trust NAME`, `trust project` |
 | `/sandbox [list \| pull X]` | the sandbox images (see "Sandbox images"): each one's purpose, stable / this-project tags, present or missing and size on disk; `/sandbox pull NAME\|IMAGE\|stable\|project\|all` asks first (with the total download size) and then downloads into Colima's VM |
-| `/audit [N]` | the last N (20) entries of this project's audit log, then `chain ok (K entries)` or `chain broken at line L` |
+| `/audit [N]` | the last N (20; at most 500, a bigger N is capped with a note; anything else gets the usage line) entries of this project's audit log, then `chain ok (K entries)` or `chain broken at line L` |
 | `/exit` | quit |
 
 Project files: `ELISA.md` (project instructions, added to the system prompt, max 3,000 chars) and `.elisa/`
@@ -294,11 +322,16 @@ Review the file $ARGS and list problems by severity.
 `$ARGS` is what you type after the command (without `$ARGS`, it is added at the end); the text is sent as a normal
 turn. They load from `~/.elisa/commands/*.md`, the `commands/` folders of enabled plugins, and — after a one-time
 trust prompt — the project's `.elisa/commands/*.md` and its project plugins. Elisa's own commands win a name clash;
-between files the first source wins (yours, plugins, the project). `/help` lists them with where each comes from. A
-project's command text comes from the repository, so it reaches the model inside an `<untrusted>` fence, framed as a
-task description it may not take as permission to reach outside the project, change settings or reveal secrets.
-Front matter keys: `description`, `args` (any other key is an error, shown as a startup note); a file over 64 KB is
-skipped.
+between files the first source wins (yours, plugins, the project). `/help` lists them with where each comes from
+(`/review [path]  Review one file  (~/.elisa/commands)`; a body that uses `$ARGS` without an `args` line shows
+`[args]`, and a description taken from the first line shows `…` for `$ARGS`). A project's command text comes from the
+repository and a plugin's from its author, so either reaches the model inside an `<untrusted>` fence, framed as a
+task description it may not take as permission to reach outside the project, change settings or reveal secrets; only
+your own commands are sent as written. A command file changed since the session loaded it is read again when you use
+it: your own runs with its new text; a plugin's only while the plugin's files still match what you approved (else
+the plugin is off until `/trust NAME`); a project's shows the trust prompt again with the new text — neither the old
+cached text nor the new one runs until you say yes. Front matter keys: `description`, `args` (any other key is an
+error, shown as a startup note); a file over 64 KB is skipped.
 
 ## Permission rules
 
@@ -376,13 +409,14 @@ Slash commands go in the plugin's `commands/` folder (`commands/review.md`, see 
 ```sh
 /plugin add ~/plugins/thinking      # or: elisa plugin add ~/plugins/thinking [--yes]
 /plugin list                        # name, version, user / project, on / off / changed, servers (container / host,
-                                    # tools, token cost), rules, commands
+                                    # tools, token cost, FAILED to start + why), rules, commands
 /plugin disable thinking · /plugin enable thinking · /plugin update thinking · /plugin remove thinking
 ```
 
 - **Setup screen first.** `add` (and `update`, `trust`) shows each server's package and version, installer, image
   (and whether it is on this machine), command, mounts, environment names, the tools it offers, the rules it adds
-  (a broad allow such as `shell(*)` is marked) and its commands — and a warning for anything that runs on the Mac.
+  (a broad allow such as `shell(*)` is marked) and its commands with their full text (what each sends to the model)
+  — and a warning for anything that runs on the Mac.
   Nothing is installed until you say yes. It goes through the normal approval box, so it works in the terminal, in
   plain mode and in the app (`plugin_preview`, then a yes / no `approve` with `question: true`). The CLI
   (`elisa plugin add PATH`) asks y/N on a terminal; without one it needs `--yes`.
@@ -397,7 +431,9 @@ Slash commands go in the plugin's `commands/` folder (`commands/review.md`, see 
   same way at session start. Plugin manifests cannot name images. If Colima
   is not running it says to run `colima start` — Elisa never starts it. `~/.elisa/plugins/NAME/plugin.lock` records
   each server's installer, package, version, image, volume, sha256 of the installed tree, and its tool count and
-  token cost (learnt by starting it once after the install).
+  token cost (learnt by starting it once after the install). If that first start fails, the install is not called
+  "installed and on": the result says the plugin is NOT WORKING, which server did not start and why (the CLI exits
+  1), the lock keeps the reason (`error`), and `/plugin list` and the `plugins` event mark the server failed.
 - **Run locked down.** A session starts each server as `elisa --plugin-run PLUGIN SERVER`, which checks the plugin
   is on, unchanged and installed as declared, then becomes `docker run -i --rm --pull never --network none
   --read-only --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 --memory 512m --pids-limit 128 …`
@@ -405,7 +441,11 @@ Slash commands go in the plugin's `commands/` folder (`commands/review.md`, see 
   the session's folder, `~/…` your home). No other host path, never the docker socket; your home itself, its
   parents, `~/.ssh`, `~/.aws`, `~/.config`, `~/.elisa`, `~/.docker`, `~/.colima`, `~/Library`, `/etc`, `/var/run` and
   the like are refused. Colima shares only your home folder with its VM by default, so a mount elsewhere fails to
-  start. Environment values reach the container by name, never on a command line. There is no network option for a
+  start: docker exits 125 ("bind source path does not exist"), and Elisa shows docker's own message (not just its
+  last line, "Run 'docker run --help'") with the hint to move the project under ~ or add the path to Colima's mounts
+  (`colima stop; colima start --edit`, the `mounts:` list). A server that does not start is
+  marked failed (`/plugin list`: "on, but NOT WORKING"; the `plugins` event: `state: "failed"`, `error`) — its tools
+  are missing until it is fixed. Environment values reach the container by name, never on a command line. There is no network option for a
   running server. Servers stop when the session ends (closing their input ends the container; a container left by a
   killed session is removed the next time one starts).
 - **`runs = "host"`.** Only when declared; the setup screen warns that it runs directly on the Mac. It runs like an
@@ -415,10 +455,16 @@ Slash commands go in the plugin's `commands/` folder (`commands/review.md`, see 
   configured one.
 - **Pinned.** The installed copy (`~/.elisa/plugins/NAME/`: `plugin.toml` and the commands, nothing else) is
   hash-pinned. If it changes, the plugin is off until `/trust NAME` (or `/plugin trust NAME`), which shows the setup
-  screen again. Changing the source folder changes nothing until `/plugin update NAME`.
+  screen again. A changed `plugin.toml` that no longer parses cannot be trusted (there is nothing to review): `/trust`
+  and `elisa plugin trust` show the parse error and the ways out — `/plugin update NAME` (installs it again from its
+  source folder), `/plugin remove NAME`, or leave it off — and ask whether to remove it now (no keeps it off; `--yes`
+  never removes). Changing the source folder changes nothing until `/plugin update NAME`.
 - **Audited.** Every add, remove, enable, disable, update and trust (and a declined one) goes into the audit log.
 - **In a session.** `/plugin add` / `enable` / `disable` / `update` / `remove` take effect at once: servers start
-  or stop, rules and commands come and go, the tool list is rebuilt.
+  or stop, rules and commands come and go, the tool list is rebuilt. A change made elsewhere (another Elisa window,
+  `elisa plugin remove` in a terminal) is picked up before the next turn and before a call of a plugin's tool (one
+  stat of `~/.elisa/plugins.json` when nothing changed): a removed or switched-off plugin's servers stop with a
+  one-line notice, a call of its tool is refused with a clear message, and a newly switched-on one starts.
 
 **Project plugins.** A repository may carry `.elisa/plugins/NAME/plugin.toml`, but a project plugin may only bring
 slash commands and deny / ask rules: a `[[server]]` there is ignored with a note, and so is an allow rule. The
@@ -430,13 +476,16 @@ asks again.
 **In the app (`--serve-jsonl`, full protocol in `src/jsonl.rs`).** Events:
 
 - `plugins` {plugins: [{name, version, description, source: "user"|"project", enabled, trusted, servers: [{name,
-  runs: "container"|"host", installed, tools, tokens, running?}], tools, tokens, rules, commands, notes}]} — at
+  runs: "container"|"host", installed, tools, tokens, running?, state: "ok"|"failed"|"not installed", error}], tools,
+  tokens, rules, commands, notes}]} (`error`: why the server did not start — this session's start, else the last
+  probe after install / update; null when it runs) — at
   startup (when any plugin is installed or the project has one), after every change and on `/plugin list`.
   `elisa plugin list --json` prints the same payload without a session (the app's Plugins window uses it when no
   folder is open)
 - `plugin_preview` {op: "add"|"update"|"trust", name, text, preview: {name, version, old_version, description,
   source, host, servers: [{name, runs, installer, package, version, image, image_present, command, mounts, env,
-  tools}], rules: [{level, pattern, broad}], commands, notes, problems, missing_images}} — the setup screen; a yes /
+  tools}], rules: [{level, pattern, broad}], commands: [{name, description, args, text}], notes, problems,
+  missing_images}} (`text`: the command's full prompt text) — the setup screen; a yes /
   no `approve` with `question: true` follows unless `problems` is non-empty. With `missing_images`, Elisa first asks
   whether to download them (tool `sandbox pull IMAGE…`) and then sends the preview again
 - `sandbox_images` {images: [{image, lang, version, label, purpose, stable, project, default, present, size_mb,
@@ -444,7 +493,8 @@ asks again.
   `sandbox` list request); `elisa sandbox list --json` prints the same without a session
 - `image_pull` {image, state: "pulling"|"done"|"kept"|"cancelled"|"failed", text, done?, layers?, elapsed_s?} — a
   download's progress and end; `interrupt` cancels it
-- `plugin_result` {op, name, ok, text} — after add / remove / enable / disable / update / trust
+- `plugin_result` {op, name, ok, working, text} — after add / remove / enable / disable / update / trust; `working`
+  false with `ok` true: installed / updated, but a server did not start (the text says which and why)
 - `project_trust` {path, hash, text, commands, rules, plugins} — before the project's trust question
 - `approve` gains `rule` (the pattern "always allow this pattern" would save; answer `"rule"`) and `question`
 
@@ -490,7 +540,8 @@ Python `.python-version`, `pyproject.toml` `requires-python`, `runtime.txt`; Nod
 `package.json` `engines.node`; Rust `rust-toolchain(.toml)`, `Cargo.toml` `rust-version`; Go `go.mod` `toolchain` /
 `go`. A project version wins: a minimum (`>=3.11`, `^20`, `~=3.12`) resolves to the newest listed line that
 satisfies it. When that line is missing, Elisa asks to download it; on a no, the call runs on the newest present line
-that still fits (with a note), and that image is not asked about again in the session. If no present line fits, the
+that still fits (with a note), and that image is not asked about again in the session — with `deps` too (the fetch
+runs in the same image, and the deps cache is kept per image, so the fallback line fetches its own set). If no present line fits, the
 model gets the usual missing-image result. A pin outside the list falls back to the line used with no project version,
 with a one-line note. The model may pass `version`, which is checked against the list the same way.
 
@@ -604,7 +655,7 @@ max_ctx = 8192
 | `max_steps` | 30 | model calls per user turn (the loop guard usually stops a stuck turn much earlier: see "Run") |
 | `system_prompt_file` | none | replaces `prompts/system.md` |
 | `think` | false | request thinking |
-| `think_simple` | `"off"` | Reasoning on a turn the reasoning gate (`mcp_reason::wanted`, the same check as `reason = "auto"`, whatever `reason` is) judges simple: a greeting, a short question ("2+2=?", "what is the capital of France?"). `"off"`: the model is asked not to reason and the reply gets a 1024-token cap, where the connection allows it: Ollama's native API sends `think: false` to a reasoning model, and a Qwen3-family reasoning model (which ignores that flag) also gets a closed one-line reasoning block as a trailing assistant message, so it answers at once (qwen3-vl:2b "hi": 150 s of reasoning with no answer before, under 1.5 s now); the answer is shown when complete, with any reasoning it still wrote taken out. Anthropic's API without `think` gets the cap only; other servers are unchanged. `"on"`: simple turns reason like any other. A reply with no visible text once its state card is taken out (any turn, any connection; qwen3-vl:2b sometimes answers "thanks" with only the card) is asked for once more with a one-off nudge that never enters the history; if that is empty too, an info line says so instead of silence. A follow-up ("ok", "continue") keeps the last turn's choice; the choice is made once per turn, so a turn's requests keep one shape. A project config can only set it `"off"` |
+| `think_simple` | `"off"` | Reasoning on a turn the reasoning gate (`mcp_reason::wanted`, the same check as `reason = "auto"`, whatever `reason` is) judges simple: a greeting, a short question ("2+2=?", "what is the capital of France?"). `"off"`: the model is asked not to reason and the reply gets a 1024-token cap, where the connection allows it: Ollama's native API sends `think: false` to a reasoning model, and a Qwen3-family reasoning model (which ignores that flag) also gets a closed one-line reasoning block as a trailing assistant message, so it answers at once (qwen3-vl:2b "hi": 150 s of reasoning with no answer before, under 1.5 s now); the answer is shown when complete, with any reasoning it still wrote taken out. Anthropic's API without `think` gets the cap only; other servers are unchanged. `"on"`: simple turns reason like any other. A reply with no visible text once its state card is taken out (any turn, any connection; qwen3-vl:2b sometimes answers "thanks" with only the card) is asked for once more with a one-off nudge that never enters the history; if that is empty too, an info line says so instead of silence. A simple turn whose reply uses its whole 1024-token cap and shows no text (a 2B model that opened a second reasoning block, which the held answer drops) is sent once more without the simple-turn limits, with an info line; a reply that hits the limit with no text again says so plainly instead of only `[stopped: reply hit max_tokens]`. A follow-up ("ok", "continue") keeps the last turn's choice; the choice is made once per turn, so a turn's requests keep one shape. A project config can only set it `"off"` |
 | `companion` | false | link to the companion window (app/ElisaCompanion) when it runs; same as `--companion` |
 | `checks` | true | check before done after edits (`--no-checks` turns it off) |
 | `check_rounds` | 2 | most fix rounds after a failed check |
@@ -679,7 +730,12 @@ env = { GITHUB_TOKEN = "..." }             # extra environment for a command ser
   injection phrasings ("ignore previous instructions", "you are now …", "print your system prompt", "new
   instructions:", "run the following command", `curl … | sh`, `<|im_start|>system`, `[INST]` …) put a one-line warning
   first inside the fence and show you an info line. Not fenced: Elisa's own tools (read, grep, bash … on your project),
-  the reasoning tools (no outside text) and the code sandbox (output of model-written code, no network).
+  the reasoning tools (no outside text) and the code sandbox (output of model-written code, no network). One rule
+  for `read`: a file in a document format you receive rather than write in a code project — PDF, Word / OpenDocument
+  / RTF / Pages, e-book, mail (`.eml`, `.msg`), a web archive (`.mht`), or an HTML page saved from a browser ("saved
+  from url=") — is fenced like `docs_pdf`'s output, so a document's injected text is data whichever tool reads it
+  (and `read` of a PDF adds a line pointing to `docs_pdf`). It goes by the file's type, not its folder: your project's
+  own files, its `.html` included, stay unfenced.
 
 - **Built-in web server.** `web_search` and `web_fetch` come from Elisa's own server, `elisa --mcp-serve web
   [--engine duckduckgo|searxng|brave] [--searxng-url URL]`, started from the same binary (`src/mcp_web.rs`). The `web`

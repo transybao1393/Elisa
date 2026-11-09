@@ -537,14 +537,25 @@ pub fn run(c: &Call, lim: Limits, cancel: &mut dyn FnMut() -> bool) -> Result<Ou
     let docker = docker.ok_or("the docker CLI is not installed (brew install docker colima)")?;
     let mut cached = None;
     let mut note = None;
+    // a missing image: the list is read again next time, and the newest present line that fits is named for the
+    // session to run on after a no (the deps' cache key is per image, so the fallback fetches its own set)
+    let fallback = choice.fallback;
+    let with_fallback = |mut f: Fail| {
+        if f.missing.is_some() {
+            forget_present();
+            f.fallback = fallback.map(|i| i.version.to_string());
+        }
+        f
+    };
     if !deps.is_empty() {
         let vol = volume(lname, std::env::var(VOLUME_PREFIX_ENV).ok().as_deref());
         let key = cache_key(image, &deps);
         let name = unique_name("fetch");
         let list = deps.join(" ");
         let manifest = if lname == "rust" { cargo_manifest(image, &deps) } else { String::new() };
+        // the fetch runs in the same image as the code, so a missing image is offered (with its fallback) here too
         let f = exec(&docker, &daemon, &name, fetch_args(&name, lname, image, &vol, &key, lim.fetch),
-            &[("ELISA_DEPS", &list), ("ELISA_MANIFEST", &manifest)], None, lim.fetch, cancel, lname, image)?;
+            &[("ELISA_DEPS", &list), ("ELISA_MANIFEST", &manifest)], None, lim.fetch, cancel, lname, image).map_err(with_fallback)?;
         let said = String::from_utf8_lossy(&f.stdout);
         if let Some(w) = &f.stopped {
             let w = if w.starts_with("timed out") { format!("{w} (config sandbox_fetch_timeout)") } else { w.clone() };
@@ -559,13 +570,7 @@ pub fn run(c: &Call, lim: Limits, cancel: &mut dyn FnMut() -> bool) -> Result<Ou
     }
     let name = unique_name("run");
     let args = run_args(&name, lname, image, lim.run, cached.as_ref().map(|(v, k)| (v.as_str(), k.as_str())));
-    let mut o = exec(&docker, &daemon, &name, args, &[("ELISA_CODE", code)], Some(stdin), lim.run, cancel, lname, image).map_err(|mut f| {
-        if f.missing.is_some() {
-            forget_present();
-            f.fallback = choice.fallback.map(|i| i.version.to_string());
-        }
-        f
-    })?;
+    let mut o = exec(&docker, &daemon, &name, args, &[("ELISA_CODE", code)], Some(stdin), lim.run, cancel, lname, image).map_err(with_fallback)?;
     o.deps = note;
     o.image = image.to_string();
     o.note = choice.note.or_else(|| choice.hint.filter(|_| first_hint(lname)));

@@ -341,6 +341,9 @@ pub struct LockServer {
     pub tools: Option<usize>,
     #[serde(default)]
     pub tokens: Option<usize>,
+    /// why its last probe (after install / update) could not start it; None once it started
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl Lock {
@@ -525,7 +528,7 @@ impl Docker {
         }
         let sha = self.tree_hash(image, &vol).map_err(fail)?;
         Ok(LockServer { name: s.name.clone(), installer: inst.word().into(), package: s.package.clone(), version: s.version.clone(), image: image.into(),
-            volume: vol, sha256: sha, installed: now_s(), tools: None, tokens: None })
+            volume: vol, sha256: sha, installed: now_s(), tools: None, tokens: None, error: None })
     }
 
     /// sha256 of a package volume's tree, computed in a container with no network
@@ -695,15 +698,19 @@ pub fn preview(m: &Manifest, src: &Path, old: Option<&Manifest>, home: &Path) ->
     let mut notes = Vec::new();
     let cmds = commands::load_dir(&src.join(&m.commands_dir), &Source::Plugin(m.name.clone()), &mut notes);
     if !cmds.is_empty() {
-        t.push_str("Commands:\n");
-        for c in &cmds { t.push_str(&format!("  {} — {}\n", c.name, c.description)); }
+        // each command's full text: it becomes a prompt to the model, so the user sees what it says before saying yes
+        t.push_str("Commands (the full text each one sends to the model):\n");
+        for c in &cmds {
+            t.push_str(&format!("  {} — {}\n", c.name, c.description));
+            for l in c.body.lines() { t.push_str(&format!("    │ {l}\n")); }
+        }
     }
     for n in m.notes.iter().chain(&notes) { t.push_str(&format!("note: {n}\n")); }
     if problems.is_empty() { t.push_str("Nothing is installed until you say yes."); }
     else { t.push_str(&format!("Cannot install now:\n{}", problems.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n"))); }
     let json = json!({"name": m.name, "version": m.version, "old_version": old.map(|o| o.version.clone()), "description": m.description,
         "source": src.display().to_string(), "servers": servers, "rules": rules, "host": m.servers.iter().any(|s| s.host),
-        "commands": cmds.iter().map(|c| json!({"name": c.name, "description": c.description})).collect::<Vec<_>>(),
+        "commands": cmds.iter().map(|c| json!({"name": c.name, "description": c.description, "args": c.args, "text": c.body})).collect::<Vec<_>>(),
         "notes": m.notes, "problems": problems, "missing_images": missing_images});
     Preview { text: t, json, problems, missing_images }
 }
@@ -805,8 +812,11 @@ pub fn probe(home: &Path, cwd: &Path, name: &str) -> Vec<Probed> {
     let mut lock = Lock::load(&dir);
     for c in &cfgs {
         let r = host.server_tools(&c.name).ok_or_else(|| host.down_reason(&c.name).unwrap_or_else(|| "did not start".into()));
-        if let (Ok((n, tok)), Some(lk)) = (&r, lock.as_mut()) {
-            if let Some(s) = lk.servers.iter_mut().find(|s| s.name == c.name) { s.tools = Some(*n); s.tokens = Some(*tok); }
+        if let Some(s) = lock.as_mut().and_then(|lk| lk.servers.iter_mut().find(|s| s.name == c.name)) {
+            match &r {
+                Ok((n, tok)) => { s.tools = Some(*n); s.tokens = Some(*tok); s.error = None; }
+                Err(e) => s.error = Some(e.clone()),
+            }
         }
         out.push((c.name.clone(), r));
     }
@@ -851,6 +861,13 @@ pub fn changed(home: &Path, name: &str) -> bool {
     State::load(home).plugins.get(name).is_some_and(|e| content_hash(&plugin_dir(home, name)).ok().as_deref() != Some(e.hash.as_str()))
 }
 
+/// The plugin state file's (modified time, size): a session compares it before each turn and before a plugin tool
+/// call, so a plugin removed, switched off or on by another Elisa (a window, `elisa plugin`) is noticed cheaply.
+pub fn state_stamp(home: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(root(home).join(STATE)).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
 pub fn installed(home: &Path, name: &str) -> bool { State::load(home).plugins.contains_key(name) }
 
 /// What `trust` would accept: the installed manifest's preview. Err: nothing to trust.
@@ -859,9 +876,26 @@ pub fn prepare_trust(home: &Path, name: &str) -> Result<(Manifest, Preview), Str
     st.plugins.get(name).ok_or_else(|| format!("no plugin {name:?} is installed"))?;
     if !changed(home, name) { return Err(format!("plugin {name}: its files match what you approved; nothing to trust")); }
     let dir = plugin_dir(home, name);
-    let m = read_manifest(&dir, false)?;
+    let m = read_manifest(&dir, false).map_err(|e| unparsable(name, &e))?;
     let p = preview(&m, &dir, None, home);
     Ok((m, p))
+}
+
+/// the words of `unparsable`'s message a session and the CLI look for (to offer the removal)
+pub const UNPARSABLE: &str = "no longer parses";
+
+/// An installed plugin whose changed plugin.toml does not parse cannot be trusted (there is nothing to review or run):
+/// it stays off, and the message says the ways out (longrun2: only removal worked, and nothing said so).
+fn unparsable(name: &str, e: &str) -> String {
+    format!("plugin {name}: its plugin.toml {UNPARSABLE}, so it cannot be trusted and stays off — {e}
+        Ways out: /plugin update {name} installs it again from its source folder; /plugin remove {name} removes it; \
+        or leave it as it is (it stays off)")
+}
+
+/// the installed plugin changed and its manifest does not parse: the parse error
+pub fn unparsable_now(home: &Path, name: &str) -> Option<String> {
+    if !installed(home, name) || !changed(home, name) { return None; }
+    read_manifest(&plugin_dir(home, name), false).err()
 }
 
 /// Accepts the installed plugin's current files (pins their hash). Servers whose package or version no longer match
@@ -870,9 +904,10 @@ pub fn trust(home: &Path, name: &str) -> Result<String, String> {
     let mut st = State::load(home);
     let dir = plugin_dir(home, name);
     let e = st.plugins.get_mut(name).ok_or_else(|| format!("no plugin {name:?} is installed"))?;
+    // only files that parse can be trusted
+    let m = read_manifest(&dir, false).map_err(|err| unparsable(name, &err))?;
     e.hash = content_hash(&dir)?;
     st.save(home)?;
-    let m = read_manifest(&dir, false)?;
     let lock = Lock::load(&dir).unwrap_or_default();
     let stale: Vec<&str> = m.servers.iter().filter(|s| !s.host && lock.of(s).is_none()).map(|s| s.name.as_str()).collect();
     Ok(if stale.is_empty() { format!("plugin {name}: its current files are trusted") }
@@ -921,7 +956,15 @@ pub fn update(home: &Path, src: &Path, m: &Manifest, say: &mut dyn FnMut(&str)) 
 // ---------- loading for a session ----------
 
 #[derive(Clone, Debug, Default)]
-pub struct SrvInfo { pub name: String, pub runs: &'static str, pub installed: bool, pub tools: Option<usize>, pub tokens: Option<usize> }
+pub struct SrvInfo {
+    pub name: String,
+    pub runs: &'static str,
+    pub installed: bool,
+    pub tools: Option<usize>,
+    pub tokens: Option<usize>,
+    /// it did not start: why (this session's start, else the last probe after install / update)
+    pub error: Option<String>,
+}
 
 /// One plugin as `/plugin list` and the app show it.
 #[derive(Clone, Debug, Default)]
@@ -974,7 +1017,7 @@ pub fn load_user(home: &Path, cwd: &Path, taken: &dyn Fn(&str) -> bool) -> Loade
         for s in &m.servers {
             let lk = lock.of(s);
             info.servers.push(SrvInfo { name: s.name.clone(), runs: s.runs(), installed: s.host || lk.is_some(),
-                tools: lk.and_then(|x| x.tools), tokens: lk.and_then(|x| x.tokens) });
+                tools: lk.and_then(|x| x.tools), tokens: lk.and_then(|x| x.tokens), error: lk.and_then(|x| x.error.clone()) });
         }
         let on = e.enabled && trusted;
         if e.enabled && !trusted {
@@ -1080,6 +1123,21 @@ pub fn trust_project(home: &Path, cwd: &Path, hash: &str) -> Result<(), String> 
     write_json(&p, &v)
 }
 
+/// A session's own view of its plugin servers: `ours` (plugin, server) are the ones it started; `down` gives why one of
+/// them did not start (None: it is running, so an older probe's error no longer applies).
+pub fn set_live(infos: &mut [Info], ours: &[(String, String)], down: &dyn Fn(&str) -> Option<String>) {
+    for i in infos.iter_mut() {
+        for s in i.servers.iter_mut() {
+            if ours.iter().any(|(p, n)| p == &i.name && n == &s.name) { s.error = down(&s.name); }
+        }
+    }
+}
+
+/// the servers of a plugin that did not start, as "name: why" lines
+pub fn failed_servers(i: &Info) -> Vec<String> {
+    i.servers.iter().filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.name))).collect()
+}
+
 /// `/plugin list` text for these plugins
 pub fn list_text(infos: &[Info]) -> String {
     if infos.is_empty() { return "no plugins · /plugin add PATH installs one from a local folder".into(); }
@@ -1090,6 +1148,7 @@ pub fn list_text(infos: &[Info]) -> String {
             ("project", _, false) => "not trusted yet (run one of its commands, or /plugin trust project)".to_string(),
             ("project", _, true) => "trusted".to_string(),
             (_, _, false) => format!("CHANGED since you approved it — off until /trust {}", i.name),
+            (_, true, true) if i.servers.iter().any(|s| s.error.is_some()) => "on, but NOT WORKING: a server failed to start (its tools are missing)".to_string(),
             (_, true, true) => "on".to_string(),
             (_, false, true) => "off".to_string(),
         };
@@ -1097,6 +1156,7 @@ pub fn list_text(infos: &[Info]) -> String {
         let srv: Vec<String> = i.servers.iter().map(|s| {
             let mut d = vec![s.runs.to_string()];
             if !s.installed { d.push("not installed".into()); }
+            if s.error.is_some() { d.push("FAILED to start".into()); }
             if let Some(n) = s.tools { d.push(format!("{n} tool{}", if n == 1 { "" } else { "s" })); }
             if let Some(t) = s.tokens { d.push(format!("~{} tokens", crate::ui::k(t))); }
             format!("{} ({})", s.name, d.join(", "))
@@ -1108,6 +1168,7 @@ pub fn list_text(infos: &[Info]) -> String {
         out.push('\n');
         if !i.description.is_empty() { out.push_str(&format!("  {}\n", i.description)); }
         for n in &i.notes { out.push_str(&format!("  note: {n}\n")); }
+        if i.enabled && i.trusted { for f in failed_servers(i) { out.push_str(&format!("  failed: {f}\n")); } }
     }
     out.push_str("/plugin add PATH · remove · enable · disable · update NAME · trust NAME");
     out
@@ -1118,7 +1179,8 @@ pub fn info_json(i: &Info) -> Value {
     let tools: usize = i.servers.iter().filter_map(|s| s.tools).sum();
     let tokens: usize = i.servers.iter().filter_map(|s| s.tokens).sum();
     json!({"name": i.name, "version": i.version, "description": i.description, "source": i.source, "enabled": i.enabled, "trusted": i.trusted,
-        "servers": i.servers.iter().map(|s| json!({"name": s.name, "runs": s.runs, "installed": s.installed, "tools": s.tools, "tokens": s.tokens})).collect::<Vec<_>>(),
+        "servers": i.servers.iter().map(|s| json!({"name": s.name, "runs": s.runs, "installed": s.installed, "tools": s.tools, "tokens": s.tokens,
+            "state": if s.error.is_some() { "failed" } else if s.installed { "ok" } else { "not installed" }, "error": s.error})).collect::<Vec<_>>(),
         "tools": tools, "tokens": tokens, "rules": i.rules, "commands": i.commands, "notes": i.notes})
 }
 
@@ -1148,21 +1210,57 @@ fn prepare_run(home: &Path, plugin: &str, server: &str, project: Option<&Path>) 
     Ok((d, args))
 }
 
-/// `elisa --plugin-run PLUGIN SERVER`: becomes the server's `docker run` (exec: same pid, same process group, so the
-/// session's MCP host stops it like any server). Errors go to stderr (the host shows the last line).
+/// what a start failure's message says when the container engine cannot see a mounted folder
+pub const SHARE_HINT: &str = "Colima shares only your home folder by default: move the project under ~ or add its path \
+    to Colima's mounts (colima stop; colima start --edit)";
+
+/// The words for a container that docker could not start (exit 125: the daemon refused; 126 / 127: the command
+/// cannot run or is not in the image): the meaningful lines of its stderr (not "Run 'docker run --help'"), and a
+/// hint for a project folder the VM does not share.
+pub fn start_failure(code: i32, stderr: &[String]) -> String {
+    let lines: Vec<&str> = stderr.iter().map(|l| l.trim()).filter(|l| !l.is_empty())
+        .filter(|l| !(l.starts_with("Run 'docker") || l.starts_with("See 'docker")))
+        .map(|l| l.strip_prefix("docker: ").unwrap_or(l)).collect();
+    let msg = lines[lines.len().saturating_sub(3)..].join(" · ");
+    let msg = if msg.is_empty() { "no message from docker".to_string() } else { crate::context::one_line(&msg, 260) };
+    let low = msg.to_ascii_lowercase();
+    let what = match code { 125 => "docker could not start the container", 126 => "the server's command cannot run in the container", _ => "the server's command is not in the container" };
+    let hint = if low.contains("bind source path does not exist") || low.contains("mounts denied") || low.contains("is not shared from the host") {
+        format!(" — {SHARE_HINT}")
+    } else { String::new() };
+    format!("{what} (exit {code}): {msg}{hint}")
+}
+
+/// `elisa --plugin-run PLUGIN SERVER`: runs the server's `docker run` as its child (same process group, so the
+/// session's MCP host stops both like any server). Errors go to stderr (the host shows the last line).
 pub fn run_server(args: &[String]) -> i32 {
-    use std::os::unix::process::CommandExt;
     let (Some(plugin), Some(server)) = (args.first(), args.get(1)) else { eprintln!("usage: elisa {RUN_ARG} PLUGIN SERVER"); return 2 };
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { eprintln!("no HOME"); return 2 };
     let project = std::env::var_os("ELISA_PROJECT").map(PathBuf::from);
     match prepare_run(&home, plugin, server, project.as_deref()) {
         Ok((d, a)) => {
             d.sweep();
+            // a child, not exec: its stderr passes through, and when docker could not start the container (125-127)
+            // the last line says why in words (the session keeps only the last stderr line; longrun2 F5: that was
+            // "Run 'docker run --help' for more information")
             let mut c = Command::new(&d.bin);
-            c.args(&a).env("DOCKER_HOST", &d.host).env_remove("DOCKER_CONTEXT");
-            let e = c.exec();
-            eprintln!("plugin {plugin}/{server}: cannot run docker: {e}");
-            1
+            c.args(&a).env("DOCKER_HOST", &d.host).env_remove("DOCKER_CONTEXT").stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::piped());
+            let mut child = match c.spawn() { Ok(c) => c, Err(e) => { eprintln!("plugin {plugin}/{server}: cannot run docker: {e}"); return 1 } };
+            let mut kept: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+            if let Some(se) = child.stderr.take() {
+                use std::io::BufRead;
+                for l in std::io::BufReader::new(se).lines().map_while(Result::ok) {
+                    eprintln!("{l}");
+                    kept.push_back(l);
+                    if kept.len() > 40 { kept.pop_front(); }
+                }
+            }
+            let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(1);
+            if matches!(code, 125..=127) {
+                let lines: Vec<String> = kept.into_iter().collect();
+                eprintln!("plugin {plugin}/{server}: {}", start_failure(code, &lines));
+            }
+            code
         }
         // the marker stays at the start of the line (the session keeps only the first part of the last stderr line)
         Err(e) if e.starts_with(crate::images::MARKER) => { eprintln!("{e} · plugin {plugin}/{server}"); 2 }
@@ -1188,6 +1286,16 @@ fn print_probe(p: &[Probed]) {
     for (s, r) in p {
         match r { Ok((n, t)) => println!("{s}: {n} tool{} · ~{} tokens", if *n == 1 { "" } else { "s" }, crate::ui::k(*t)), Err(e) => println!("{s}: did not start: {e}") }
     }
+}
+
+/// The last line after an install, update or trust: "installed and on" only when every server started in the probe;
+/// else which ones did not (their tools are missing) and that the reason is above. (all started, the line)
+pub fn outcome_line(done: &str, probed: &[Probed]) -> (bool, String) {
+    let bad: Vec<&str> = probed.iter().filter(|(_, r)| r.is_err()).map(|(s, _)| s.as_str()).collect();
+    if bad.is_empty() { return (true, done.to_string()); }
+    let done = done.replace(" and on", "");
+    (false, format!("{done}, but it is NOT WORKING: server {} did not start, so its tools are missing (the reason is above; \
+        /plugin list shows it). Fix that, then start a new session or /plugin disable and enable it", bad.join(", ")))
 }
 
 /// one audit line for a plugin operation
@@ -1226,10 +1334,13 @@ pub fn cli(args: &[String]) -> i32 {
                 return 1;
             }
             if let Err(e) = install(&home, &src, &m, &mut |l| println!("{l}")) { audit(&log, "add", &m.name, "error", &e); return fail(&e); }
-            print_probe(&probe(&home, &cwd, &m.name));
-            audit(&log, "add", &m.name, "ok", &m.version);
-            println!("plugin {} {} installed and on (new sessions use it)", m.name, m.version);
-            0
+            let pr = probe(&home, &cwd, &m.name);
+            print_probe(&pr);
+            let (ok, line) = outcome_line(&format!("plugin {} {} installed and on (new sessions use it)", m.name, m.version), &pr);
+            audit(&log, "add", &m.name, if ok { "ok" } else { "error" }, if ok { &m.version } else { &line });
+            println!("{line}");
+            // installed, but a server did not start: not a success for a script either
+            if ok { 0 } else { 1 }
         }
         Some("remove") if !arg.is_empty() => match remove(&home, arg) {
             Ok(notes) => { for n in notes { println!("{n}"); } audit(&log, "remove", arg, "ok", ""); println!("plugin {arg} removed"); 0 }
@@ -1245,12 +1356,35 @@ pub fn cli(args: &[String]) -> i32 {
             if !p.problems.is_empty() { audit(&log, "update", arg, "error", &p.problems.join("; ")); return 1; }
             if !confirm(&format!("Update plugin {arg} to {}?", m.version), yes) { audit(&log, "update", arg, "declined", ""); return 1; }
             match update(&home, &src, &m, &mut |l| println!("{l}")) {
-                Ok(()) => { print_probe(&probe(&home, &cwd, arg)); audit(&log, "update", arg, "ok", &m.version); println!("plugin {arg} updated to {}", m.version); 0 }
+                Ok(()) => {
+                    let pr = probe(&home, &cwd, arg);
+                    print_probe(&pr);
+                    let (ok, line) = outcome_line(&format!("plugin {arg} updated to {}", m.version), &pr);
+                    audit(&log, "update", arg, if ok { "ok" } else { "error" }, if ok { &m.version } else { &line });
+                    println!("{line}");
+                    if ok { 0 } else { 1 }
+                }
                 Err(e) => { audit(&log, "update", arg, "error", &e); fail(&e) }
             }
         }
         Some("trust") if !arg.is_empty() => {
-            let (_, p) = match prepare_trust(&home, arg) { Ok(x) => x, Err(e) => return fail(&e) };
+            let (_, p) = match prepare_trust(&home, arg) {
+                Ok(x) => x,
+                Err(e) if e.contains(UNPARSABLE) => {
+                    eprintln!("{e}");
+                    audit(&log, "trust", arg, "error", &e);
+                    // the way out the user is most likely to want, asked (never assumed: --yes approves a trust, not a removal)
+                    if confirm(&format!("Remove plugin {arg} now? (no keeps it off)"), false) {
+                        return match remove(&home, arg) {
+                            Ok(notes) => { for n in notes { println!("{n}"); } audit(&log, "remove", arg, "ok", ""); println!("plugin {arg} removed"); 0 }
+                            Err(e) => { audit(&log, "remove", arg, "error", &e); fail(&e) }
+                        };
+                    }
+                    println!("plugin {arg} stays off");
+                    return 1;
+                }
+                Err(e) => return fail(&e),
+            };
             println!("{}", p.text);
             // same as /plugin trust in a session: a plugin that cannot run as it stands is not trusted
             if !p.problems.is_empty() { audit(&log, "trust", arg, "error", &p.problems.join("; ")); return 1; }

@@ -42,7 +42,8 @@ case "$1" in
   tag) echo "sha256:old|7000000|x@restored " > "$S/$(key "$3")"; exit 0;;
   rmi) rm -f "$S/$(key "$2")"; exit 0;;
   run)
-    for a in "$@"; do if [ -f "$S/$(key "$a")" ]; then echo "fake ran in $a"; exit 0; fi; done
+    for a in "$@"; do if [ -f "$S/$(key "$a")" ]; then
+      case "$*" in *"--name elisa-fetch-"*) echo "ELISA-FETCHED"; echo "FETCHED $a" >> "$S/log";; *) echo "fake ran in $a";; esac; exit 0; fi; done
     echo "docker: Error response from daemon: No such image" >&2; exit 125;;
 esac
 exit 0
@@ -281,6 +282,32 @@ fn a_present_older_line_runs_when_the_user_says_no_and_is_named_once() {
 }
 
 #[test]
+fn with_deps_a_no_to_the_download_also_falls_back_and_is_not_asked_again() {
+    // longrun2 F2: the fetch phase runs in the wanted image too; a no there must fall back like a run without deps
+    let d = setup("fallbackdeps");
+    std::fs::write(d.0.join("state/python_3.13-alpine"), "sha256:old|7000000|x@sha256:old ").unwrap();
+    std::fs::create_dir_all(d.0.join("project/.git")).unwrap();
+    std::fs::write(d.0.join("project/pyproject.toml"), "[project]\nname = 'x'\nrequires-python = '>=3.11'\n").unwrap();
+    let py = json!({"language": "python", "code": "import six", "deps": ["six==1.16.0"]});
+    let model = FakeModel::start(vec![tool("run_code", py.clone()), text("a"), tool("run_code", py), text("b")], 32768).unwrap();
+    let mut s = Sess::start(&d.0, &model);
+    s.until("ready", &mut Vec::new());
+    let evs = s.turn("run it", &["yes", "no"]);
+    let asked = of(&evs, "approve");
+    assert_eq!(asked.len(), 2, "{evs:?}");
+    assert_eq!(asked[1]["tool"], "sandbox pull python:3.15-alpine", "{asked:?}");
+    let out = of(&evs, "tool_done")[0]["output"].as_str().unwrap().to_string();
+    assert!(out.contains("fake ran in python:3.13-alpine") && out.contains("deps fetched") && out.contains("ran on Python 3.13"), "{out}");
+    // the deps were fetched in the fallback image (its own cache key), and the second call is not asked again
+    let evs = s.turn("again", &["yes"]);
+    assert_eq!(of(&evs, "approve").len(), 1, "{evs:?}");
+    assert!(of(&evs, "tool_done")[0]["output"].as_str().unwrap().contains("fake ran in python:3.13-alpine"), "{evs:?}");
+    let l = log(&d.0);
+    assert!(l.contains("FETCHED python:3.13-alpine") && !l.contains("FETCHED python:3.15-alpine"), "{l}");
+    assert_eq!(l.matches("ARGS pull ").count(), 0);
+}
+
+#[test]
 fn a_plugin_server_down_for_a_missing_image_is_offered_at_startup() {
     let d = setup("plugin");
     // a host-run server that fails the way `--plugin-run` does when its image is missing
@@ -288,7 +315,9 @@ fn a_plugin_server_down_for_a_missing_image_is_offered_at_startup() {
     std::fs::write(d.0.join("src/plugin.toml"), "[plugin]\nname = \"p\"\nversion = \"1.0.0\"\n\n[[server]]\nname = \"srv\"\nruns = \"host\"\n\
         command = [\"sh\", \"-c\", \"echo 'elisa:missing-image=bash:5.3 · the image bash:5.3 is not on this machine · plugin p/srv' >&2; exit 2\"]\n").unwrap();
     let (code, out) = elisa(&d.0, &["plugin", "add", &d.0.join("src").display().to_string(), "--yes"], &[]);
-    assert_eq!(code, 0, "{out}");
+    // installed, but its first start failed: said, not "installed and on"
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("installed (new sessions use it), but it is NOT WORKING: server srv did not start"), "{out}");
     let model = FakeModel::start(vec![text("hi")], 32768).unwrap();
     let mut s = Sess::start(&d.0, &model);
     let evs = s.until("ready", &mut vec!["no"]);

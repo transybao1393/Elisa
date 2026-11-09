@@ -150,6 +150,24 @@ fn when_local(ms: u64) -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} {zone}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
+/// the most lines `/audit N` shows
+pub const SHOW_MAX: usize = 500;
+
+/// `/audit [N]`'s N: 20 when empty, at most SHOW_MAX (a bigger one is capped, with a note); Err: the usage line for
+/// anything else (a negative number, a word, zero)
+pub fn count_arg(arg: &str) -> Result<(usize, Option<String>), String> {
+    const USAGE: &str = "usage: /audit [N] — the last N entries (1 to 500; default 20), then the chain check";
+    let a = arg.trim();
+    if a.is_empty() { return Ok((20, None)); }
+    if !a.chars().all(|c| c.is_ascii_digit()) { return Err(USAGE.into()); }
+    // digits only: too big for a number at all is simply "too many"
+    match a.parse::<usize>() {
+        Ok(0) => Err(USAGE.into()),
+        Ok(n) if n <= SHOW_MAX => Ok((n, None)),
+        _ => Ok((SHOW_MAX, Some(format!("showing the last {SHOW_MAX} entries (the most /audit shows; the whole log is the file below)")))),
+    }
+}
+
 /// The last `n` lines of the log at `path`, one readable line each: `time  event  outcome  server/tool  summary`.
 pub fn last(path: &Path, n: usize) -> Vec<String> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
@@ -167,6 +185,16 @@ pub fn last(path: &Path, n: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_audit_count_is_checked_and_capped() {
+        assert_eq!(count_arg(""), Ok((20, None)));
+        assert_eq!(count_arg(" 30 "), Ok((30, None)));
+        for bad in ["-3", "0", "abc", "1.5", "+4"] { assert!(count_arg(bad).unwrap_err().starts_with("usage: /audit [N]"), "{bad}"); }
+        let (n, note) = count_arg("99999999999999999999999999").unwrap();
+        assert_eq!(n, SHOW_MAX);
+        assert!(note.unwrap().contains("the last 500 entries"));
+    }
 
     #[test]
     fn dates() {

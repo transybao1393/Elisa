@@ -7,12 +7,21 @@
 //!   sorted term table, postings (delta+varint, tf) + entity co-occurrence lists, adjacency lists
 //!   (edges + mentioned term ids), block directory, lz4 text blocks (~64 KB each).
 //!
+//! - `lock`: an flock taken (exclusive) around every write, reload and compaction, plus an 8-byte generation
+//!   counter at offset 0 that every write bumps. Several processes (two Elisa windows, the app and a terminal) share
+//!   one store: before it writes, a process whose generation is behind re-reads what the others added (`sync`).
+//!   Reads between writes see the process's own consistent snapshot (its index mapping, its segment handles and its
+//!   private hot files); `refresh` brings the snapshot up to date.
+//! - hot postings/edges: derived from the log into files private to each open store (created and unlinked at once),
+//!   never shared between processes (before 2026-11-09 they were the shared `hot.post`/`hot.adj`: another process's
+//!   open rewrote them under a running session, whose next read indexed past its own doc table and panicked).
+//!
 //! Every node (project, session, turn, note, fact) gets a dense sequential id, so the doc table is an array.
 //! Entities are the extracted terms; turn→entity "mentions" are the postings/forward lists.
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -297,7 +306,7 @@ fn vrec(id: u32, v: &[f32; embed::DIM]) -> Vec<u8> {
 }
 
 // ---------- mmap'd index ----------
-struct Mmap { p: *mut u8, n: usize, path: PathBuf }
+struct Mmap { p: *mut u8, n: usize, f: File }
 impl Mmap {
     fn open(path: &Path) -> io::Result<Mmap> {
         let f = File::open(path)?;
@@ -305,14 +314,13 @@ impl Mmap {
         if n == 0 { return Err(bad("empty index")) }
         let p = unsafe { libc::mmap(std::ptr::null_mut(), n, libc::PROT_READ, libc::MAP_PRIVATE, f.as_raw_fd(), 0) };
         if p == libc::MAP_FAILED { return Err(io::Error::last_os_error()) }
-        Ok(Mmap { p: p as *mut u8, n, path: path.to_path_buf() })
+        Ok(Mmap { p: p as *mut u8, n, f })
     }
-    /// Map the file afresh over the same range (MAP_FIXED): pages touched so far leave this process's RSS
-    /// (they stay in the OS page cache). Callers must hold no slices into the mapping.
+    /// Map the same file afresh over the same range (MAP_FIXED): pages touched so far leave this process's RSS
+    /// (they stay in the OS page cache). Callers must hold no slices into the mapping. The open handle is used, not
+    /// the path: another process may have renamed a new index over it (a remap by path mapped that one in).
     fn evict(&self) {
-        let Ok(f) = File::open(&self.path) else { return };
-        if f.metadata().map_or(true, |m| m.len() as usize != self.n) { return }
-        unsafe { libc::mmap(self.p as *mut libc::c_void, self.n, libc::PROT_READ, libc::MAP_PRIVATE | libc::MAP_FIXED, f.as_raw_fd(), 0) };
+        unsafe { libc::mmap(self.p as *mut libc::c_void, self.n, libc::PROT_READ, libc::MAP_PRIVATE | libc::MAP_FIXED, self.f.as_raw_fd(), 0) };
     }
     fn b(&self) -> &[u8] { unsafe { std::slice::from_raw_parts(self.p, self.n) } }
 }
@@ -390,11 +398,69 @@ impl Index {
 struct Hot { base: u32, metas: Vec<Meta>, locs: Vec<(u32, u64, u32)>, scored: u32, sum_len: u64, sessions: usize }
 #[derive(Default)]
 struct HotView { post: HashMap<String, Vec<(u32, u32)>>, adj: HashMap<u32, Vec<(u8, u32)>> }
+/// the shared derived files of stores before 2026-11-09 (removed on open; the hot files are private now)
 const HOT_POST: &str = "hot.post";
 const HOT_ADJ: &str = "hot.adj";
+const LOCK: &str = "lock";
+/// `Memory::gen` after a write that did not finish (a panic): the next write re-reads the whole store
+const STALE: u64 = u64::MAX;
+
+/// A derived file private to this open store: created and unlinked at once, so no other process can see or rewrite
+/// it, and nothing is left behind when the process ends.
+fn private_file(dir: &Path, tag: &str) -> io::Result<File> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let p = dir.join(format!(".{tag}-{}-{}.tmp", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let _ = fs::remove_file(&p);
+    let f = OpenOptions::new().read(true).append(true).create_new(true).open(&p)?;
+    let _ = fs::remove_file(&p);
+    Ok(f)
+}
+/// (device, inode, length) of a file, to tell whether another process replaced it
+fn file_id(p: &Path) -> Option<(u64, u64, u64)> { fs::metadata(p).ok().map(|m| (m.dev(), m.ino(), m.len())) }
+
+/// The store's cross-process lock (`dir/lock`): flock, re-entrant within one store, plus the generation counter.
+struct Lock { f: File, depth: std::cell::Cell<u32> }
+type LockRef = std::rc::Rc<Lock>;
+impl Lock {
+    fn open(dir: &Path) -> io::Result<LockRef> {
+        let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(LOCK))?;
+        Ok(std::rc::Rc::new(Lock { f, depth: Default::default() }))
+    }
+    fn gen(&self) -> u64 { let mut b = [0u8; 8]; self.f.read_exact_at(&mut b, 0).map_or(0, |_| u64::from_le_bytes(b)) }
+    fn bump(&self) -> u64 { let g = self.gen().wrapping_add(1) % STALE; let _ = self.f.write_all_at(&g.to_le_bytes(), 0); g }
+}
+/// The lock held; released when the outermost holder drops it (also when a panic unwinds through it, after a
+/// generation bump so the other processes re-read what the unfinished write left).
+struct Held(LockRef);
+fn hold(l: &LockRef) -> io::Result<Held> {
+    if l.depth.get() == 0 {
+        while unsafe { libc::flock(l.f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted { return Err(e) }
+        }
+    }
+    l.depth.set(l.depth.get() + 1);
+    Ok(Held(l.clone()))
+}
+impl Drop for Held {
+    fn drop(&mut self) {
+        let d = self.0.depth.get().saturating_sub(1);
+        self.0.depth.set(d);
+        if d == 0 {
+            if std::thread::panicking() { self.0.bump(); }
+            unsafe { libc::flock(self.0.f.as_raw_fd(), libc::LOCK_UN); }
+        }
+    }
+}
 
 pub struct Memory {
     dir: PathBuf, idx: Option<Index>, hot: Hot,
+    /// the cross-process lock (None in a worker process: its parent holds it for the job)
+    lock: Option<LockRef>,
+    /// the lock file's generation this snapshot matches (STALE: re-read everything before the next write)
+    gen: u64,
+    /// identity of the index file this snapshot mapped (another process's compaction replaces it)
+    idx_id: Option<(u64, u64, u64)>,
     hpost: File, hadj: File, view: std::cell::RefCell<Option<std::rc::Rc<HotView>>>,
     segs: Vec<(u32, File)>, seg_len: u64,
     projects: HashMap<String, u32>, fact_keys: HashMap<String, (u32, String)>, alias: Aliases,
@@ -438,13 +504,29 @@ impl std::ops::DerefMut for Buf { fn deref_mut(&mut self) -> &mut [u8] { unsafe 
 impl Drop for Buf { fn drop(&mut self) { unsafe { libc::munmap(self.p as *mut libc::c_void, self.cap); } } }
 
 impl Memory {
+    /// Open (or create) the store in `dir`. Takes the store's lock while it reads the log, so a torn tail it cuts
+    /// off can never be another process's record still being written.
     pub fn open(dir: &Path) -> io::Result<Memory> {
         fs::create_dir_all(dir)?;
+        let l = Lock::open(dir)?;
+        let _h = hold(&l)?;
+        // the shared derived files of older versions (now private per process)
+        for f in [HOT_POST, HOT_ADJ] { let _ = fs::remove_file(dir.join(f)); }
+        let mut m = Memory::load(dir, Some(l.clone()))?;
+        m.gen = l.gen();
+        Ok(m)
+    }
+    /// Open without the lock: a worker process, whose parent holds the lock for the whole job.
+    fn open_unlocked(dir: &Path) -> io::Result<Memory> { Memory::load(dir, None) }
+
+    fn load(dir: &Path, lock: Option<LockRef>) -> io::Result<Memory> {
+        fs::create_dir_all(dir)?;
         let ip = dir.join("index.mg");
+        let idx_id = file_id(&ip);
         let idx = if ip.exists() { Some(Index::load(&ip)?) } else { None };
         let base = idx.as_ref().map_or(0, |i| i.nd);
-        let hfile = |n: &str| -> io::Result<File> { let f = OpenOptions::new().read(true).append(true).create(true).open(dir.join(n))?; f.set_len(0)?; Ok(f) };
-        let mut m = Memory { dir: dir.to_path_buf(), idx, hot: Hot { base, ..Default::default() }, hpost: hfile(HOT_POST)?, hadj: hfile(HOT_ADJ)?,
+        let mut m = Memory { dir: dir.to_path_buf(), idx, hot: Hot { base, ..Default::default() }, lock, gen: 0, idx_id,
+            hpost: private_file(dir, "hot-post")?, hadj: private_file(dir, "hot-adj")?,
             view: Default::default(), segs: vec![], seg_len: 0,
             projects: HashMap::new(), fact_keys: HashMap::new(), alias: Aliases::default(), last_turn: HashMap::new(), last_note: HashMap::new(), cards: HashMap::new(),
             torn: false, compact_every: 10, model: embed::model_dir(), vhot: None, vec_last: None, progress: None,
@@ -460,36 +542,82 @@ impl Memory {
         drop(cache);
         if let Some(ix) = &m.idx { let a = ix.b()[ix.oal..ix.oal + ix.nal].to_vec(); m.alias.decode(&a) }
         m.open_vectors()?;
-        let mut nums: Vec<u32> = fs::read_dir(dir)?.flatten().filter_map(|e| {
-            let n = e.file_name().into_string().ok()?;
-            n.strip_prefix("log-")?.strip_suffix(".seg")?.parse().ok()
-        }).collect();
-        nums.sort();
-        for n in nums {
-            let path = m.seg_path(n);
-            let f = OpenOptions::new().read(true).append(true).open(&path)?;
-            // stream records through a 64 KB reader (RAM bounded by the largest record, not the segment)
-            let total = f.metadata()?.len();
-            let mut rd = BufReader::with_capacity(WBUF, File::open(&path)?);
-            let si = m.segs.len() as u32;
+        for n in seg_nums(dir)? {
+            let f = OpenOptions::new().read(true).append(true).open(m.seg_path(n))?;
             m.segs.push((n, f));
-            let (mut p, mut hdr, mut pl) = (0u64, [0u8; 8], Vec::new());
-            while p + 8 <= total {
-                if rd.read_exact(&mut hdr).is_err() { break }
-                let len = r32(&hdr, 0) as u64;
-                if p + 8 + len > total { break }
-                pl.resize(len as usize, 0);
-                if rd.read_exact(&mut pl).is_err() || crc32fast::hash(&pl) != r32(&hdr, 4) { break }
-                m.replay(&pl, si, p + 8);
-                p += 8 + len;
-            }
-            drop(rd);
-            if p < total { m.segs[si as usize].1.set_len(p)?; m.segs[si as usize].1.sync_all()?; m.torn = true; }
-            m.seg_len = p;
+            m.scan_seg(m.segs.len() as u32 - 1, 0)?;
         }
         if m.segs.is_empty() { m.new_seg(1)?; }
         m.settle();
         Ok(m)
+    }
+    /// Replay the records of segment `si` from byte `from` to its end; a torn or corrupt tail is cut off (callers
+    /// hold the lock, so no record is half written by another process). Sets `seg_len` to the segment's good end.
+    fn scan_seg(&mut self, si: u32, from: u64) -> io::Result<()> {
+        let path = self.seg_path(self.segs[si as usize].0);
+        let total = self.segs[si as usize].1.metadata()?.len();
+        // stream records through a 64 KB reader (RAM bounded by the largest record, not the segment)
+        let mut rd = BufReader::with_capacity(WBUF, File::open(&path)?);
+        rd.seek_relative(from as i64)?;
+        let (mut p, mut hdr, mut pl) = (from, [0u8; 8], Vec::new());
+        while p + 8 <= total {
+            if rd.read_exact(&mut hdr).is_err() { break }
+            let len = r32(&hdr, 0) as u64;
+            if p + 8 + len > total { break }
+            pl.resize(len as usize, 0);
+            if rd.read_exact(&mut pl).is_err() || crc32fast::hash(&pl) != r32(&hdr, 4) { break }
+            self.replay(&pl, si, p + 8);
+            p += 8 + len;
+        }
+        drop(rd);
+        if p < total { self.segs[si as usize].1.set_len(p)?; self.segs[si as usize].1.sync_all()?; self.torn = true; }
+        self.seg_len = p;
+        Ok(())
+    }
+
+    /// Run a write under the store's lock. First, if another process wrote since this snapshot (the generation moved
+    /// on), catch up with it (`sync`), so ids stay dense and every record lands at the offset this process records
+    /// for it. Afterwards bump the generation so the other processes catch up before their next write.
+    fn write<R>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<R>) -> io::Result<R> {
+        let Some(l) = self.lock.clone() else { return f(self) };
+        let outer = l.depth.get() == 0;
+        let _h = hold(&l)?;
+        if !outer { return f(self) }
+        if l.gen() != self.gen { self.sync()?; }
+        // a panic inside leaves this snapshot unsure: the next write re-reads the whole store
+        self.gen = STALE;
+        let r = f(self);
+        self.gen = l.bump();
+        r
+    }
+    /// Bring this snapshot up to date with what other processes wrote (no-op when nothing changed). Returns
+    /// whether anything was re-read. Reads never need it for safety (a snapshot stays consistent); call it before
+    /// a read that should see the other processes' newest memories.
+    pub fn refresh(&mut self) -> io::Result<bool> {
+        let Some(l) = self.lock.clone() else { return Ok(false) };
+        let _h = hold(&l)?;
+        if l.gen() == self.gen { return Ok(false) }
+        self.sync()?;
+        self.gen = l.gen();
+        Ok(true)
+    }
+    /// Catch up with the store on disk (lock held). Same index and segment files: replay only the records appended
+    /// after this snapshot's end (into the private hot files). Otherwise (another process compacted, or this
+    /// snapshot is STALE) re-open the whole store.
+    fn sync(&mut self) -> io::Result<()> {
+        let same = self.gen != STALE && file_id(&self.dir.join("index.mg")) == self.idx_id
+            && seg_nums(&self.dir)? == self.segs.iter().map(|s| s.0).collect::<Vec<_>>();
+        if same && !self.segs.is_empty() {
+            let si = self.segs.len() as u32 - 1;
+            let from = self.seg_len;
+            self.scan_seg(si, from)?;
+            self.vhot = None;
+            self.open_vectors()?;
+            self.settle();
+            Ok(())
+        } else {
+            self.reload()
+        }
     }
 
     fn seg_path(&self, n: u32) -> PathBuf { self.dir.join(format!("log-{n:06}.seg")) }
@@ -636,7 +764,9 @@ impl Memory {
     fn meta(&self, id: u32) -> Meta {
         if id < self.hot.base { self.idx.as_ref().unwrap().meta(id) } else { self.hot.metas.get((id - self.hot.base) as usize).copied().unwrap_or_default() }
     }
-    fn text(&self, id: u32, cache: &mut Cache) -> String {
+    fn text(&self, id: u32, cache: &mut Cache) -> String { self.text_opt(id, cache).unwrap_or_default() }
+    /// The text of `id`, None for an id this snapshot does not have (never indexes past its tables).
+    fn text_opt(&self, id: u32, cache: &mut Cache) -> Option<String> {
         if id < self.hot.base {
             let ix = self.idx.as_ref().unwrap();
             let (b, o) = (ix.b(), ix.row(id));
@@ -644,12 +774,13 @@ impl Memory {
             let d = cache.entry(blk).or_insert_with(|| ix.block(blk));
             // texts are contiguous: a doc ends where the next one starts, or at the end of its block
             let end = if id + 1 < ix.nd && r32(b, o + 28) == blk { r32(b, o + 32) as usize } else { d.len() };
-            String::from_utf8_lossy(d.get(bo..end).unwrap_or(&[])).into_owned()
+            Some(String::from_utf8_lossy(d.get(bo..end).unwrap_or(&[])).into_owned())
         } else {
-            let (si, off, len) = self.hot.locs[(id - self.hot.base) as usize];
+            let &(si, off, len) = self.hot.locs.get((id - self.hot.base) as usize)?;
+            let (_, f) = self.segs.get(si as usize)?;
             let mut v = vec![0u8; len as usize];
-            let _ = self.segs[si as usize].1.read_exact_at(&mut v, off);
-            String::from_utf8_lossy(&v).into_owned()
+            f.read_exact_at(&mut v, off).ok()?;
+            Some(String::from_utf8_lossy(&v).into_owned())
         }
     }
     fn edges(&self, id: u32) -> Vec<(u8, u32)> {
@@ -681,15 +812,15 @@ impl Memory {
     pub fn add_card(&mut self, session: u64, text: &str, prev: Option<u64>, turns: &[u64]) -> io::Result<u64> {
         let mut ids = vec![prev.map_or(NONE, |p| p as u32)];
         ids.extend(turns.iter().map(|&t| t as u32));
-        Ok(self.put(CARD, session as u32, 0, &ids, text)? as u64)
+        self.write(|m| Ok(m.put(CARD, session as u32, 0, &ids, text)? as u64))
     }
     /// Newest card of `project` across all sessions.
     pub fn latest_card(&self, project: &str) -> Option<(u64, String)> {
         let p = *self.projects.get(project)?;
         let &(_, id, _) = self.cards.get(&p)?;
-        let t = self.text(id, &mut Cache::new());
+        let t = self.text_opt(id, &mut Cache::new());
         self.settle();
-        Some((id as u64, t))
+        Some((id as u64, t?))
     }
     /// Up to `n` cards walking back from `id` (inclusive) along prev links; from a milestone, its skip list
     /// yields the next 10 cards in one adjacency read instead of 10 hops.
@@ -717,24 +848,32 @@ impl Memory {
         v
     }
     pub fn begin_session(&mut self, project: &str) -> u64 {
-        let p = match self.projects.get(project) { Some(&p) => p, None => self.put(PROJECT, NONE, 0, &[], project).expect("elisa-mem: log write") };
-        self.put(SESSION, p, 0, &[], "").expect("elisa-mem: log write") as u64
+        self.try_begin_session(project).expect("elisa-mem: log write")
+    }
+    /// `begin_session` that returns a write error instead of panicking.
+    pub fn try_begin_session(&mut self, project: &str) -> io::Result<u64> {
+        self.write(|m| {
+            let p = match m.projects.get(project) { Some(&p) => p, None => m.put(PROJECT, NONE, 0, &[], project)? };
+            Ok(m.put(SESSION, p, 0, &[], "")? as u64)
+        })
     }
     pub fn add_turn(&mut self, session: u64, role: Role, text: &str) -> io::Result<u64> {
-        Ok(self.put(TURN, session as u32, (role == Role::Assistant) as u8, &[], text)? as u64)
+        self.write(|m| Ok(m.put(TURN, session as u32, (role == Role::Assistant) as u8, &[], text)? as u64))
     }
     pub fn add_note(&mut self, session: u64, text: &str, summarised: &[u64]) -> io::Result<u64> {
         let ids: Vec<u32> = summarised.iter().map(|&i| i as u32).collect();
-        Ok(self.put(NOTE, session as u32, 0, &ids, text)? as u64)
+        self.write(|m| Ok(m.put(NOTE, session as u32, 0, &ids, text)? as u64))
     }
-    pub fn pin_fact(&mut self, session: u64, text: &str) -> io::Result<u64> { Ok(self.put(FACT, session as u32, 0, &[], text)? as u64) }
+    pub fn pin_fact(&mut self, session: u64, text: &str) -> io::Result<u64> { self.write(|m| Ok(m.put(FACT, session as u32, 0, &[], text)? as u64)) }
     pub fn end_session(&mut self, session: u64) -> io::Result<()> {
-        self.append(END, session as u32, NONE, 0, &[], "")?;
-        self.last_turn.remove(&(session as u32)); self.last_note.remove(&(session as u32));
-        self.hot.sessions += 1;
-        if self.auto_index { self.index_pending()?; }
-        if self.compact_every > 0 && self.hot.sessions >= self.compact_every { self.compact()? }
-        Ok(())
+        self.write(|m| {
+            m.append(END, session as u32, NONE, 0, &[], "")?;
+            m.last_turn.remove(&(session as u32)); m.last_note.remove(&(session as u32));
+            m.hot.sessions += 1;
+            if m.auto_index { m.index_pending()?; }
+            if m.compact_every > 0 && m.hot.sessions >= m.compact_every { m.compact()? }
+            Ok(())
+        })
     }
 
     /// Merge the index and the hot log into a new index segment (lossless), then drop the hot logs.
@@ -742,7 +881,8 @@ impl Memory {
     /// size: docs stream through fixed buffers, postings/co-occurrence go through external sorts (SORT_CAP each),
     /// the old index is re-mapped periodically so its touched pages leave the RSS, and sections are assembled
     /// from temp files with buffered copies.
-    pub fn compact(&mut self) -> io::Result<()> {
+    pub fn compact(&mut self) -> io::Result<()> { self.write(|m| m.compact_now()) }
+    fn compact_now(&mut self) -> io::Result<()> {
         if self.use_worker {
             let d = self.dir_arg()?;
             self.spawn_job(&["compact", &d])?;
@@ -939,6 +1079,7 @@ impl Memory {
         self.idx = None;
         fs::rename(&tmp, &ip)?;
         self.idx = Some(Index::load(&ip)?);
+        self.idx_id = file_id(&ip);
         let _ = fs::remove_dir_all(&tmpd);
         // logs are now redundant (replay skips ids < index size even if this is interrupted)
         let last = self.segs.last().map_or(0, |s| s.0);
@@ -967,7 +1108,8 @@ impl Memory {
     fn dir_arg(&self) -> io::Result<String> { self.dir.to_str().map(str::to_string).ok_or_else(|| bad("elisa-mem: store path is not UTF-8")) }
     /// re-open after a worker rewrote the files (keeps settings and the progress callback)
     fn reload(&mut self) -> io::Result<()> {
-        let mut n = Memory::open(&self.dir)?;
+        let mut n = Memory::load(&self.dir, self.lock.clone())?;
+        n.gen = self.gen;
         n.compact_every = self.compact_every; n.auto_index = self.auto_index; n.use_vectors = self.use_vectors;
         n.use_worker = self.use_worker; n.worker_exe = self.worker_exe.take(); n.worker_peak = self.worker_peak.clone(); n.progress = self.progress.take();
         n.last_turn = std::mem::take(&mut self.last_turn); n.last_note = std::mem::take(&mut self.last_note);
@@ -1005,12 +1147,14 @@ impl Memory {
     }
     /// Unpin every current fact of `project` (and facts with no project); returns how many were unpinned.
     pub fn unpin_all(&mut self, session: u64, project: &str) -> io::Result<usize> {
-        let proj = self.projects.get(project).copied();
-        let keys: Vec<String> = self.fact_keys.iter()
-            .filter(|(_, v)| { let p = self.meta(v.0).project; (p == NONE || Some(p) == proj) && !v.1.starts_with(UNPIN) })
-            .map(|(k, _)| k.clone()).collect();
-        for k in &keys { self.put(FACT, session as u32, 0, &[], &format!("{UNPIN}{k}"))?; }
-        Ok(keys.len())
+        self.write(|m| {
+            let proj = m.projects.get(project).copied();
+            let keys: Vec<String> = m.fact_keys.iter()
+                .filter(|(_, v)| { let p = m.meta(v.0).project; (p == NONE || Some(p) == proj) && !v.1.starts_with(UNPIN) })
+                .map(|(k, _)| k.clone()).collect();
+            for k in &keys { m.put(FACT, session as u32, 0, &[], &format!("{UNPIN}{k}"))?; }
+            Ok(keys.len())
+        })
     }
 
     // ----- vectors -----
@@ -1058,6 +1202,10 @@ impl Memory {
     /// Embed every turn/note/fact that has no vector yet (batched; layers streamed from disk). Returns how many.
     /// Called by end_session (if `auto_index`) and compact. No-op without the model.
     pub fn index_pending(&mut self) -> io::Result<usize> {
+        if self.model.is_none() { return Ok(0) }
+        self.write(|m| m.index_now())
+    }
+    fn index_now(&mut self) -> io::Result<usize> {
         let Some(dir) = self.model.clone() else { return Ok(0) };
         if self.use_worker {
             if !(self.vec_last.map_or(0, |x| x + 1)..self.next()).any(|i| scored(self.meta(i).kind)) { self.settle(); return Ok(0) }
@@ -1304,6 +1452,15 @@ impl Memory {
 }
 
 fn fs_len(f: &File) -> u64 { f.metadata().map_or(0, |m| m.len()) }
+/// the log segment numbers in `dir`, ascending
+fn seg_nums(dir: &Path) -> io::Result<Vec<u32>> {
+    let mut nums: Vec<u32> = fs::read_dir(dir)?.flatten().filter_map(|e| {
+        let n = e.file_name().into_string().ok()?;
+        n.strip_prefix("log-")?.strip_suffix(".seg")?.parse().ok()
+    }).collect();
+    nums.sort();
+    Ok(nums)
+}
 
 /// Hand freed heap pages back to the OS (the allocator otherwise keeps them resident for reuse).
 pub(crate) fn trim_heap() {
@@ -1379,7 +1536,8 @@ pub fn worker_main(args: &[String]) -> i32 {
         Box::new(|w: &str, f: Option<f32>| send(&format!("{}\t{}\n", w.replace(['\t', '\n', '\r'], " ").trim_start_matches('='), f.map_or(String::new(), |f| f.to_string()))))
     };
     let open = |d: &str| -> io::Result<Memory> {
-        let mut m = Memory::open(Path::new(d))?;
+        // the parent holds the store's lock for the whole job
+        let mut m = Memory::open_unlocked(Path::new(d))?;
         m.use_worker = false; m.auto_index = false; m.compact_every = 0; m.set_progress(progress());
         Ok(m)
     };
@@ -1485,6 +1643,63 @@ mod unicode_recall_tests {
         let s = m.begin_session("/p");
         m.pin_fact(s, "Port: 9000").unwrap();
         assert_eq!(m.pinned_facts("/p"), ["Port: 9000"]);
+        drop(m);
+        let _ = fs::remove_dir_all(d);
+    }
+
+    /// Two open stores on one directory (as two processes): neither assumes it is the only writer. Before
+    /// 2026-11-09 B's open rewrote the shared hot files under A, and A's next recall indexed past its doc table
+    /// (`text`: index out of bounds); B's ids also collided with A's.
+    #[test]
+    fn two_handles_share_one_store() {
+        let (d, mut a) = store("two");
+        let sa = a.begin_session("/a");
+        a.add_turn(sa, Role::User, "alpha widget count is 42").unwrap();
+        let mut b = Memory::open(&d).unwrap();
+        (b.use_vectors, b.use_worker, b.auto_index, b.compact_every) = (false, false, false, 0);
+        let sb = b.begin_session("/b");
+        for i in 0..6 { b.add_turn(sb, Role::User, &format!("beta owner Bob item {i}")).unwrap(); }
+        b.end_session(sb).unwrap();
+        let sb2 = b.begin_session("/b");
+        b.add_turn(sb2, Role::User, "beta after clear").unwrap();
+        // A's snapshot predates all of that: reads stay consistent, nothing panics
+        assert!(a.recall("beta owner Bob item", "/a", 5, true).iter().all(|h| !h.text.is_empty()));
+        assert!(a.recall("alpha widget count", "/a", 5, true)[0].text.contains("42"));
+        // A's next write catches up first: its id follows B's, and B's memories become visible to A
+        let t = a.add_turn(sa, Role::Assistant, "alpha noted").unwrap();
+        assert!(t > sb2, "A's id {t} must follow B's records");
+        assert!(a.recall("beta owner Bob item", "/a", 5, true).iter().any(|h| h.text.contains("Bob")));
+        // B sees A's write after a refresh
+        assert!(b.refresh().unwrap());
+        assert!(!b.refresh().unwrap(), "nothing new the second time");
+        assert!(b.recall("alpha noted", "/b", 5, true).iter().any(|h| h.text.contains("alpha noted")));
+        // B compacts (replaces the index, deletes the segments A still reads from): A keeps working
+        b.compact().unwrap();
+        assert!(a.recall("alpha widget count", "/a", 5, true)[0].text.contains("42"));
+        a.add_turn(sa, Role::User, "alpha after compaction").unwrap();
+        b.add_turn(sb2, Role::User, "beta after compaction").unwrap();
+        a.end_session(sa).unwrap();
+        b.end_session(sb2).unwrap();
+        drop((a, b));
+        // one consistent store: every record once, dense ids
+        let r = Memory::open(&d).unwrap();
+        let st = r.stats();
+        assert_eq!(st.turns, 1 + 6 + 1 + 1 + 1 + 1, "{st:?}");
+        assert!(r.recall("alpha after compaction", "/a", 3, true).iter().any(|h| h.text == "alpha after compaction"));
+        assert!(r.recall("beta after compaction", "/b", 3, true).iter().any(|h| h.text == "beta after compaction"));
+        drop(r);
+        let _ = fs::remove_dir_all(d);
+    }
+
+    /// `text` on an id the snapshot does not have is None, not a panic.
+    #[test]
+    fn text_of_an_unknown_id_is_none() {
+        let (d, mut m) = store("stale");
+        let s = m.begin_session("/p");
+        let t = m.add_turn(s, Role::User, "hello there").unwrap() as u32;
+        assert_eq!(m.text_opt(t, &mut Cache::new()).as_deref(), Some("hello there"));
+        assert_eq!(m.text_opt(t + 100, &mut Cache::new()), None);
+        assert!(m.card_chain(t as u64 + 100, 3).is_empty());
         drop(m);
         let _ = fs::remove_dir_all(d);
     }

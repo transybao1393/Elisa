@@ -37,12 +37,15 @@
 //!   ask rule forced the prompt (always / rule then allow once only). `question: true`: not a tool call but a yes / no
 //!   question (a plugin's setup, a project's trust prompt): `tool` names it, `summary` is the question; yes / no.
 //! - `plugins` {plugins: [{name, version, description, source: "user"|"project", enabled, trusted, servers: [{name,
-//!   runs: "container"|"host", installed, tools, tokens, running?}], tools, tokens, rules, commands: ["/x"], notes}]}
+//!   runs: "container"|"host", installed, tools, tokens, running?, state: "ok"|"failed"|"not installed", error}], tools,
+//!   tokens, rules, commands: ["/x"], notes}]} (`error`: why the server did not start — docker's message and a hint,
+//!   from this session's start or else the last probe after install / update; null when it runs)
 //!   — at startup (when a plugin is installed or the project has one), after every plugin change and on `/plugin list`. `tools` / `tokens`: the tool definitions' count and
 //!   estimated prompt cost (a running server's as this session sees it, else as recorded at install; null if unknown)
 //! - `plugin_preview` {op: "add"|"update"|"trust", name, text, preview: {name, version, old_version, description,
 //!   source, host, servers: [{name, runs, installer, package, version, image, image_present, command, mounts:
-//!   [{path, write}], env: [names], tools}], rules: [{level, pattern, broad}], commands: [{name, description}], notes,
+//!   [{path, write}], env: [names], tools}], rules: [{level, pattern, broad}], commands: [{name, description, args,
+//!   text}] (`text`: the command's full prompt text, shown before the yes), notes,
 //!   problems, missing_images: ["node:26-alpine"]}} — the setup screen, sent before anything is installed; a yes / no
 //!   `approve` (question) follows unless `problems` is non-empty (no Colima, a missing image: each says what to do).
 //!   With `missing_images` (listed images not on this machine) an interactive session first asks whether to download
@@ -59,7 +62,8 @@
 //!   MB), downloaded into Colima's VM …`): asked by Elisa itself when a `run_code` call or a plugin server is blocked
 //!   by a missing listed image (the blocked call then runs once more), or after `/sandbox pull`. A pull whose digest
 //!   differs from the pinned one asks a second question before it is used. `interrupt` cancels a download
-//! - `plugin_result` {op, name, ok, text} — the outcome of add / remove / enable / disable / update / trust
+//! - `plugin_result` {op, name, ok, working, text} — the outcome of add / remove / enable / disable / update / trust;
+//!   `working` false with `ok` true: installed / updated, but a server did not start (said in `text`)
 //! - `project_trust` {path, hash, text, commands: [{name, description, source}], rules: [{level, pattern, source}],
 //!   plugins} — the project's own commands and plugins in full, before its one-time trust question
 //! - `pick` {sessions: [{title, n_msgs, ts}]} — blocking: answer with `pick` below
@@ -713,7 +717,13 @@ pub fn run(mut args: Args) -> i32 {
     let txa = tx.clone();
     std::thread::spawn(move || {
         let mut fe = JsonlFrontend(txa.clone());
-        let code = repl::run_session(args, &mut fe);
+        // a panic outside a turn (startup, exit) still ends the session with an error and `exit`, never a silent
+        // hang (each line's own work is guarded in the repl, which keeps the session going)
+        let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| repl::run_session(args, &mut fe))).unwrap_or_else(|p| {
+            let m = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
+            let _ = txa.send(Ev::Error(format!("internal error: {m}; the session ended")));
+            101
+        });
         let _ = txa.send(Ev::Exit(code));
     });
     drop(tx);

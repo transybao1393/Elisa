@@ -254,6 +254,10 @@ fn read(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
         out.push_str(&format!("[lines {start}-{end} of {total}]"));
         if end < total { out.push_str(&format!(" next: offset={}", end + 1)); }
     }
+    // a PDF that happens to be text: its raw objects, not its words (the session fences it as a document either way)
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+        out.push_str(&format!("\n[{p} is a PDF read as raw text; docs_pdf extracts its words]"));
+    }
     Ok(out)
 }
 

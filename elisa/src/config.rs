@@ -588,6 +588,9 @@ impl Config {
             let m = crate::outside::Mode::parse(&o)
                 .ok_or_else(|| format!("{}: outside = {o:?}: use \"ask\", \"read-ok\", \"deny\" or \"allow\"", p.display()))?;
             let cur = crate::outside::Mode::parse(&self.outside).unwrap_or(crate::outside::Mode::Ask);
+            if project && cur.stricter(m) != m {
+                self.notes.push(format!("{}: outside = {o:?} ignored: a project config can only make it stricter (now \"{}\")", p.display(), cur.word()));
+            }
             self.outside = if project { cur.stricter(m) } else { m }.word().to_string();
         }
         // the shell sandbox: a bad value keeps the current one (one note); a project may only make it stricter
@@ -783,6 +786,17 @@ mod tests {
         assert_eq!(r, [("allow", "shell(git status*)", "user"), ("deny", "read(**/*.env)", "user"), ("ask", "write(src/**)", "project")]);
         assert!(c.notes.iter().any(|n| n.contains("nope(x)") && n.contains("skipped")), "{:?}", c.notes);
         assert!(c.notes.iter().any(|n| n.contains("allow = \"shell(*)\" ignored")), "{:?}", c.notes);
+    }
+
+    #[test]
+    fn a_project_outside_allow_is_ignored_with_a_note() {
+        let c = load("outside", "", "outside = \"allow\"\n");
+        assert_eq!(c.outside, "ask");
+        assert!(c.notes.iter().any(|n| n.contains("outside = \"allow\" ignored") && n.contains("now \"ask\"")), "{:?}", c.notes);
+        // a stricter one applies, with no note
+        let c = load("outside-deny", "", "outside = \"deny\"\n");
+        assert_eq!(c.outside, "deny");
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
     }
 
     fn load(tag: &str, user: &str, project: &str) -> Config {

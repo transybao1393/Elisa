@@ -419,17 +419,21 @@ pub fn gone(err: &str) -> bool {
     err.starts_with(EXITED) || err.starts_with(CLOSED_INPUT) || err.starts_with("cannot reach the MCP server")
 }
 
-/// the most of a server's last stderr line a note shows
-const STDERR_NOTE_CHARS: usize = 160;
+/// the most of a server's last stderr line a note shows (a plugin container's start failure, with its hint, fits)
+const STDERR_NOTE_CHARS: usize = 600;
 
 /// After a server's output closed: ` (exit code 3): <its last stderr line>` (or `(signal 9)`, or no status when it has
 /// not exited yet), waiting briefly for the process and its stderr. The line goes through `secrets::redact`.
 fn exit_detail(child: &mut Child, tail: &Mutex<(String, bool)>) -> String {
     let t0 = Instant::now();
     let mut status = None;
-    while t0.elapsed() < Duration::from_millis(500) {
+    // up to 0.5 s for the process to exit; once it has, its stderr closes right after, so wait up to 3 s in all for
+    // the reader thread (it can lag under load, and the last line may carry `images::MARKER`)
+    loop {
         if status.is_none() { status = child.try_wait().ok().flatten(); }
         if status.is_some() && tail.lock().map_or(true, |g| g.1) { break; }
+        let cap = if status.is_some() { Duration::from_secs(3) } else { Duration::from_millis(500) };
+        if t0.elapsed() >= cap { break; }
         std::thread::sleep(Duration::from_millis(10));
     }
     let line = tail.lock().map(|g| g.0.clone()).unwrap_or_default();

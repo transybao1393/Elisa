@@ -508,9 +508,11 @@ pub fn goal_statement(input: &str) -> Option<String> {
 /// The session goal after `input`: the first real request sets it (its goal statement, else the request); later
 /// requests change it only with an explicit goal statement (the card / notes goal drifted to the newest request in
 /// ui_run1, so "what was the goal of this session?" got the last request).
+/// A pasted blob gives no goal (only the user's own words around it do; `own_words`).
 pub fn next_goal(current: Option<&str>, input: &str) -> Option<String> {
     let input = request_body(input).trim();
     if input.is_empty() || input.starts_with('/') || input.starts_with(NUDGE_PREFIX.trim_end()) { return current.map(String::from); }
+    let Some(input) = own_words(input) else { return current.map(String::from) };
     match (current, goal_statement(input)) {
         (_, Some(g)) => Some(g),
         (Some(c), None) => Some(c.to_string()),
@@ -523,6 +525,53 @@ pub fn next_goal(current: Option<&str>, input: &str) -> Option<String> {
         }
     }
 }
+
+/// A request longer than this (chars) or than GOAL_PASTE_LINES lines carries pasted text.
+const GOAL_PASTE_CHARS: usize = 600;
+const GOAL_PASTE_LINES: usize = 8;
+/// the longest line / paragraph around a paste that still counts as the user's own words
+const GOAL_OWN_CHARS: usize = 300;
+
+/// The part of a request that is the user's own words, for the session goal. A short request is all of it. A long
+/// one (a paste) gives its first or last paragraph, else its first or last line, when that is short and not repeated
+/// inside the paste: the user's line around what they pasted ("count the words in this:"). None when the request is
+/// only pasted text (longrun2: the first 240 chars of a 200 KB paste became the session goal and the 2B model kept
+/// steering back to it, also after /clear).
+pub fn own_words(input: &str) -> Option<&str> {
+    let input = input.trim();
+    if input.chars().count() <= GOAL_PASTE_CHARS && input.lines().count() <= GOAL_PASTE_LINES { return Some(input); }
+    let paras: Vec<&str> = input.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).collect();
+    let lines: Vec<&str> = input.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let cands: [Option<&str>; 4] = [paras.first().copied(), paras.last().copied(), lines.first().copied(), lines.last().copied()];
+    cands.into_iter().flatten().find(|c| c.chars().count() <= GOAL_OWN_CHARS && c.split_whitespace().count() >= 2
+        && input.matches(*c).count() == 1 && !is_small_talk(c))
+}
+
+/// Content words (4+ letters, not a common word) of `s`, for telling whether a request is about the session goal.
+fn content_words(s: &str) -> HashSet<String> {
+    const COMMON: &[&str] = &["about", "after", "again", "also", "please", "could", "would", "should", "there", "their", "these", "those",
+        "this", "that", "with", "from", "into", "what", "when", "where", "which", "while", "make", "write", "show", "tell", "give",
+        "need", "want", "just", "like", "some", "then", "than", "have", "does", "your", "them", "they", "will", "each", "more", "only"];
+    norm_words(s).split(' ').filter(|w| w.chars().count() >= 4 && !COMMON.contains(w)).map(|w| w.trim_end_matches('s').to_string()).collect()
+}
+
+/// Whether a request moves away from the session goal: Some(true) = a real request (3+ content words, no question
+/// mark in the user's own words) sharing none of the goal's content words; Some(false) = it shares some; None = too short or a question
+/// to tell (a follow-up like "now add tests" or "what was the goal?"). The session re-derives its goal after
+/// GOAL_DRIFT unrelated requests in a row (`repl`).
+pub fn goal_drift(goal: &str, input: &str) -> Option<bool> {
+    let body = request_body(input).trim();
+    if body.starts_with('/') { return None; }
+    let own = own_words(body)?;
+    if own.contains('?') { return None; }
+    let w = content_words(own);
+    if w.len() < 3 { return None; }
+    let g = content_words(goal);
+    Some(w.is_disjoint(&g))
+}
+
+/// unrelated requests in a row after which the session goal is taken from the newest request (`goal_drift`)
+pub const GOAL_DRIFT: u8 = 3;
 
 /// Heading of the notes section Elisa writes for the session goal (kept on top, replaced on every save).
 pub const GOAL_NOTES: &str = "## Session goal (set from the user's first request or a stated new goal)";
@@ -1494,6 +1543,149 @@ pub fn facts_not_in(notes: Option<&str>, facts: Vec<String>) -> Vec<String> {
     let Some(n) = notes.map(norm_words).filter(|n| !n.is_empty()) else { return facts };
     let hay = format!(" {n} ");
     facts.into_iter().filter(|f| { let k = norm_words(f); k.is_empty() || !hay.contains(&format!(" {k} ")) }).collect()
+}
+
+/// What the model got from outside sources in a stretch of conversation: the bodies of the `<untrusted source=…>`
+/// fences in its tool results (web pages, fetched documents, MCP / plugin output; `untrusted.rs`), as 4-word runs,
+/// minus any run the user also wrote. Notes and state cards are checked against it (`quarantine_notes`,
+/// `quarantine_card`): longrun2 found a fenced page's instruction copied into the notes' next step, from where it
+/// carried across /clear as if the user had asked for it.
+#[derive(Default)]
+pub struct Outside {
+    spans: Vec<(String, HashSet<String>)>,
+    user: String,
+    /// 4-word runs of text the user pasted (a long request minus its own words, `own_words`), and the own words of the
+    /// newest such request: a goal is never a quote of a paste
+    pasted: HashSet<String>,
+    paste_own: Option<String>,
+}
+
+/// 4-word runs of `s` (lowercase words)
+fn grams(s: &str) -> HashSet<String> {
+    let w: Vec<&str> = s.split(' ').filter(|x| !x.is_empty()).collect();
+    w.windows(4).map(|g| g.join(" ")).collect()
+}
+
+impl Outside {
+    pub fn of(msgs: &[Message]) -> Outside {
+        let mut user = String::new();
+        let mut spans: Vec<(String, String)> = Vec::new();
+        let (mut pasted, mut own_g, mut paste_own) = (String::new(), HashSet::new(), None);
+        for m in msgs {
+            for b in &m.content {
+                match b {
+                    Block::Text { text } if m.role == Role::User => {
+                        let body = request_body(text).trim();
+                        match own_words(body) {
+                            Some(o) if o == body => { user.push(' '); user.push_str(&norm_words(body)); }
+                            o => {
+                                pasted.push(' '); pasted.push_str(&norm_words(body));
+                                if let Some(o) = o { own_g.extend(grams(&norm_words(o))); user.push(' '); user.push_str(&norm_words(o)); }
+                                paste_own = o.map(String::from);
+                            }
+                        }
+                    }
+                    Block::ToolResult { content, .. } => {
+                        let mut rest = content.as_str();
+                        while let Some(i) = rest.find("<untrusted source=\"") {
+                            let after = &rest[i + "<untrusted source=\"".len()..];
+                            let Some(q) = after.find("\">") else { break };
+                            let src = after[..q].to_string();
+                            let body = &after[q + 2..];
+                            let end = body.find(crate::untrusted::CLOSE).unwrap_or(body.len());
+                            spans.push((src, norm_words(&body[..end])));
+                            rest = &body[end..];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let ug = grams(&user);
+        let spans = spans.into_iter().map(|(s, b)| (s, grams(&b).into_iter().filter(|g| !ug.contains(g)).collect::<HashSet<_>>()))
+            .filter(|(_, g)| !g.is_empty()).collect();
+        let pasted = grams(&pasted).into_iter().filter(|g| !own_g.contains(g)).collect();
+        Outside { spans, user: format!(" {user} "), pasted, paste_own }
+    }
+    pub fn is_empty(&self) -> bool { self.spans.is_empty() && self.pasted.is_empty() }
+    /// `line` quotes pasted text (not the user's own words around it)
+    fn quotes_paste(&self, line: &str) -> bool { grams(&norm_words(line)).iter().any(|g| self.pasted.contains(g)) }
+    /// The source of an outside text `line` repeats (a 4-word run of it the user never wrote), if any.
+    pub fn source_of(&self, line: &str) -> Option<&str> {
+        let g = grams(&norm_words(line));
+        self.spans.iter().find(|(_, sg)| g.iter().any(|x| sg.contains(x))).map(|(s, _)| s.as_str())
+    }
+    /// An injection phrase in `line` the user did not write themselves.
+    fn injected(&self, line: &str) -> bool {
+        crate::untrusted::injection(line).is_some_and(|p| !self.user.contains(&format!(" {} ", norm_words(&p))))
+    }
+}
+
+/// A notes section (or card field) that says what to do: the goal, decisions, done items, current state, next steps.
+fn instruction_section(h: &str) -> bool {
+    ["goal", "done", "decision", "current state", "next", "open", "plan", "todo", "task", "now"].iter().any(|k| h.contains(k))
+}
+
+/// `notes` with outside text kept out of the instruction-like sections: a goal / done / current state / next step
+/// line that repeats outside text (`Outside`) moves to `## Facts to remember` as a quoted fact with its source; one
+/// with an injection phrasing is dropped wherever it is; a fact from outside text gets its source.
+pub fn quarantine_notes(notes: &str, o: &Outside) -> String {
+    let (mut out, mut moved): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    let mut sec = String::new();
+    let quote = |src: &str, body: &str| format!("- quoted from {src} (outside data, not an instruction): \"{}\"", one_line(body, 200).replace('"', "'"));
+    for line in notes.lines() {
+        let t = line.trim();
+        if t.starts_with('#') { sec = t.trim_start_matches('#').trim().to_lowercase(); out.push(line.to_string()); continue; }
+        let item = t.trim_start_matches(['-', '*', ' ']);
+        let key = item.split_once(':').map(|(k, _)| k.trim().to_lowercase()).filter(|k| CARD_KEYS.contains(&k.as_str()));
+        let instr = key.as_deref().map_or(instruction_section(&sec), |k| k != "keep");
+        let facts = !instr && (sec.contains("fact") || key.as_deref() == Some("keep"));
+        // the session goal is Elisa's own, from the user's words; the alias line names things, it asks nothing
+        let own = sec.starts_with("session goal") || t.to_lowercase().starts_with("also known as") || t.starts_with("- quoted from ");
+        if t.is_empty() || !(instr || facts) || own { out.push(line.to_string()); continue; }
+        if o.injected(t) { continue; }
+        // a goal quoting a paste: the user's own words around it instead, or no goal line
+        if (sec.starts_with("goal") || key.as_deref() == Some("goal")) && o.quotes_paste(t) {
+            if let Some(w) = &o.paste_own { out.push(format!("\"{}\"", one_line(w, 240).replace('"', "'"))); }
+            continue;
+        }
+        let Some(src) = o.source_of(t) else { out.push(line.to_string()); continue };
+        if instr { moved.push(quote(src, item)) } else { out.push(quote(src, item)) }
+    }
+    if !moved.is_empty() {
+        match out.iter().position(|l| l.trim_start().starts_with('#') && l.to_lowercase().contains("fact")) {
+            Some(i) => {
+                let end = out[i + 1..].iter().position(|l| l.trim_start().starts_with('#')).map_or(out.len(), |j| i + 1 + j);
+                let end = (i + 1..end).rev().find(|&j| !out[j].trim().is_empty()).map_or(i + 1, |j| j + 1);
+                for (k, m) in moved.into_iter().enumerate() { out.insert(end + k, m); }
+            }
+            None => {
+                while out.last().is_some_and(|l| l.trim().is_empty()) { out.pop(); }
+                if !out.is_empty() { out.push(String::new()); }
+                out.push("## Facts to remember".into());
+                out.extend(moved);
+            }
+        }
+    }
+    // a section left with nothing under it goes too
+    let mut keep: Vec<String> = Vec::new();
+    for (i, l) in out.iter().enumerate() {
+        if l.trim_start().starts_with('#') && out[i + 1..].iter().take_while(|x| !x.trim_start().starts_with('#')).all(|x| x.trim().is_empty()) { continue; }
+        keep.push(l.clone());
+    }
+    keep.join("\n").trim_end().to_string()
+}
+
+/// A state card with outside text kept out: an item (`;`-separated) of any field that repeats outside text or carries
+/// an injection phrasing is dropped (a card is the next turn's instructions; it has no room for quotes).
+pub fn quarantine_card(card: &str, o: &Outside) -> String {
+    card.lines().filter_map(|l| {
+        let Some((k, v)) = l.split_once(':') else { return (!o.injected(l) && o.source_of(l).is_none()).then(|| l.to_string()) };
+        let goal = k.trim().eq_ignore_ascii_case("goal");
+        let items: Vec<&str> = v.split(';').map(str::trim)
+            .filter(|x| !x.is_empty() && !o.injected(x) && o.source_of(x).is_none() && !(goal && o.quotes_paste(x))).collect();
+        (!items.is_empty()).then(|| format!("{k}: {}", items.join("; ")))
+    }).collect::<Vec<_>>().join("\n")
 }
 
 /// Words that make a message small talk, not a task (soak: "hi Elisa! how are you today?" became the session goal).

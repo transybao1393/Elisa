@@ -15,7 +15,7 @@ use crate::tools::{self, Access, ToolCtx};
 use crate::types::{Block, Message, Reply, Role, ToolDef};
 use crate::ui;
 use crate::watcher::Watcher;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -92,6 +92,37 @@ fn with_progress<R>(fe: &mut dyn Frontend, f: impl FnOnce() -> R) -> (R, bool) {
     let shown = SINK.with(|c| c.borrow_mut().take().is_some_and(|s| s.shown));
     if shown { fe.progress(None); }
     (r, shown)
+}
+
+thread_local! {
+    /// inside `guarded` on this thread: the panic hook keeps the message for the user instead of printing it
+    static CATCHING: Cell<bool> = const { Cell::new(false) };
+    static PANIC_MSG: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The panic hook (installed once, around whatever hook was there, e.g. the TUI's terminal restore): a panic inside
+/// `guarded` is kept as one line (message + where) for the error event; any other panic goes to the previous hook.
+fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |i| {
+            if !CATCHING.with(Cell::get) { return prev(i); }
+            let msg = i.payload().downcast_ref::<&str>().map(|s| s.to_string())
+                .or_else(|| i.payload().downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into());
+            let at = i.location().map_or(String::new(), |l| format!(" at {}:{}", l.file(), l.line()));
+            PANIC_MSG.with(|m| *m.borrow_mut() = Some(format!("{}{at}", context::one_line(&msg, 300))));
+        }));
+    });
+}
+
+/// Runs `f`, turning a panic into Err(its message and location).
+fn guarded<R>(f: impl FnOnce() -> R) -> Result<R, String> {
+    install_panic_hook();
+    let was = CATCHING.with(|c| c.replace(true));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    CATCHING.with(|c| c.set(was));
+    r.map_err(|_| PANIC_MSG.with(|m| m.borrow_mut().take()).unwrap_or_else(|| "panic".into()))
 }
 
 fn help_text() -> String {
@@ -319,6 +350,8 @@ struct Session<'f> {
     tool_lines: Vec<String>,
     /// the current turn's request failed before anything was answered (nothing to record)
     unsent: bool,
+    /// this input line already sent its turn_done (a panic after it must not send a second one)
+    done_sent: bool,
     /// the last recall / session save was slow: show a progress line for the next one
     recall_slow: bool,
     save_slow: bool,
@@ -355,6 +388,10 @@ struct Session<'f> {
     /// the session goal (`context::next_goal`): set from the first real request, changed only by a stated new goal;
     /// `[state]` shows it apart from the current request and the notes keep it on top
     goal: Option<String>,
+    /// requests in a row that had nothing to do with `goal` (`context::goal_drift`)
+    goal_misses: u8,
+    /// `goal` came from an explicit goal statement ("our goal for this session: …"): it does not drift
+    goal_stated: bool,
     /// the current request in the user's words (one line)
     user_req: String,
     /// the gateway's prefill-only warm-up after a fold (config `warm`): WARM_UNKNOWN until /health or the first try
@@ -382,6 +419,10 @@ struct Session<'f> {
     /// the installed plugins (as /plugin list shows them) and the (plugin, server) pairs running in this session
     plugin_infos: Vec<plugins::Info>,
     plugin_servers: Vec<(String, String)>,
+    /// the plugin state file as last seen (`plugins::state_stamp`): a change made outside this session is synced
+    plugin_stamp: Option<(std::time::SystemTime, u64)>,
+    /// (tool, plugin): tools of plugins removed or switched off outside this session, for a clear refusal
+    plugin_gone_tools: Vec<(String, String)>,
     /// the project's own commands and plugins, waiting for the one-time trust prompt (None: none, or loaded)
     proj_pending: Option<plugins::Project>,
     proj_infos: Vec<plugins::Info>,
@@ -462,17 +503,18 @@ impl<'f> Session<'f> {
         let watch = Watcher::new(&cfg.base_url, &cwd.display().to_string());
         if let Some(p) = fe.watcher_push() { watch.set_push(p); }
         if cfg.transport != crate::provider::Transport::Gateway { watch.disable(); }
+        let plugin_stamp = home.as_deref().and_then(plugins::state_stamp);
         let mut s = Session {
             fe, cfg, client, store, tctx, cwd, max_ctx, vision: false, attach: Vec::new(), mcp, tools: Vec::new(), tools_tokens: 0, project, notes, notes_bg: true,
             system: String::new(), system_tokens: 0, history: Vec::new(), real: None, calib: None, input: String::new(), interactive, declined_images: Vec::new(), yolo: yes, always,
-            mem: None, turn_no: 0, folded: 0, fold_ids: Vec::new(), fold_retry_at: 0, digest_only: false, in_turn: false, folded_this_turn: false, tool_lines: Vec::new(), unsent: false,
+            mem: None, turn_no: 0, folded: 0, fold_ids: Vec::new(), fold_retry_at: 0, digest_only: false, in_turn: false, folded_this_turn: false, tool_lines: Vec::new(), unsent: false, done_sent: false,
             recall_slow: false, save_slow: false, index_rate: None, unindexed: 0, watch,
             card: None, card_id: None, card_ex: None, exchanges: 0, new_card: None, card_broken: false, checks_off: false, outside_mode: outside::Mode::Ask, outside_ok: Vec::new(), ast_stats: AstStats::default(), cards: 0,
             req: None, stats: metrics::Stats::default(),
-            card_log: Vec::new(), goal: None, user_req: String::new(), warm: Arc::new(AtomicU8::new(WARM_UNKNOWN)),
+            card_log: Vec::new(), goal: None, goal_misses: 0, goal_stated: false, user_req: String::new(), warm: Arc::new(AtomicU8::new(WARM_UNKNOWN)),
             reason_on: false, gate: (false, false), ledger: context::Ledger::default(), audit, answer: None,
             home, file_cmds: Vec::new(), cmd_user: Vec::new(), cmd_plugins: pl.commands, cmd_project: Vec::new(),
-            plugin_infos: pl.infos, plugin_servers, proj_pending: None, proj_infos: Vec::new(), proj_declined: false,
+            plugin_stamp, plugin_gone_tools: Vec::new(), plugin_infos: pl.infos, plugin_servers, proj_pending: None, proj_infos: Vec::new(), proj_declined: false,
         };
         s.load_commands();
         // the app's plugin pane: what is installed, from the start (nothing installed: no event; `/plugin list` asks)
@@ -537,7 +579,9 @@ impl<'f> Session<'f> {
             if n > 0 { self.fe.info(&format!("[{} hidden from the model]", crate::secrets::count_words(n))); }
             r
         } else { content };
-        let Some(src) = self.untrusted_source(name, input) else { return content };
+        // `read` of an outside document (a PDF, a saved web page …) is fenced too (`untrusted::read_source`)
+        let doc = || if name == "read" { crate::untrusted::read_source(input, &content) } else { None };
+        let Some(src) = self.untrusted_source(name, input).or_else(doc) else { return content };
         let (fenced, hit) = crate::untrusted::fence(&src, &content);
         if let Some(h) = hit {
             self.fe.info(&format!("[{name}: text that looks like a prompt injection (\"{h}\"); marked for the model as data]"));
@@ -661,37 +705,71 @@ impl<'f> Session<'f> {
         loop {
             self.watch_poll();
             let Some(line) = self.fe.read_input() else { break };
-            self.attach = self.take_attached();
-            self.watch_poll();
-            let line = line.trim();
-            if line.is_empty() { continue; }
-            self.fe.user(line);
-            let mut prompt = line.to_string();
-            if line.starts_with('/') {
-                match self.expand_command(line) {
-                    Some(Some(p)) => prompt = p,
-                    Some(None) => { self.fe.turn_done(); continue; }
-                    None => {
-                        let go_on = self.command(line);
-                        self.fe.turn_done();
-                        if !go_on { break; }
-                        continue;
-                    }
-                }
-            }
-            self.req_begin(line);
-            let end = self.turn(prompt);
-            let outcome = end_name(&end);
-            if let TurnEnd::Failed(e) = end { self.fe.error(&e); }
-            self.save();
-            self.fe.turn_done();
-            self.watch.refresh();
-            self.maybe_fold();
-            self.req_end(outcome);
+            // a panic anywhere in the line's work (a turn, a command, the fold after it) ends that line with an error
+            // and its turn_done; the session takes the next message (longrun2 F1: a panic in elisa-mem killed the
+            // agent thread silently and the app showed the turn as running forever)
+            self.done_sent = false;
+            let go_on = match guarded(|| self.one_line(line)) {
+                Ok(g) => g,
+                Err(msg) => { self.recover(&msg); if !self.done_sent { self.fe.turn_done(); } true }
+            };
+            if !go_on { break; }
         }
         // piped input: the last notes and view before exit
         if !self.watch.pushes() { self.watch.flush(WATCH_EXIT_WAIT); }
         self.watch_poll();
+    }
+
+    /// One input line of the interactive loop; false = quit.
+    fn one_line(&mut self, line: String) -> bool {
+        self.attach = self.take_attached();
+        self.watch_poll();
+        let line = line.trim();
+        if line.is_empty() { return true; }
+        self.fe.user(line);
+        let mut prompt = line.to_string();
+        if line.starts_with('/') {
+            match self.expand_command(line) {
+                Some(Some(p)) => prompt = p,
+                Some(None) => { self.turn_done(); return true; }
+                None => {
+                    let go_on = self.command(line);
+                    self.turn_done();
+                    return go_on;
+                }
+            }
+        }
+        self.req_begin(line);
+        let end = self.turn(prompt);
+        let outcome = end_name(&end);
+        if let TurnEnd::Failed(e) = end { self.fe.error(&e); }
+        self.save();
+        self.turn_done();
+        self.watch.refresh();
+        self.maybe_fold();
+        self.req_end(outcome);
+        true
+    }
+
+    fn turn_done(&mut self) { self.fe.turn_done(); self.done_sent = true; }
+
+    /// After a panic caught by `guarded`: say so, and leave the session usable for the next message (the turn's
+    /// user message gets a closing reply so roles keep alternating; a panic inside elisa-mem turns memory off for the
+    /// rest of the session, since the same call would only fail again).
+    fn recover(&mut self, msg: &str) {
+        SINK.with(|c| c.borrow_mut().take());
+        CANCEL.store(false, Ordering::SeqCst);
+        self.in_turn = false;
+        self.attach.clear();
+        if self.history.last().is_some_and(|m| m.role == Role::User) {
+            self.history.push(Message::assistant_text("[stopped: internal error]"));
+        }
+        self.real = None;
+        self.fe.progress(None);
+        self.fe.error(&format!("internal error: {msg}. This turn was stopped; the session goes on (please report this)"));
+        if msg.contains("mem/src/") && self.mem.take().is_some() {
+            self.fe.info("[memory: off for the rest of this session after that error; nothing on disk was removed]");
+        }
     }
 
     fn run_print(&mut self, prompt: String) -> i32 {
@@ -702,7 +780,10 @@ impl<'f> Session<'f> {
             None => prompt,
         };
         self.req_begin(&prompt);
-        let end = self.turn(prompt);
+        let end = match guarded(|| self.turn(prompt)) {
+            Ok(e) => e,
+            Err(msg) => { self.recover(&msg); self.fe.turn_done(); return 1; }
+        };
         self.req_end(end_name(&end));
         self.save();
         self.fe.turn_done();
@@ -792,6 +873,14 @@ impl<'f> Session<'f> {
     fn expand_command(&mut self, line: &str) -> Option<Option<String>> {
         let (cmd, args) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         if builtin_command(cmd) { return None; }
+        // its file changed since it was read: read again (a project's or plugin's needs its trust again first)
+        if let Some(src) = self.file_cmds.iter().find(|c| c.name == cmd && c.changed_on_disk()).map(|c| c.source.clone()) {
+            if !self.reread_commands(cmd, &src) { return Some(None); }
+            return match self.file_cmds.iter().find(|c| c.name == cmd) {
+                Some(c) => Some(Some(c.prompt(args))),
+                None => { self.fe.error(&format!("{cmd}: its file is gone or no longer a valid command (/help lists the commands)")); Some(None) }
+            };
+        }
         if let Some(c) = self.file_cmds.iter().find(|c| c.name == cmd) { return Some(Some(c.prompt(args))); }
         // a project command not trusted yet: the trust prompt first
         if self.proj_pending.as_ref().is_some_and(|p| p.commands.iter().any(|c| c.name == cmd)) {
@@ -803,6 +892,54 @@ impl<'f> Session<'f> {
             return Some(self.file_cmds.iter().find(|c| c.name == cmd).map(|c| c.prompt(args)));
         }
         None
+    }
+
+    /// A command file changed on disk since it was loaded: its source read again. The user's own: the new text is used.
+    /// A plugin's: loaded again only while the plugin's files still match what the user approved (else it is off
+    /// until /trust). A project's: the trust prompt again, with the new text, when the content no longer matches the
+    /// trusted hash. False: nothing to run (declined, or off).
+    fn reread_commands(&mut self, cmd: &str, src: &crate::commands::Source) -> bool {
+        use crate::commands::Source;
+        match src {
+            Source::User => {
+                let mut notes = Vec::new();
+                if let Some(h) = &self.home { self.cmd_user = crate::commands::load_dir(&h.join(".elisa/commands"), &Source::User, &mut notes); }
+                for n in notes.into_iter().chain(self.merge_commands()) { self.fe.info(&n); }
+                self.fe.info(&format!("{cmd}: its file changed since it was loaded; using the new text"));
+                true
+            }
+            Source::Plugin(p) => {
+                let p = p.clone();
+                self.reload_plugins(None);
+                if self.plugin_infos.iter().any(|i| i.name == p && i.enabled && i.trusted) {
+                    self.fe.info(&format!("{cmd}: its file changed since it was loaded; using the new text"));
+                    return true;
+                }
+                self.fe.error(&format!("{cmd}: plugin {p}'s files changed since you approved them, so its commands are off and nothing ran — review with /plugin list, then /trust {p}"));
+                self.plugins_event();
+                false
+            }
+            Source::Project | Source::ProjectPlugin(_) => {
+                self.cfg.perms.rules.retain(|r| !r.source.starts_with("project plugin"));
+                self.cmd_project.clear();
+                let Some(p) = plugins::load_project(&self.cwd) else {
+                    for n in self.merge_commands() { self.fe.info(&n); }
+                    return true;
+                };
+                if self.home.as_ref().is_some_and(|h| plugins::project_trusted(h, &self.cwd, &p.hash)) {
+                    self.apply_project(p);
+                    for n in self.merge_commands() { self.fe.info(&n); }
+                    return true;
+                }
+                // never the old cached text, never the new text unseen: the same trust prompt as at the start
+                self.fe.info(&format!("{cmd}: the project's commands changed on disk since you trusted them; review the new text"));
+                self.proj_infos = p.infos.clone();
+                self.proj_pending = Some(p);
+                self.proj_declined = false;
+                for n in self.merge_commands() { self.fe.info(&n); }
+                self.trust_project()
+            }
+        }
     }
 
     /// /help: Elisa's commands, then the file commands with where each comes from
@@ -822,6 +959,8 @@ impl<'f> Session<'f> {
     /// every plugin, the user's and the project's
     fn all_plugins(&mut self) -> Vec<plugins::Info> {
         if let Some(h) = self.home.clone() { self.plugin_infos = plugins::load_user(&h, &self.cwd, &|_| false).infos; }
+        // a server this session could not start is marked failed, with docker's reason (longrun2 F5)
+        plugins::set_live(&mut self.plugin_infos, &self.plugin_servers, &|n| self.mcp.down_reason(n));
         self.plugin_infos.iter().chain(&self.proj_infos).cloned().collect()
     }
 
@@ -878,12 +1017,53 @@ impl<'f> Session<'f> {
 
     fn mcp_names(&self) -> Vec<String> { self.mcp.costs().into_iter().map(|(n, _)| n).collect() }
 
+    /// Plugins changed outside this session (another window, `elisa plugin remove`): when the state file's stamp moved,
+    /// the plugins are loaded again as `/plugin enable` / `disable` would — servers of removed or switched-off plugins
+    /// stop and their tools, rules and commands go; newly switched-on ones start — with a line for each. Cheap when
+    /// nothing changed (one stat). Run before each turn and before a plugin tool call (longrun2 F4).
+    fn sync_plugins(&mut self) {
+        let Some(home) = self.home.clone() else { return };
+        let now = plugins::state_stamp(&home);
+        if now == self.plugin_stamp { return; }
+        self.plugin_stamp = now;
+        let on = |s: &Self| s.plugin_infos.iter().filter(|i| i.enabled && i.trusted).map(|i| i.name.clone()).collect::<Vec<_>>();
+        let before = on(self);
+        let owned: Vec<(String, String)> = self.mcp.defs().into_iter().filter_map(|d| {
+            let srv = self.mcp.server_of(&d.name)?;
+            self.plugin_servers.iter().find(|(_, s)| s == srv).map(|(p, _)| (d.name.clone(), p.clone()))
+        }).collect();
+        self.reload_plugins(None);
+        let after = on(self);
+        let gone: Vec<&String> = before.iter().filter(|p| !after.contains(p)).collect();
+        self.plugin_gone_tools.extend(owned.into_iter().filter(|(_, p)| gone.contains(&p)));
+        let mcp = &self.mcp;
+        self.plugin_gone_tools.retain(|(t, _)| !mcp.owns(t));
+        let new: Vec<&String> = after.iter().filter(|p| !before.contains(p)).collect();
+        for p in &gone { self.fe.info(&format!("plugin {p} was removed or switched off outside this session (another Elisa window or `elisa plugin`): its servers stopped, and its tools, rules and commands are off")); }
+        for p in &new { self.fe.info(&format!("plugin {p} was switched on outside this session: its servers, rules and commands are in use from now on")); }
+        if !gone.is_empty() || !new.is_empty() { self.plugins_event(); }
+    }
+
+    /// A call to a plugin server's tool whose plugin was removed or switched off elsewhere (checked just now): why it
+    /// does not run. None: the tool is not a plugin's, or its plugin is still on.
+    fn plugin_tool_gone(&mut self, name: &str) -> Option<String> {
+        let plugin_tool = self.mcp.server_of(name).is_some_and(|srv| self.plugin_servers.iter().any(|(_, s)| s == srv));
+        if plugin_tool { self.sync_plugins(); }
+        let (_, plugin) = self.plugin_gone_tools.iter().find(|(t, _)| t == name)?;
+        Some(format!("`{name}` belongs to plugin {plugin}, which was removed or switched off outside this session; its tools are off and nothing ran"))
+    }
+
     /// one plugin operation's outcome: the app's `plugin_result` event, the audit line, and a line for the user
-    fn plugin_result(&mut self, op: &str, name: &str, r: Result<String, String>) {
+    fn plugin_result(&mut self, op: &str, name: &str, r: Result<String, String>) { self.plugin_result_working(op, name, r, true) }
+
+    /// `plugin_result`; `working` false: done, but a server did not start (said as an error; `"working": false`)
+    fn plugin_result_working(&mut self, op: &str, name: &str, r: Result<String, String>, working: bool) {
         let (ok, text) = match &r { Ok(t) => (true, t.clone()), Err(e) => (false, e.clone()) };
-        plugins::audit(&self.audit, op, name, if ok { "ok" } else if text == DECLINED { "declined" } else { "error" }, if ok { "" } else { &text });
-        if ok { self.fe.info(&text) } else { self.fe.error(&text) }
-        self.fe.event("plugin_result", &json!({"op": op, "name": name, "ok": ok, "text": text}));
+        plugins::audit(&self.audit, op, name, if ok && working { "ok" } else if text == DECLINED { "declined" } else { "error" }, if ok && working { "" } else { &text });
+        if ok && working { self.fe.info(&text) } else { self.fe.error(&text) }
+        self.fe.event("plugin_result", &json!({"op": op, "name": name, "ok": ok, "working": ok && working, "text": text}));
+        // this session's own change is not news at the next turn
+        self.plugin_stamp = self.home.as_deref().and_then(plugins::state_stamp);
         if ok { self.plugins_event(); }
     }
 
@@ -899,13 +1079,17 @@ impl<'f> Session<'f> {
     }
 
     /// after an install or update: the servers started once to learn their tools and cost (written to the lock)
-    fn plugin_probe(&mut self, name: &str) -> String {
-        let Some(home) = self.home.clone() else { return String::new() };
-        let lines: Vec<String> = plugins::probe(&home, &self.cwd, name).into_iter().map(|(s, r)| match r {
+    /// … and the closing line (`plugins::outcome_line`): (every server started, the text)
+    fn plugin_probe(&mut self, name: &str, done: &str) -> (bool, String) {
+        let Some(home) = self.home.clone() else { return (true, done.to_string()) };
+        let pr = plugins::probe(&home, &self.cwd, name);
+        let (ok, line) = plugins::outcome_line(done, &pr);
+        let mut lines: Vec<String> = pr.into_iter().map(|(s, r)| match r {
             Ok((n, t)) => format!("{s}: {n} tool{} · ~{} tokens", if n == 1 { "" } else { "s" }, ui::k(t)),
             Err(e) => format!("{s}: did not start: {e}"),
         }).collect();
-        lines.join("\n")
+        lines.push(line);
+        (ok, lines.join("\n"))
     }
 
     // ---------- sandbox images (`images.rs`) ----------
@@ -1054,11 +1238,9 @@ impl<'f> Session<'f> {
                     }
                 }
                 if let Err(e) = r { return self.plugin_result("add", &m.name, Err(e)); }
-                let probe = self.plugin_probe(&m.name);
+                let (working, t) = self.plugin_probe(&m.name, &format!("plugin {} {} installed and on", m.name, m.version));
                 self.reload_plugins(Some(&m.name));
-                let mut t = format!("plugin {} {} installed and on", m.name, m.version);
-                if !probe.is_empty() { t = format!("{probe}\n{t}"); }
-                self.plugin_result("add", &m.name, Ok(t));
+                self.plugin_result_working("add", &m.name, Ok(t), working);
             }
             "remove" => {
                 if rest.is_empty() { return need(self, "NAME"); }
@@ -1089,12 +1271,9 @@ impl<'f> Session<'f> {
                 if !mine.is_empty() { self.mcp.remove(&mine); }
                 let fe = &mut *self.fe;
                 let r = plugins::update(&home, &src, &m, &mut |l| fe.info(l));
-                let probe = if r.is_ok() { self.plugin_probe(rest) } else { String::new() };
+                let (working, t) = if r.is_ok() { self.plugin_probe(rest, &format!("plugin {rest} updated to {}", m.version)) } else { (true, String::new()) };
                 self.reload_plugins(Some(rest));
-                self.plugin_result("update", rest, r.map(|()| {
-                    let t = format!("plugin {rest} updated to {}", m.version);
-                    if probe.is_empty() { t } else { format!("{probe}\n{t}") }
-                }));
+                self.plugin_result_working("update", rest, r.map(|()| t), working);
             }
             "trust" if rest == "project" => {
                 if self.proj_pending.is_none() { self.fe.info("this project has no commands or plugins waiting for trust"); return; }
@@ -1103,7 +1282,18 @@ impl<'f> Session<'f> {
             }
             "trust" => {
                 if rest.is_empty() { return need(self, "NAME | project"); }
-                let (m, p) = match plugins::prepare_trust(&home, rest) { Ok(x) => x, Err(e) => return self.plugin_result("trust", rest, Err(e)) };
+                let (m, p) = match plugins::prepare_trust(&home, rest) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        // a plugin.toml that does not parse cannot be trusted: offer the removal, or keep it off
+                        let broken = e.contains(plugins::UNPARSABLE);
+                        self.plugin_result("trust", rest, Err(e));
+                        if broken && self.interactive && self.fe.ask_yes_no(&format!("plugin remove {rest}"), &format!("Remove plugin {rest} now? (no keeps it off)")) {
+                            self.plugin_command(&format!("remove {rest}"));
+                        } else if broken { self.fe.info(&format!("plugin {rest} stays off")); }
+                        return;
+                    }
+                };
                 let (m, p) = if self.offer_preview_images("trust", rest, &p) {
                     match plugins::prepare_trust(&home, rest) { Ok(x) => x, Err(e) => return self.plugin_result("trust", rest, Err(e)) }
                 } else { (m, p) };
@@ -1334,8 +1524,22 @@ impl<'f> Session<'f> {
     fn req_begin(&mut self, prompt: &str) {
         // the user's own words: the session goal and `current request:` come from it
         self.user_req = context::one_line(prompt, 240);
-        let goal = context::next_goal(self.goal.as_deref(), prompt);
-        if goal != self.goal && self.goal.is_some() { self.fe.info(&format!("[session goal: {}]", goal.as_deref().unwrap_or(""))); }
+        let mut goal = context::next_goal(self.goal.as_deref(), prompt);
+        // the conversation moved to another task (GOAL_DRIFT unrelated requests in a row): the goal follows it
+        // (a goal the user stated in so many words stays until they state another)
+        if let Some(g) = goal.as_deref().filter(|g| Some(*g) == self.goal.as_deref() && !self.goal_stated) {
+            match context::goal_drift(g, prompt) {
+                Some(true) => self.goal_misses += 1,
+                Some(false) => self.goal_misses = 0,
+                None => {}
+            }
+            if self.goal_misses >= context::GOAL_DRIFT { goal = context::next_goal(None, prompt); }
+        }
+        if goal != self.goal {
+            self.goal_misses = 0;
+            self.goal_stated = goal.is_some() && context::own_words(context::request_body(prompt)).and_then(context::goal_statement).is_some();
+        }
+        if goal != self.goal && self.goal.is_some() { self.fe.info(&format!("[session goal: {}]", goal.as_deref().unwrap_or("none"))); }
         self.goal = goal;
         self.client.take_calls();
         if !self.cfg.metrics { return; }
@@ -1391,9 +1595,13 @@ impl<'f> Session<'f> {
 
     /// New notes text (a summary, a digest, state cards) with its "done / changed" claims checked against Elisa's own
     /// edit records (`context::verify_claims`): a claim naming code no edit wrote is dropped.
+    /// Text the model took from outside sources (`<untrusted>` fences in this history's tool results) is kept out of
+    /// the goal / done / next-step lines (`context::quarantine_notes`): only a quoted fact with its source.
     fn verified(&self, new: &str) -> String {
         let cwd = self.cwd.clone();
-        context::verify_claims(new, &self.ledger, &move |p: &str| std::fs::read_to_string(cwd.join(p)).ok())
+        let v = context::verify_claims(new, &self.ledger, &move |p: &str| std::fs::read_to_string(cwd.join(p)).ok());
+        let o = context::Outside::of(&self.history);
+        if o.is_empty() { v } else { context::quarantine_notes(&v, &o) }
     }
 
     /// Merged notes as they are kept: Elisa's own list of the files changed this session merged in (ground truth),
@@ -1560,6 +1768,8 @@ impl<'f> Session<'f> {
     /// choice flips, since a different list re-reads the whole prompt (the tools sit before the history in the
     /// template, so the server's prefix cache is lost once). The server's per-turn caps start again.
     fn reason_turn(&mut self, input: &str) {
+        // plugins removed / switched off or on by another Elisa since the last turn (one stat when nothing changed)
+        self.sync_plugins();
         let mode = crate::mcp_reason::Mode::parse(&self.cfg.reason).unwrap_or(crate::mcp_reason::Mode::Auto);
         let body = context::request_body(input);
         let on = crate::mcp_reason::decide(mode, body, self.reason_on);
@@ -1612,7 +1822,10 @@ impl<'f> Session<'f> {
             for l in std::mem::take(&mut self.tool_lines) { reply += &format!("\n{l}"); }
             let ids: Vec<u64> = [self.record(MRole::User, &input), self.record(MRole::Assistant, reply.trim())].into_iter().flatten().collect();
             self.exchanges += 1;
-            match self.new_card.take() {
+            // a card is the next turn's instructions: nothing in it may come from outside text (`context::Outside`)
+            let o = context::Outside::of(&self.history);
+            let card = self.new_card.take().map(|c| if o.is_empty() { c } else { context::quarantine_card(&c, &o) }).filter(|c| !c.trim().is_empty());
+            match card {
                 Some(c) => self.set_card(c, &ids),
                 None if self.card_broken && matches!(end, TurnEnd::Done) => {
                     let keep = self.card_id.map_or("none yet".to_string(), |k| format!("keeping card #{k}"));
@@ -1638,6 +1851,8 @@ impl<'f> Session<'f> {
         let mut content = vec![Block::Text { text }];
         content.append(&mut self.attach);
         self.history.push(Message::new(Role::User, content));
+        // tests: a request containing $ELISA_TEST_PANIC panics here (the recovery path, tests/fake_server.rs)
+        if std::env::var("ELISA_TEST_PANIC").is_ok_and(|m| !m.is_empty() && self.input.contains(&m)) { panic!("injected test panic"); }
         self.agent_loop(CheckRun::default(), true)
     }
 
@@ -1654,6 +1869,9 @@ impl<'f> Session<'f> {
         let mut empty_retry: Option<Message> = None;
         let mut retried = false;
         let mut stashed_card: Option<String> = None;
+        // a simple turn's reply that used its whole small budget with no text for the user: sent once more without
+        // the simple-turn limits (longrun2: a two-question turn judged simple showed only the stop line)
+        let mut widened = false;
         for _ in 0..self.cfg.max_steps.max(1) {
             if !self.mid_turn_fold() {
                 // run2 call 30: sent anyway, 8,199 tokens against 8,192, and the server returned nothing
@@ -1664,7 +1882,8 @@ impl<'f> Session<'f> {
             CANCEL.store(false, Ordering::SeqCst);
             let max_tokens = self.cfg.max_output.min(self.max_ctx.saturating_sub(self.est_safe() + context::ctx_margin(self.max_ctx) + 64)).max(MIN_OUT);
             // a simple turn where the model does not reason: a smaller cap (`Client::simple_cap`)
-            let max_tokens = self.client.simple_cap().map_or(max_tokens, |c| max_tokens.min(c));
+            let capped = self.client.simple_cap();
+            let max_tokens = capped.map_or(max_tokens, |c| max_tokens.min(c));
             let interactive = self.interactive;
             self.fe.waiting();
             let fe = &mut *self.fe;
@@ -1727,6 +1946,13 @@ impl<'f> Session<'f> {
                     self.fe.info("[the reply had no text for you, only its state card; asking the model once more]");
                     continue;
                 }
+                if !wrote && cut.is_none() && stop_reason == "max_tokens" && capped.is_some() && !widened {
+                    widened = true;
+                    self.client.set_simple(false);
+                    stashed_card = self.new_card.take().or(stashed_card);
+                    self.fe.info(&format!("[the reply used its whole {max_tokens}-token simple-turn budget and wrote no text for you; asking once more without that limit]"));
+                    continue;
+                }
                 if !wrote && normal_end {
                     self.fe.info("[no answer: the model wrote no text for you twice; ask again or rephrase]");
                 }
@@ -1768,6 +1994,7 @@ impl<'f> Session<'f> {
                         match &cut {
                             Some(c) => self.fe.info(&format!("[stopped: `{c}` was cut off at the {max_tokens}-token output limit, so it did not run and nothing was saved; say \"continue\" to go on]")),
                             None if !wrote && reasoning > 0 => self.fe.info(&format!("[stopped: the model spent its whole output budget ({reasoning} tokens) reasoning and wrote no answer; ask again, or more simply]")),
+                            None if !wrote => self.fe.info(&format!("[stopped: the reply used its whole {max_tokens}-token output limit and wrote no text for you; ask again, or more simply]")),
                             None => self.fe.info("[stopped: reply hit max_tokens; say \"continue\" to go on]"),
                         }
                         TurnEnd::Stopped
@@ -1793,10 +2020,15 @@ impl<'f> Session<'f> {
                     // only a tool this request offered may run (Elisa's own + the MCP servers', as the reasoning
                     // gate filtered them): anything else is refused before any approval box (security s1: an
                     // approval for `sec_malware`, which this build does not have)
+                    let plugin_gone = self.plugin_tool_gone(name);
                     let offered = self.tools.iter().any(|t| t.name == *name);
                     let verdict = guard.check(name, input, !self.mcp.owns(name));
                     self.fe.tool_start(&summary);
-                    let (content, is_error) = if !offered && self.mcp.gated_server(name).is_some() {
+                    let (content, is_error) = if let Some(why) = plugin_gone {
+                        self.audit_tool("denial", name, &summary, &[("outcome", "denied"), ("answer", "policy"), ("reason", "plugin_removed")]);
+                        self.fe.tool_done(&why, true);
+                        (why, true)
+                    } else if !offered && self.mcp.gated_server(name).is_some() {
                         // a documents / security tool the relevance gate left out (the model saw a PDF in a listing
                         // mid-turn): not run now, but offered from the next request on (one tool-list change)
                         let srv = self.mcp.gated_server(name).unwrap_or("");
@@ -2278,7 +2510,8 @@ impl<'f> Session<'f> {
         if self.mem.is_none() || self.cfg.recall_k == 0 || query.split_whitespace().count() < 3 { return Vec::new(); }
         let (k, t0, show) = (self.cfg.recall_k, Instant::now(), self.recall_slow);
         if show { self.fe.progress(Some(&Progress { label: "searching memory…".into(), ..Default::default() })); }
-        let Some((hits, shown)) = self.mem_call(|m| m.db.recall(query, &m.project, k, true)) else { return Vec::new() };
+        // what other Elisa processes stored since this one last wrote is searched too (`Memory::refresh`)
+        let Some((hits, shown)) = self.mem_call(|m| { let _ = m.db.refresh(); m.db.recall(query, &m.project, k, true) }) else { return Vec::new() };
         self.recall_slow = t0.elapsed() > SLOW;
         if show || shown { self.fe.progress(None); }
         if hits.is_empty() { return Vec::new(); }
@@ -2641,8 +2874,9 @@ impl<'f> Session<'f> {
     fn audit_command(&mut self, arg: &str) {
         let Some(path) = self.audit.path().map(std::path::Path::to_path_buf) else { self.fe.info("the audit log is off (config audit = \"off\")"); return };
         if !path.exists() { self.fe.info(&format!("audit log empty ({})", path.display())); return; }
-        let n = arg.parse::<usize>().unwrap_or(20).max(1);
+        let (n, note) = match crate::audit::count_arg(arg) { Ok(x) => x, Err(u) => { self.fe.error(&u); return } };
         let lines = crate::audit::last(&path, n);
+        if let Some(t) = note { self.fe.info(&t); }
         if !lines.is_empty() { self.fe.info(&lines.join("\n")); }
         match crate::audit::verify(&path) {
             Ok(k) => self.fe.info(&format!("chain ok ({k} entries) · {}", path.display())),

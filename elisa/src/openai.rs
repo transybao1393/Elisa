@@ -1,10 +1,9 @@
 //! The OpenAI-style `POST {base}/chat/completions` (Ollama, LM Studio, mlx-lm, vLLM, OpenAI, OpenRouter, ...): Elisa's
 //! Anthropic-shaped history and tools are translated per request, and the stream comes back as a normal `Reply`.
-use crate::api::{parse_input, publish, publish_thinking, publish_call, partial_path, Phase, PhaseGuard, Request};
+use crate::api::{parse_input, Next, publish, publish_thinking, publish_call, partial_path, Phase, PhaseGuard, Request};
 use crate::types::{Block, Message, Reply, Role, Usage};
 use serde_json::{json, Map, Value};
-use std::io::{BufRead, BufReader};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 fn messages(system: &str, msgs: &[Message]) -> Vec<Value> {
@@ -156,20 +155,18 @@ pub fn send(agent: &ureq::Agent, base: &str, key: &str, model: &str, req: &Reque
     let mut rq = agent.post(format!("{}/chat/completions", base.trim_end_matches('/')))
         .header("content-type", "application/json").header("accept", "text/event-stream");
     if !key.is_empty() { rq = rq.header("authorization", format!("Bearer {key}")); }
-    let r = rq.send(body(base, model, req).to_string()).map_err(|e| format!("request failed: {e}"))?;
-    let status = r.status().as_u16();
-    if !(200..300).contains(&status) {
-        let text = r.into_body().read_to_string().unwrap_or_default();
-        return Err(format!("HTTP {status}: {}", crate::api::err_message(&text)));
-    }
-    publish(Phase::Started);
+    // the network reads run on their own thread: Esc stops at once, also before the first byte (`api::post_lines`)
+    let mut lines = crate::api::post_lines(rq, body(base, model, req).to_string(), cancel)?;
+    if lines.is_some() { publish(Phase::Started); }
     let mut s = Stream::default();
     let mut ttft = None;
     let mut cancelled = false;
-    let lines = BufReader::new(r.into_body().into_reader()).lines();
-    for line in lines {
-        if cancel.load(Ordering::Relaxed) { cancelled = true; break; }
-        let line = line.map_err(|e| format!("stream read: {e}"))?;
+    loop {
+        let line = match lines.as_mut().map(|l| l.next(cancel)).unwrap_or(Ok(Next::Cancelled))? {
+            Next::Line(l) => l,
+            Next::End => break,
+            Next::Cancelled => { cancelled = true; break; }
+        };
         let Some(data) = line.trim_end_matches('\r').strip_prefix("data:") else { continue };
         let done = s.feed(data.trim(), on_text)?;
         if s.started { ttft.get_or_insert_with(|| t0.elapsed().as_secs_f64()); }

@@ -1046,14 +1046,17 @@ struct Serve { child: std::process::Child, stdin: std::process::ChildStdin, rx: 
 impl Serve {
     /// memory off: the turn loop under test, not the graph store
     fn start(url: &str, cwd: &Path) -> Serve { Serve::start_cfg(url, cwd, "memory = false\n") }
-    fn start_cfg(url: &str, cwd: &Path, config: &str) -> Serve {
+    fn start_cfg(url: &str, cwd: &Path, config: &str) -> Serve { Serve::start_full(url, cwd, config, &[], &[]) }
+    /// with extra arguments (e.g. `--type anthropic`) and environment
+    fn start_full(url: &str, cwd: &Path, config: &str, args: &[&str], env: &[(&str, &str)]) -> Serve {
         let home = cwd.join("_home");
         std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
         std::fs::write(home.join(".config/elisa/config.toml"), config).unwrap();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_elisa"));
-        cmd.args(["--serve-jsonl", "--model", "test-m", "--base-url", url, "--cwd"]).arg(cwd).current_dir(cwd).env("HOME", &home)
+        cmd.args(["--serve-jsonl", "--model", "test-m", "--base-url", url]).args(args).arg("--cwd").arg(cwd).current_dir(cwd).env("HOME", &home)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         for (k, _) in std::env::vars() { if k.starts_with("ELISA_") || k.starts_with("ANTHROPIC_") { cmd.env_remove(&k); } }
+        for (k, v) in env { cmd.env(k, v); }
         let mut child = cmd.spawn().unwrap();
         let (stdin, out) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
         let (tx, rx) = std::sync::mpsc::channel();
@@ -2576,4 +2579,107 @@ fn no_model_sends_nothing_and_says_how_to_choose() {
     let o = run_elisa_cfg(&["-p", "hi", "--base-url", "http://127.0.0.1:1"], &d, None, &[], "# no model chosen\n");
     assert_eq!(o.code, 2, "{}", o.stderr);
     assert!(o.stderr.contains("No model chosen") && o.stderr.contains("--model"), "{}", o.stderr);
+}
+
+// ---------- longrun2 fixes: a panic in a turn, Esc before the first token, max_tokens with nothing shown ----------
+
+/// A panic inside a turn (longrun2 F1: elisa-mem's index out of bounds) reaches the user as an error event plus
+/// `turn_done`, and the next message is an ordinary turn (before, the agent thread died and the app waited forever).
+#[test]
+fn jsonl_a_panic_in_a_turn_is_an_error_and_the_session_goes_on() {
+    let dir = tmpdir("jsonl-panic");
+    let f = Fake::start(vec![text_reply("still here")]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = true\n", &[], &[("ELISA_TEST_PANIC", "PANIC-ME")]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "please PANIC-ME now"}));
+    let evs = s.until("turn_done");
+    let err = evs.iter().find(|e| e["type"] == "error").unwrap_or_else(|| panic!("no error event: {evs:?}"));
+    let t = err["text"].as_str().unwrap();
+    assert!(t.starts_with("internal error: injected test panic at src/repl.rs:"), "{t}");
+    assert!(t.contains("the session goes on"), "{t}");
+    assert_eq!(evs.iter().filter(|e| e["type"] == "turn_done").count(), 1);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "are you still there?"}));
+    let evs = s.until("turn_done");
+    let text: String = evs.iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect();
+    assert_eq!(text, "still here", "{evs:?}");
+    // the history the model got: the panicked request closed by a reply, roles alternating
+    let msgs = f.messages();
+    let m = msgs.last().unwrap()["messages"].as_array().unwrap().clone();
+    let roles: Vec<&str> = m.iter().map(|x| x["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, ["user", "assistant", "user"], "{m:?}");
+    assert_eq!(m[1]["content"][0]["text"], "[stopped: internal error]");
+    s.quit();
+}
+
+/// Esc while the server has not sent a byte yet (prefill of a long prompt): the call stops within ~300 ms instead of
+/// waiting for the first bytes (longrun2: "[cancelled]" 3.6 s after Esc).
+#[test]
+fn cancel_before_the_first_byte_stops_at_once() {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for c in l.incoming() {
+            let Ok(mut c) = c else { continue };
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 65536];
+                let _ = c.read(&mut buf);
+                // the first byte comes after 5 s
+                std::thread::sleep(Duration::from_secs(5));
+                let _ = write!(c, "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n");
+            });
+        }
+    });
+    for kind in ["gateway", "ollama"] {
+        let c = client(&format!("http://127.0.0.1:{port}"));
+        let c = if kind == "ollama" {
+            let c = Client::new(&Config { base_url: format!("http://127.0.0.1:{port}/v1"), model: "test-m".into(), transport: elisa::provider::Transport::OpenAi, ..Config::default() });
+            c.use_ollama(4096, false);
+            c
+        } else { c };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let c2 = cancel.clone();
+        std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(200)); c2.store(true, Ordering::SeqCst); });
+        let t0 = Instant::now();
+        let msgs = [Message::user_text("hi")];
+        let r = c.send(&Request { system: "sys", tools: &[], messages: &msgs, max_tokens: 100 }, &cancel, &mut |_| {}).unwrap();
+        let dt = t0.elapsed();
+        assert_eq!(r.stop_reason, "cancelled", "{kind}");
+        assert!(dt < Duration::from_millis(500), "{kind}: Esc took {dt:?} (cancel at 200 ms)");
+    }
+}
+
+/// A simple turn (small output cap) whose reply spends the whole cap with no text for the user is sent once more
+/// without the simple-turn cap; the user gets the answer, not just a stop line (longrun2 s1b sales.xlsx turn).
+#[test]
+fn simple_turn_that_hits_max_tokens_with_no_text_is_retried_uncapped() {
+    let dir = tmpdir("jsonl-maxtok");
+    let f = Fake::start(vec![
+        // only a tool call cut at the limit would be shown as cut; this one wrote nothing visible at all
+        Sse::new(500, 0).end("max_tokens", 1024),
+        text_reply("Both answers: 4 and 9."),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "hi"}));
+    let evs = s.until("turn_done");
+    let text: String = evs.iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect();
+    assert_eq!(text, "Both answers: 4 and 9.", "{evs:?}");
+    assert!(evs.iter().any(|e| e["type"] == "info" && e["text"].as_str().unwrap().contains("asking once more without that limit")), "{evs:?}");
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(reqs[0]["max_tokens"], 1024, "the simple turn's cap");
+    assert!(reqs[1]["max_tokens"].as_u64().unwrap() > 1024, "{}", reqs[1]["max_tokens"]);
+    assert_eq!(reqs[0]["messages"], reqs[1]["messages"], "the same request, only the cap differs");
+    s.quit();
+
+    // twice nothing: a clear line instead of the bare stop line
+    let dir = tmpdir("jsonl-maxtok2");
+    let f = Fake::start(vec![Sse::new(500, 0).end("max_tokens", 1024), Sse::new(500, 0).end("max_tokens", 4096)]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "hi"}));
+    let evs = s.until("turn_done");
+    assert!(evs.iter().any(|e| e["type"] == "info" && e["text"].as_str().unwrap().contains("wrote no text for you; ask again")), "{evs:?}");
+    s.quit();
 }

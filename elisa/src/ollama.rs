@@ -3,12 +3,11 @@
 //! reloads the model at Ollama's default (4096 on many installs), so a connection's `max_ctx` above that silently cut
 //! replies off. Here every request carries `num_ctx` = the session's window. The model's reasoning (`thinking`) is read
 //! too: it counts from the first token for the timings, though only the answer is shown.
-use crate::api::{publish_thinking, publish, publish_call, Phase, PhaseGuard, Request};
+use crate::api::{Next, publish_thinking, publish, publish_call, Phase, PhaseGuard, Request};
 use crate::types::{Block, Message, Reply, Role, Usage};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 fn messages(system: &str, msgs: &[Message]) -> Vec<Value> {
@@ -193,19 +192,18 @@ pub fn send(agent: &ureq::Agent, root: &str, key: &str, model: &str, num_ctx: us
     let _idle = PhaseGuard;
     let mut rq = agent.post(format!("{}/api/chat", root.trim_end_matches('/'))).header("content-type", "application/json");
     if !key.is_empty() { rq = rq.header("authorization", format!("Bearer {key}")); }
-    let r = rq.send(body(model, req, num_ctx, thinks, prefill).to_string()).map_err(|e| format!("request failed: {e}"))?;
-    let status = r.status().as_u16();
-    if !(200..300).contains(&status) {
-        let text = r.into_body().read_to_string().unwrap_or_default();
-        return Err(format!("HTTP {status}: {}", crate::api::err_message(&text)));
-    }
-    publish(Phase::Started);
+    // the network reads run on their own thread: Esc stops at once, also before the first byte (`api::post_lines`)
+    let mut lines = crate::api::post_lines(rq, body(model, req, num_ctx, thinks, prefill).to_string(), cancel)?;
+    if lines.is_some() { publish(Phase::Started); }
     let mut s = Stream { hold: prefill.is_some(), ..Default::default() };
     let mut ttft = None;
     let mut cancelled = false;
-    for line in BufReader::new(r.into_body().into_reader()).lines() {
-        if cancel.load(Ordering::Relaxed) { cancelled = true; break; }
-        let line = line.map_err(|e| format!("stream read: {e}"))?;
+    loop {
+        let line = match lines.as_mut().map(|l| l.next(cancel)).unwrap_or(Ok(Next::Cancelled))? {
+            Next::Line(l) => l,
+            Next::End => break,
+            Next::Cancelled => { cancelled = true; break; }
+        };
         let done = s.feed(line.trim(), on_text)?;
         if s.started { ttft.get_or_insert_with(|| t0.elapsed().as_secs_f64()); }
         if done { break; }
