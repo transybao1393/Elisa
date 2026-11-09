@@ -3283,13 +3283,20 @@ impl<'f> Session<'f> {
                     self.fe.info(&format!("[the reply used its whole {max_tokens}-token simple-turn budget and wrote no text for you; asking once more without that limit]"));
                     continue;
                 }
+                // reasoned through its whole budget, no answer (BUGS #78): once more without reasoning, full budget
+                if !wrote && cut.is_none() && stop_reason == "max_tokens" && reasoning > 0 && self.client.stop_reasoning() {
+                    stashed_card = self.new_card.take().or(stashed_card);
+                    empty_retry = Some(Message::user_text(REASONED_OUT_NUDGE));
+                    self.fe.info("[the model spent its whole budget reasoning and wrote no answer; asking once more without reasoning]");
+                    continue;
+                }
                 if !wrote && normal_end {
                     self.fe.info("[no answer: the model wrote no text for you twice; ask again or rephrase]");
                 }
                 let mut content: Vec<Block> = if vis.is_empty() { Vec::new() } else { vec![Block::Text { text: vis }] };
                 if let Some(c) = &cut { content.push(Block::Text { text: format!("[cut off at the {max_tokens}-token output limit: `{c}` did not run]") }); }
                 if content.is_empty() {
-                    content.push(Block::Text { text: format!("[{}]", if stop_reason.is_empty() { "no output" } else { &stop_reason }) });
+                    content.push(Block::Text { text: crate::route::no_answer_note(&stop_reason).into() });
                 }
                 // a call cut by the limit: tell the model why, once, so it can use smaller pieces
                 if let (Some(c), false) = (&cut, nudged) {
@@ -4577,7 +4584,13 @@ fn api_error_line(e: &str) -> String {
 /// The error a call to a tool this request did not offer gets: what to do instead and a few names that exist (those
 /// that look like it first: `sec_malware` → `sec_secrets`, …). `reason` = a reasoning tool the gate left out this turn.
 /// The one-time retry after a reply with no visible text (`agent_loop`); sent for that request only.
-const EMPTY_REPLY_NUDGE: &str = "[elisa] Your last reply had no text for the user, only the <state> card. Answer the user's \
+/// The one request after a reply that reasoned through its whole budget (BUGS #78): sent with reasoning off, after
+/// the history for that request only. Without it qwen3-vl:2b answered a long pasted "just reply OK" message with a
+/// copy of its earlier greeting (2 of 2 retries).
+const REASONED_OUT_NUDGE: &str = "[elisa] Your last reply ran out of room while reasoning and wrote nothing. Answer \
+    the user's last message above now, directly, doing what it asks.";
+
+const EMPTY_REPLY_NUDGE: &str ="[elisa] Your last reply had no text for the user, only the <state> card. Answer the user's \
     message in one plain sentence first; the <state> card goes after it.";
 
 /// The note of the one-time words-only retry of a small-talk turn whose reply called a tool (`agent_loop`): after

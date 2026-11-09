@@ -117,6 +117,19 @@ pub struct Stream {
 }
 
 impl Stream {
+    /// The reply has reasoned for `REASONING_ROOM` tokens and written nothing else yet (no answer text, no call). A
+    /// small model past that mostly goes round in circles until the whole budget is gone (BUGS #78: qwen3-vl:2b on a
+    /// long pasted message, 5,119 tokens of reasoning in 69 s and no answer), so the stream stops here (`cap`) and the
+    /// turn asks again without reasoning (`Client::stop_reasoning`).
+    pub fn over_reasoning(&self) -> bool { self.thinking >= REASONING_ROOM && self.text.is_empty() && self.calls.is_empty() }
+
+    /// Stop the reply as if it hit its output limit: its reasoning is its whole output (no `done` line will come).
+    pub fn cap(&mut self) {
+        self.done_reason = "length".into();
+        self.usage.output_tokens = self.usage.output_tokens.max(self.thinking);
+        self.usage.reasoning_tokens = self.thinking;
+    }
+
     /// One NDJSON line. Ok(true) = the stream is over.
     pub fn feed(&mut self, line: &str, on_text: &mut dyn FnMut(&str)) -> Result<bool, String> {
         let Ok(v) = serde_json::from_str::<Value>(line) else { return Ok(false) };
@@ -210,6 +223,8 @@ pub fn send(agent: &ureq::Agent, root: &str, key: &str, model: &str, num_ctx: us
         let done = s.feed(line.trim(), on_text)?;
         if s.started { ttft.get_or_insert_with(|| t0.elapsed().as_secs_f64()); }
         if done { break; }
+        // closing the stream stops the generation on the server
+        if s.over_reasoning() { s.cap(); drop(lines.take()); break; }
     }
     let total = t0.elapsed().as_secs_f64();
     // Ollama's own decode time, when it gave one, makes tok/s exact: total - decode is the wait before the first token
@@ -281,6 +296,27 @@ mod tests {
         s.feed(r#"{"message":{"content":"ok"},"done":false}"#, &mut on).unwrap();
         s.feed(r#"{"message":{"content":""},"done":true,"done_reason":"stop","eval_count":31}"#, &mut on).unwrap();
         assert_eq!(s.finish(false).2.reasoning_tokens, 30);
+    }
+
+    #[test]
+    fn reasoning_past_its_room_with_no_answer_stops_as_the_output_limit() {
+        // BUGS #78: the stream stops once the reasoning alone fills REASONING_ROOM, and reads as max_tokens
+        let mut s = Stream::default();
+        let mut on = |_: &str| {};
+        let think = r#"{"message":{"content":"","thinking":"x"},"done":false}"#;
+        for _ in 0..REASONING_ROOM - 1 { s.feed(think, &mut on).unwrap(); }
+        assert!(!s.over_reasoning());
+        s.feed(think, &mut on).unwrap();
+        assert!(s.over_reasoning());
+        s.cap();
+        let (content, stop, usage) = s.finish(false);
+        assert!(content.is_empty());
+        assert_eq!((stop.as_str(), usage.reasoning_tokens, usage.output_tokens), ("max_tokens", REASONING_ROOM, REASONING_ROOM));
+        // an answer already started: never cut, however long the reasoning
+        let mut s = Stream::default();
+        s.feed(r#"{"message":{"content":"Hi"},"done":false}"#, &mut on).unwrap();
+        for _ in 0..REASONING_ROOM + 5 { s.feed(think, &mut on).unwrap(); }
+        assert!(!s.over_reasoning());
     }
 
     #[test]

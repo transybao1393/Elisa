@@ -233,6 +233,9 @@ pub struct Client {
     ollama_thinks: AtomicBool,
     /// the turn in progress is a simple one (`set_simple`): no reasoning where the connection can switch it off
     simple: AtomicBool,
+    /// the rest of this turn's agent calls ask the model not to reason, with the full output budget (`stop_reasoning`,
+    /// BUGS #78); cleared by the next `set_simple`
+    think_off: AtomicBool,
     /// what the backend is and can do (`backend::detect`, `set_caps`)
     caps: crate::backend::Caps,
     /// the tools go in the system prompt as text (`backend::Tools::Text`): set from the caps, or after a server
@@ -336,6 +339,7 @@ impl Client {
             ollama_ctx: std::sync::atomic::AtomicUsize::new(0),
             ollama_thinks: AtomicBool::new(false),
             simple: AtomicBool::new(false),
+            think_off: AtomicBool::new(false),
             caps: crate::backend::Caps::default(),
             text_tools: AtomicBool::new(false),
             gemini: Mutex::new(crate::backend::GeminiCache::default()),
@@ -401,7 +405,20 @@ impl Client {
     /// is "off": its agent calls ask the model not to reason where the connection allows it (Ollama's native API:
     /// `ollama::no_think`) and get the smaller `SIMPLE_OUT` cap (`simple_cap`). Set once per turn, so a turn's
     /// requests all have the same shape.
-    pub fn set_simple(&self, on: bool) { self.simple.store(on, Ordering::Relaxed); }
+    pub fn set_simple(&self, on: bool) {
+        self.simple.store(on, Ordering::Relaxed);
+        self.think_off.store(false, Ordering::Relaxed);
+    }
+
+    /// A reply spent its whole budget reasoning and wrote nothing (BUGS #78): the rest of this turn's agent calls ask
+    /// the model not to reason (as a simple turn does, `ollama::no_think`) but keep the full output budget. True when
+    /// that changes the next request: a connection that can switch reasoning off (Ollama's native API, a model with
+    /// the "thinking" capability) that is not already asked not to reason.
+    pub fn stop_reasoning(&self) -> bool {
+        let can = self.reasoning_room() > 0 && !self.simple.load(Ordering::Relaxed) && !self.think_off.load(Ordering::Relaxed);
+        if can { self.think_off.store(true, Ordering::Relaxed); }
+        can
+    }
 
     /// the last `set_simple`
     pub fn simple(&self) -> bool { self.simple.load(Ordering::Relaxed) }
@@ -602,7 +619,7 @@ impl Client {
             Transport::OpenAi if self.ollama_ctx.load(Ordering::Relaxed) > 0 => {
                 let ctx = self.ollama_ctx.load(Ordering::Relaxed);
                 let thinks = self.ollama_thinks.load(Ordering::Relaxed).then_some(self.think);
-                let simple = self.simple.load(Ordering::Relaxed) && self.kind() == "agent";
+                let simple = (self.simple.load(Ordering::Relaxed) || self.think_off.load(Ordering::Relaxed)) && self.kind() == "agent";
                 let r = crate::ollama::send(&self.agent, crate::provider::ollama_root(&self.base), &self.key, &self.model, ctx, thinks, simple, req, cancel, on_text)?;
                 self.record(&r, true);
                 return Ok(r);
@@ -759,6 +776,27 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reasoning_stop_asks_once_more_without_reasoning() {
+        // BUGS #78: only where reasoning can be switched off (an Ollama model with the "thinking" capability), once
+        // per turn, and not on a simple turn (already asked not to reason)
+        let c = Client::new(&Config::default());
+        assert!(!c.stop_reasoning());
+        c.use_ollama(8192, true);
+        c.set_simple(false);
+        assert!(c.stop_reasoning());
+        assert!(!c.stop_reasoning());
+        // the full budget stays: no simple-turn cap
+        assert_eq!(c.simple_cap(8192), None);
+        c.set_simple(false);
+        assert!(c.stop_reasoning());
+        c.set_simple(true);
+        assert!(!c.stop_reasoning());
+        let plain = Client::new(&Config::default());
+        plain.use_ollama(8192, false);
+        assert!(!plain.stop_reasoning());
+    }
 
     #[test]
     fn only_server_errors_and_broken_calls_are_tried_again() {
