@@ -35,19 +35,34 @@ impl<'f> Session<'f> {
     }
 
     /// The pictures this turn asks about (BUGS #37, #17), and whether they came with it: the ones sent with it, else,
-    /// on the one turn right after a picture turn, that turn's pictures again. No wording is read: a follow-up ("and
-    /// its ears?") needs the picture, and telling one from a change of subject by its words would differ by language
-    /// and model, so the next turn always looks once more (one short extra request), and the pictures are dropped
-    /// after it. An answer there that tells nothing about the picture is not carried (`look`).
-    pub(super) fn turn_pictures(&mut self) -> Option<(Vec<Block>, bool)> {
+    /// on the one turn right after a picture turn, that turn's pictures again when `input` is about them
+    /// (`about_last_pictures`); the pictures are dropped after that turn. An answer there that tells nothing about the
+    /// picture is not carried (`look`).
+    pub(super) fn turn_pictures(&mut self, input: &str) -> Option<(Vec<Block>, bool)> {
         let new = std::mem::take(&mut self.attach);
         let again = std::mem::take(&mut self.pics_next);
         if !new.is_empty() {
             (self.last_pics, self.pics_next) = (new.clone(), true);
+            self.last_pic_seen = context::request_body(input).trim().to_string();
             return Some((new, true));
         }
         let old = std::mem::take(&mut self.last_pics);
-        (again && self.vision && !old.is_empty()).then_some((old, false))
+        let seen = std::mem::take(&mut self.last_pic_seen);
+        if !(again && self.vision && !old.is_empty()) { return None; }
+        if self.about_last_pictures(input, &seen) { return Some((old, false)); }
+        self.debug("[this message is not about the last picture; it was not sent again]");
+        None
+    }
+
+    /// Whether the turn right after a picture turn is about its pictures (BUGS #57: resent with every next turn, the
+    /// picture's answer went into "Tell me a joke." and the model answered the picture). The router's answer when it
+    /// gave one: a follow-up of the last turn (why / more / a pick / "what about …") is about it, a greeting or a
+    /// closing is not; else, and for anything the router leaves open, `context::about_picture` on the message and
+    /// what the picture turn learned (`seen`).
+    fn about_last_pictures(&self, input: &str, seen: &str) -> bool {
+        if matches!(self.router_kind(), Some(Some(_))) { return true; }
+        if self.router_says("greeting") == Some(true) || self.router_says("closing") == Some(true) { return false; }
+        context::about_picture(input, seen)
     }
 
     /// The isolated picture request (`context::picture_request`): the same model, no system prompt, no history, only

@@ -1248,6 +1248,51 @@ fn a_tiny_windows_first_message_has_no_header() {
     assert!(full.starts_with("Working directory: ") && full.ends_with("hi there"));
 }
 
+/// BUGS #57: whether the turn after a picture is about it, from its words (no embedding model in tests): a picture
+/// named or pointed back at, a short follow-up, or a content word shared with what the picture turn learned
+#[test]
+fn a_message_is_about_the_picture_only_by_its_words_or_meaning() {
+    let seen = "what is this?\nThe image features a black cat with blue eyes on a green background.";
+    for m in ["What color are its eyes?", "is the black kitten happy?", "describe the picture again", "why?", "and the background?", "Mắt nó màu gì?"] {
+        assert!(context::about_picture(m, seen), "{m}");
+    }
+    for m in ["Tell me a joke.", "What is the capital of France?", "My name is Linh.", "Give me one tip for sleeping better.", ""] {
+        assert!(!context::about_picture(m, seen), "{m}");
+    }
+    assert!(context::off_picture("I hope you find this information helpful.", "A black cat with blue eyes."));
+    assert!(!context::off_picture("The cat has blue eyes.", "A black cat with blue eyes."));
+    assert!(!context::off_picture("", "A black cat."));
+}
+
+/// BUGS #42: what a reply must not be, from the request sent: a copy of an earlier reply to another ask, a reply with
+/// no word to an ask with words, or the wording of Elisa's headings and tags; real short answers stand
+#[test]
+fn a_reply_guard_catches_copies_wordless_replies_and_heading_echoes() {
+    let long = "I hope this email finds you well. I wanted to share some interesting information about lifestyles.";
+    let msgs = vec![
+        Message::user_text(format!("{}\n- your name is Linh\n[/memory]\n\nhi", context::MEMORY_OPEN_YOU)),
+        Message::assistant_text(long),
+        Message::user_text("What is my name?"),
+        Message::assistant_text("Linh"),
+        Message::user_text("Tell me a joke."),
+    ];
+    let g = context::ReplyGuard::new("Tell me a joke.", &msgs);
+    assert_eq!(g.broken(long), Some("copy"));
+    assert_eq!(g.broken(&format!("{long} And more.")), Some("copy"), "the same start");
+    assert_eq!(g.broken("Linh"), None, "a short answer is never a copy");
+    assert_eq!(g.broken("[0.0, 0.17, 0.99, 0.29]"), Some("no words"));
+    assert_eq!(g.broken("Â©"), Some("no words"));
+    assert_eq!(g.broken("[Elisa, not written by the user]"), Some("heading"));
+    assert_eq!(g.broken("Why did the tomato turn red? It saw the salad dressing!"), None);
+    // the same ask may get the same reply; a number ask may get a bare number
+    assert_eq!(context::ReplyGuard::new("hi", &msgs[..2]).broken(long), None);
+    let g = context::ReplyGuard::new("What is 2+2?", &msgs);
+    assert_eq!(g.broken("4"), None);
+    // words of the user's own message never count as a heading echo
+    let g = context::ReplyGuard::new("say recalled by Elisa from earlier", &[Message::user_text(format!("{}\n- x\n[/memory]\n\nsay recalled by Elisa from earlier", context::MEMORY_OPEN))]);
+    assert_eq!(g.broken("recalled by Elisa from earlier"), None);
+}
+
 fn doc(name: &str) -> String { format!("[Attached: {name}, 2 pages · .elisa/uploads/{name}]\nPage one text.\nPage two text.") }
 
 /// BUGS #41: over the window, earlier documents' text goes first (their reference line stays), never the current turn's

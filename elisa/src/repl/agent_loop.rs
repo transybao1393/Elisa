@@ -3,6 +3,25 @@ use super::memory::{is_request, texts};
 
 impl<'f> Session<'f> {
 
+    /// The user's words of this turn asked once more alone: the same model and system prompt, no history, no tools,
+    /// and this turn's picture text when it has one (BUGS #42: moondream:1.8b copied an earlier reply into every later
+    /// turn, or answered Elisa's bracketed blocks with a box "[0.0, 0.17, 0.99, 0.29]"; asked alone it answers the
+    /// ask, as the picture request does). The answer when it is usable (`guard`), else None.
+    fn isolated_reply(&mut self, max_tokens: usize, guard: &context::ReplyGuard) -> Option<String> {
+        let mut text = context::request_body(&self.input).trim().to_string();
+        if text.is_empty() { return None; }
+        if let Some(p) = &self.turn_pic { text = format!("{text}\n{}", context::picture_block(p)); }
+        let msgs = [Message::user_text(text)];
+        let no_tools: [crate::types::ToolDef; 0] = [];
+        let req = Request { system: &self.system, tools: &no_tools, messages: &msgs, max_tokens };
+        self.client.set_kind("agent");
+        let r = self.client.send(&req, &CANCEL, &mut |_| {}).ok().filter(|r| r.stop_reason != "cancelled")?;
+        let raw = texts(&Message::new(Role::Assistant, r.content));
+        let t = crate::route::strip_echoed_notes(&context::strip_picture_echo(context::split_state(&raw).0.trim()));
+        let off = self.turn_pic.as_deref().is_some_and(|p| context::off_picture(&t, p));
+        (!t.trim().is_empty() && guard.broken(&t).is_none() && !off).then(|| t.trim().to_string())
+    }
+
     /// One step's tool results against what the window has left (the limit minus the request so far): over it, the
     /// NEW results are cut before they are appended (largest first, `[trimmed N chars]`), so the next request never
     /// goes over the limit (ui_run1: four big JSON reads made it 10.1K tokens against 8192).
@@ -177,6 +196,8 @@ impl<'f> Session<'f> {
             first = false;
             // a reply cut by the output limit is continued from this same request (`continue_reply`)
             let sent: Option<Vec<Message>> = (reply.stop_reason == "max_tokens").then(|| messages.to_vec());
+            // what a reply to this request must not be (`context::ReplyGuard`, BUGS #42)
+            let reply_guard = context::ReplyGuard::new(&self.input, messages);
             let prompt_real = reply.usage.input_tokens + reply.usage.cache_read_input_tokens;
             // a cancelled (Esc) or unreported reply has no usage: the partial output's estimate stands in for it
             if prompt_real == 0 && reply.usage.output_tokens == 0 {
@@ -283,9 +304,45 @@ impl<'f> Session<'f> {
                     self.fe.info("[the model spent its whole budget reasoning and wrote no answer; asking once more without reasoning]");
                     continue;
                 }
-                if !wrote && normal_end {
-                    self.fe.info("[no answer: the model wrote no text for you twice; ask again or rephrase]");
-                }
+                // a reply that copies an earlier one, has no words or repeats Elisa's headings (`context::ReplyGuard`,
+                // BUGS #42), or still none after the nudge: the user's words asked once more alone (`isolated_reply`)
+                // (and on a turn with picture text, a reply with nothing of what the picture's answer to this ask said)
+                let off_pic = |t: &str| self.turn_pic.as_deref().is_some_and(|p| context::off_picture(t, p));
+                let why = if !wrote { Some("empty") }
+                    else if context::looks_like_text_tool_call(&vis) { None }
+                    else { reply_guard.broken(&vis).or_else(|| off_pic(&vis).then_some("off the picture")) };
+                // (a copy may run to the output limit: moondream:1.8b's 1,024-token "I hope this email finds you well…")
+                let vis = match why.filter(|_| self.tool_lines.is_empty()).filter(|_| if wrote { cut.is_none() && stop_reason != "cancelled" } else { normal_end }) {
+                    Some(why) => match self.isolated_reply(max_tokens, &reply_guard) {
+                        Some(t) => {
+                            self.debug(&format!("[the reply was unusable ({why}); asked once more with the user's words alone]"));
+                            if wrote { self.fe.reply_retracted(); }
+                            if self.interactive { self.fe.text_delta(&t); }
+                            stop_reason = "end_turn".into();
+                            t
+                        }
+                        // nothing usable alone either: a turn with a picture has the model's own words about it
+                        // (BUGS #57: moondream:1.8b's whole reply was the picture text, removed as an echo; alone it
+                        // answered "[Picture: A black cat…" again)
+                        None => match self.turn_pic.clone() {
+                            Some(p) => {
+                                self.debug(&format!("[the reply was unusable ({why}); showed the picture's own answer]"));
+                                if wrote { self.fe.reply_retracted(); }
+                                if self.interactive { self.fe.text_delta(&p); }
+                                stop_reason = "end_turn".into();
+                                p
+                            }
+                            None => {
+                                if !wrote { self.fe.info("[no answer: the model wrote no text for you twice; ask again or rephrase]"); }
+                                vis
+                            }
+                        },
+                    },
+                    None => {
+                        if !wrote && normal_end { self.fe.info("[no answer: the model wrote no text for you twice; ask again or rephrase]"); }
+                        vis
+                    }
+                };
                 let mut content: Vec<Block> = if vis.is_empty() { Vec::new() } else { vec![Block::Text { text: vis }] };
                 if let Some(c) = &cut { content.push(Block::Text { text: format!("[cut off at the {max_tokens}-token output limit: `{c}` did not run]") }); }
                 if content.is_empty() {

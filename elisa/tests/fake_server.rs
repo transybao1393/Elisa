@@ -2561,12 +2561,13 @@ fn an_empty_visible_reply_is_retried_once_then_noted() {
     let s = std::fs::read_to_string(sess).unwrap();
     assert!(s.contains("You're welcome!") && !s.contains("one plain sentence"), "{s}");
 
-    // empty twice: one retry, then a note instead of silence
+    // empty twice: one retry, the user's words once alone (BUGS #42), then a note instead of silence
     let d = tmpdir("empty-reply2");
-    let f = Fake::start(vec![text_reply(card), text_reply(card), text_reply("unused")]);
+    let f = Fake::start(vec![text_reply(card), text_reply(card), text_reply(card), text_reply("unused")]);
     let o = run_elisa(&["-p", "2+2=?", "--base-url", &f.url()], &d, None);
     assert_eq!(o.code, 0, "stderr: {}", o.stderr);
-    assert_eq!(f.left(), 1, "exactly one retry");
+    assert_eq!(f.left(), 1, "exactly one retry and one request alone");
+    assert_eq!(f.messages()[2]["messages"].as_array().unwrap().len(), 1, "asked alone");
     assert!(o.stderr.contains("[no answer: the model wrote no text for you twice"), "{}", o.stderr);
 }
 
@@ -3668,7 +3669,7 @@ fn reply_cut_at_output_limit_is_continued() {
 }
 
 /// BUGS #57, #58: the picture flow through `--serve-jsonl`. Picture text a model copies into its reply is never shown;
-/// on the turn after, a picture answer that is a refusal is not carried (the read ask keeps its tools and runs), the
+/// on the turn after (about the picture), a picture answer that is a refusal is not carried (the read ask keeps its tools and runs), the
 /// earlier turn's picture text has left the history, and the turn after that asks no picture request at all.
 #[test]
 fn picture_text_is_never_a_reply_and_only_its_own_turn_carries_it() {
@@ -3691,7 +3692,8 @@ fn picture_text_is_never_a_reply_and_only_its_own_turn_carries_it() {
     assert!(evs.iter().any(|e| e["type"] == "reply_retracted"), "{evs:?}");
     let after = evs.iter().rposition(|e| e["type"] == "reply_retracted").unwrap();
     assert_eq!(shown(&evs[after..]), "It's a black cat.");
-    s.cmd(json!({"type": "send", "text": "read a.txt and tell me the word"}));
+    // (about the picture: "this cat", so the picture is looked at again)
+    s.cmd(json!({"type": "send", "text": "read a.txt and tell me the word for this cat"}));
     let evs = s.until("turn_done");
     assert!(evs.iter().any(|e| e["type"] == "tool_start" && e["name"] == "read"), "{evs:?}");
     assert!(shown(&evs).ends_with("The word is MANGO."), "{}", shown(&evs));
@@ -3711,6 +3713,84 @@ fn picture_text_is_never_a_reply_and_only_its_own_turn_carries_it() {
         assert!(r.get("tools").is_some_and(|t| t.as_array().is_some_and(|a| !a.is_empty())), "tools offered");
     }
     assert_prefix_rule(&reqs[3..5]);
+}
+
+/// BUGS #57: the turn after a picture looks at it again only when it is about it. "Tell me a joke." gets no picture
+/// request and no picture text (the model answers the ask); "what color are its eyes?" after the next picture does.
+#[test]
+fn only_a_turn_about_the_picture_sends_it_again() {
+    let dir = tmpdir("jsonl-picture-about");
+    let f = Fake::start(vec![
+        text_reply("A black cat with blue eyes."),
+        text_reply("It's a black cat."),
+        text_reply("Why did the chicken cross the road? To get to the other side."),
+        text_reply("A black cat with blue eyes."),
+        text_reply("A black cat."),
+        text_reply("Blue."),
+        text_reply("Its eyes are blue."),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    let pic = json!([{"media_type": "image/png", "data": "iVBORw0KGgo="}]);
+    let shown = |evs: &[Value]| -> String { evs.iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect::<String>() };
+    s.cmd(json!({"type": "send", "text": "what is this?", "images": pic}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "Tell me a joke."}));
+    let evs = s.until("turn_done");
+    assert_eq!(shown(&evs), "Why did the chicken cross the road? To get to the other side.");
+    s.cmd(json!({"type": "send", "text": "and now this one?", "images": pic}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "what color are its eyes?"}));
+    let evs = s.until("turn_done");
+    assert_eq!(shown(&evs), "Its eyes are blue.");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 7, "look, turn, joke turn, look, turn, look again, turn");
+    let has_image = |r: &Value| r["messages"].to_string().contains("\"image\"");
+    let body = |r: &Value| r["messages"].to_string();
+    assert_eq!((0..7).filter(|&i| has_image(&reqs[i])).collect::<Vec<_>>(), vec![0, 3, 5]);
+    assert!(!body(&reqs[2]).contains("[picture:"), "the joke turn has no picture text: {}", body(&reqs[2]));
+    assert!(body(&reqs[6]).contains("[picture: Blue.]"), "the eyes turn carries its picture text");
+}
+
+/// BUGS #42: a reply that copies an earlier reply to another ask, or has no words, is asked once more with the user's
+/// words alone (no history), and that answer is shown and kept.
+#[test]
+fn a_copied_or_wordless_reply_is_asked_again_alone() {
+    let dir = tmpdir("jsonl-copied-reply");
+    let long = "I hope this email finds you well. I wanted to share some interesting information about lifestyles.";
+    let f = Fake::start(vec![
+        text_reply(long),
+        text_reply(&format!("{long} More of the same.")),
+        text_reply("Why did the tomato turn red? It saw the salad dressing!"),
+        text_reply("[0.0, 0.17, 0.99, 0.29]"),
+        text_reply("Hello there!"),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    let shown = |evs: &[Value]| -> String {
+        let at = evs.iter().rposition(|e| e["type"] == "reply_retracted").map_or(0, |i| i + 1);
+        evs[at..].iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect::<String>()
+    };
+    s.cmd(json!({"type": "send", "text": "write me something"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "Tell me a joke."}));
+    let evs = s.until("turn_done");
+    assert_eq!(shown(&evs), "Why did the tomato turn red? It saw the salad dressing!");
+    s.cmd(json!({"type": "send", "text": "hello"}));
+    let evs = s.until("turn_done");
+    assert_eq!(shown(&evs), "Hello there!");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 5);
+    for i in [2, 4] {
+        let m = reqs[i]["messages"].as_array().unwrap();
+        assert_eq!(m.len(), 1, "asked alone: {}", reqs[i]["messages"]);
+    }
+    assert!(reqs[2]["messages"].to_string().contains("Tell me a joke."));
+    // the history keeps the answer given alone, not the copy
+    let later = reqs[3]["messages"].to_string();
+    assert!(later.contains("salad dressing") && !later.contains("More of the same"), "{later}");
 }
 
 /// BUGS #60: a reply that names a saved file on a turn with no write at all is corrected: asked once more in words

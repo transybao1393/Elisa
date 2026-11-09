@@ -307,9 +307,16 @@ impl<'f> Session<'f> {
         self.input = input;
         // pictures: asked about alone first (`look`), the answer kept as text; the turn then runs as text only
         let (mut picture, mut pic_answer) = (None, None);
-        if let Some((pics, new)) = self.turn_pictures() {
+        self.turn_pic = None;
+        if let Some((pics, new)) = self.turn_pictures(&self.input.clone()) {
             match self.look(&self.input.clone(), &pics, new) {
-                Ok(Some((block, answer))) => { picture = Some(block); pic_answer = answer.filter(|_| new); }
+                Ok(Some((block, answer))) => {
+                    // what the picture showed, for telling whether the next turn is about it (`about_last_pictures`)
+                    if let (true, Some(a)) = (new, &answer) { self.last_pic_seen = format!("{}\n{a}", self.last_pic_seen); }
+                    self.turn_pic = answer.clone();
+                    picture = Some(block);
+                    pic_answer = answer.filter(|_| new);
+                }
                 Ok(None) => {}
                 Err(end) => return end,
             }
@@ -477,7 +484,7 @@ impl<'f> Session<'f> {
     }
 
     /// The follow-up kind from the router's answer (Some(None): it saw no follow-up); None = no router answer.
-    fn router_kind(&self) -> Option<Option<crate::followup::Kind>> {
+    pub(super) fn router_kind(&self) -> Option<Option<crate::followup::Kind>> {
         use crate::followup::Kind;
         let a = self.routed.as_ref()?;
         Some(if a.has("followup_why") { Some(Kind::Why) }

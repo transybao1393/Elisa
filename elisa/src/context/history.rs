@@ -108,6 +108,115 @@ pub fn drop_picture_blocks(history: &mut [Message]) -> bool {
     any
 }
 
+/// the MiniLM similarity at which a message is about what a picture showed (measured with all-MiniLM-L6-v2 against
+/// two answers about a cat picture and one about a sales chart: asks about the picture 0.29–0.55, unrelated asks
+/// ("Tell me a joke.", "thanks!", "What is the capital of France?") -0.10–0.19)
+pub const PICTURE_MEANING_MIN: f32 = 0.25;
+
+/// The MiniLM cosine similarity of two texts (`elisa_mem::embed`, local, no network); None without the model.
+pub fn meaning_similarity(a: &str, b: &str) -> Option<f32> {
+    let dir = elisa_mem::embed::model_dir()?;
+    let vocab = std::env::temp_dir().join("elisa-minilm-vocab.bin");
+    let v = elisa_mem::embed::embed(&dir, &vocab, &[a, b], &mut |_| {}).ok()?;
+    let (x, y) = (v.first()?, v.get(1)?);
+    Some(x.iter().zip(y.iter()).map(|(p, q)| p * q).sum())
+}
+
+/// Whether `msg`, the turn right after a picture turn, is about that picture (BUGS #57: the picture was resent and
+/// its answer put into every next turn, so "Tell me a joke." got moondream:1.8b's "A black cat with big blue eyes…"
+/// and qwen3-vl:2b-instruct's "That's a clever pun!"). `seen`: what the picture turn learned (the picture's answer
+/// and the ask). About it when the message names a picture or points back at something ("its eyes", "that one":
+/// `picture_words`), is a short follow-up of the last answer (`followup::kind`), shares a content word with `seen`
+/// (`topics::words`), or is close to it in meaning (`meaning_similarity`, when the embedding model is present).
+pub fn about_picture(msg: &str, seen: &str) -> bool {
+    let msg = request_body(msg).trim();
+    if msg.is_empty() { return false; }
+    picture_words(msg, true) || crate::followup::kind(msg).is_some() || shares_meaning(msg, seen)
+}
+
+/// Whether two texts share a content word (`topics::words`) or are close in meaning (`meaning_similarity` at
+/// `PICTURE_MEANING_MIN`, when the embedding model is present).
+pub fn shares_meaning(a: &str, b: &str) -> bool {
+    if a.trim().is_empty() || b.trim().is_empty() { return false; }
+    !crate::topics::words(a).is_disjoint(&crate::topics::words(b)) || meaning_similarity(a, b).is_some_and(|s| s >= PICTURE_MEANING_MIN)
+}
+
+/// A reply on a turn with picture text that has nothing to do with what the picture showed (`pic`: the picture's
+/// answer), BUGS #57: moondream:1.8b answered "What do you see here?" with the picture with "I hope you find this
+/// information helpful…", carried on from its own earlier replies.
+pub fn off_picture(reply: &str, pic: &str) -> bool { !reply.trim().is_empty() && !shares_meaning(reply, pic) }
+
+/// a reply's text for comparing: lowercase, whitespace collapsed
+fn norm_reply(t: &str) -> String { t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase() }
+
+/// the chars two replies share from their start before they differ, at which a reply is a copy of the other
+const COPY_PREFIX_CHARS: usize = 60;
+/// a reply shorter than this is never called a copy ("Yes.", "Paris", a name): short answers repeat for real
+const COPY_MIN_CHARS: usize = 12;
+
+fn word_grams(t: &str) -> std::collections::HashSet<String> {
+    let w: Vec<String> = t.to_lowercase().split(|c: char| !c.is_alphanumeric() && c != '\'').filter(|w| !w.is_empty()).map(str::to_string).collect();
+    w.windows(4).map(|g| g.join(" ")).collect()
+}
+
+/// What a reply to one request must not be (BUGS #42, moondream:1.8b with a 2K window): a copy of an earlier reply
+/// to another ask (seven different asks got the same "[0.0, 0.13, 0.12, 0.24]"; its first reply "I hope this email
+/// finds you well…" was repeated for the next three asks), a reply with no word while the ask has words and no number
+/// ("hello" → "[0.0, 0.17, 0.99, 0.29]", a box from its detection mode), or the wording of a heading or tag Elisa put
+/// in the request ("[Elisa, not the user] [Linh, not the user]" from "…recalled by Elisa…, not written by the
+/// user…"). Built from the request that was sent, so it holds for any heading Elisa adds; no reply wording is listed.
+#[derive(Debug, Default)]
+pub struct ReplyGuard {
+    /// the user's words of this turn
+    ask: String,
+    /// the earlier replies (normalized) that answered another ask: an earlier turn with the same ask may get the
+    /// same reply
+    sources: Vec<String>,
+    /// four-word runs of the request's heading and tag lines (a user-message line starting with "## " or "[",
+    /// picture text excepted), less those in the user's own words
+    grams: std::collections::HashSet<String>,
+}
+
+impl ReplyGuard {
+    pub fn new(ask: &str, msgs: &[Message]) -> ReplyGuard {
+        let ask = request_body(ask).trim().to_string();
+        let a = norm_reply(&ask);
+        let own = word_grams(&ask);
+        let mut g = ReplyGuard { ask, ..Default::default() };
+        let mut last_ask = String::new();
+        for m in msgs {
+            let blocks = || m.content.iter().filter_map(|b| match b { Block::Text { text } if !is_picture_block(text) => Some(text.as_str()), _ => None });
+            if m.role == Role::User {
+                for l in blocks().flat_map(str::lines).map(str::trim).filter(|l| l.starts_with("## ") || l.starts_with('[')) { g.grams.extend(word_grams(l)); }
+                last_ask = norm_reply(request_body(&blocks().collect::<Vec<_>>().join("\n")));
+                continue;
+            }
+            // (a first message ends with the user's words after Elisa's blocks)
+            if last_ask == a || last_ask.ends_with(&format!(" {a}")) { continue; }
+            let e = norm_reply(&blocks().collect::<Vec<_>>().join("\n"));
+            if !e.is_empty() { g.sources.push(e); }
+        }
+        g.grams.retain(|x| !own.contains(x));
+        g
+    }
+
+    /// Why `reply` cannot stand ("copy", "no words", "heading"), or None.
+    pub fn broken(&self, reply: &str) -> Option<&'static str> {
+        let r = norm_reply(reply);
+        if r.is_empty() { return None; }
+        if r.chars().count() >= COPY_MIN_CHARS && self.sources.iter().any(|e| *e == r || r.chars().zip(e.chars()).take_while(|(a, b)| a == b).count() >= COPY_PREFIX_CHARS) {
+            return Some("copy");
+        }
+        // a word: two letters in a row ("Â©" from moondream:1.8b has none; "Paris", "OK", "4 giờ" do)
+        let has_word = |t: &str| t.chars().collect::<Vec<_>>().windows(2).any(|w| w[0].is_alphabetic() && w[1].is_alphabetic());
+        let a = &self.ask;
+        if !has_word(&r) && has_word(a) && !a.chars().any(|c| c.is_ascii_digit()) { return Some("no words"); }
+        if word_grams(reply).iter().any(|x| self.grams.contains(x)) { return Some("heading"); }
+        None
+    }
+}
+
+
 /// what an image part becomes in a request to a model without vision (`without_images`)
 pub const IMAGE_STUB: &str = "[a picture was shared here; this model can't see pictures]";
 
