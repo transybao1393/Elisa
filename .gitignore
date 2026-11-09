@@ -25,3 +25,9 @@ providers.toml
 *.swp
 .idea/
 .vscode/
+
+# patch leftovers and local agent tooling (personal settings, temporary worktrees)
+*.orig
+*.rej
+.claude/settings.local.json
+.claude/worktrees/
