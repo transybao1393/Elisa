@@ -20,8 +20,23 @@ fn user_clauses(text: &str) -> Vec<String> {
     }
     sentences.push((cur, false));
     sentences.into_iter().filter(|(s, q)| !q && !s.trim().is_empty())
-        .flat_map(|(s, _)| and.replace_all(&s, ", $1").split([',', ';']).map(|c| c.trim().to_string()).collect::<Vec<_>>())
-        .filter(|c| !c.is_empty()).collect()
+        .flat_map(|(s, _)| with_subject(and.replace_all(&s, ", $1").split([',', ';']).map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect()))
+        .collect()
+}
+
+/// A sentence's clauses with the subject of an "I'm …" clause carried into the next ones that have none ("I'm Linh,
+/// from Hanoi" → "I'm Linh", "I'm from Hanoi"; BUGS #69: "from Hanoi" alone was no fact, so a reply's "I'm Elisa
+/// from Hanoi" was not checked for it). Only after an "I'm" clause that states a fact ("I'm tired, from work" carries
+/// nothing), and only into a clause that starts lower-case or with a number (no subject of its own).
+fn with_subject(clauses: Vec<String>) -> Vec<String> {
+    static IM: OnceLock<regex::Regex> = OnceLock::new();
+    let im = IM.get_or_init(|| regex::Regex::new(r"(?i)^(?:i'm|i\s+am)\s").unwrap());
+    let mut subject = false;
+    clauses.into_iter().map(|c| {
+        if im.is_match(&c) { subject = user_fact_kv(&c).is_some(); return c; }
+        let bare = c.chars().next().is_some_and(|x| x.is_lowercase() || x.is_ascii_digit()) && !c.starts_with("i ") && !c.starts_with("my ") && !c.starts_with("i'");
+        if subject && bare { format!("I'm {c}") } else { subject = false; c }
+    }).collect()
 }
 
 /// A fact the user stated about themself in one clause, said in the third person ("my name is Linh" → "The user's

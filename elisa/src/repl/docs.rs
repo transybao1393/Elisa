@@ -198,7 +198,7 @@ impl<'f> Session<'f> {
                 Err(e) => { self.fe.error(&format!("not attached: {e}")); refused.push(e); }
             }
         }
-        if !req.is_empty() { self.set_doc_req(Some(req.join("\n\n"))); }
+        if !req.is_empty() { self.set_doc_req(Some(req.join("\n\n"))); self.doc_first = false; }
         // nothing could be read: the model hears it in this turn's message, so it never answers from an earlier file
         // (measured on qwen3-vl:2b: a locked PDF got "The PDF says the code word is WORD8", from the n8.txt before it)
         else if !refused.is_empty() { self.doc_refused = Some(crate::attach::refused_note(&refused)); }
@@ -302,6 +302,8 @@ impl<'f> Session<'f> {
             if let Some((r, e)) = self.calib { self.calib = Some((r.saturating_sub(self.doc_req_tokens), e.saturating_sub(self.doc_req_tokens))); }
         }
         self.doc_req_tokens = text.as_deref().map_or(0, |t| estimate_tokens(t) + 8);
+        // (a cut to fit keeps its place; a new text is after the words unless `doc_follow_up` says so)
+        if text.is_none() { self.doc_first = false; }
         self.doc_req = text;
     }
 
@@ -358,8 +360,12 @@ impl<'f> Session<'f> {
         self.doc_retry = Some((k.doc.name.clone(), r));
         self.debug(&format!("[documents in this request: {log} · budget {budget}]"));
         // a follow-up about a document already discussed: answer that question, not the whole document again
-        // (measured on qwen3-vl:2b: "what kind of data does it work with?" got its first summary repeated)
-        self.set_doc_req(Some(format!("{block}\nAnswer only the user's new question from the text above, in a few sentences; do not summarize the whole document again.")));
+        // (measured on qwen3-vl:2b: "what kind of data does it work with?" got its first summary repeated). The parts
+        // go before the user's words, so the question is what the model reads last; the line after them says what they
+        // are for without naming "the user" or "the question" to repeat (BUGS #38: granite3.2-vision:2b answered "The
+        // user's new question is: '…'" to the old note after the text, "Answer only the user's new question …")
+        self.set_doc_req(Some(format!("{block}\n(Only the parts of the document that the message below asks about: answer that message in a few sentences, not with a summary of the whole document.)")));
+        self.doc_first = true;
     }
 
     /// The safety net: a turn that carried document text and got a reply saying it cannot read the document (and
@@ -374,6 +380,7 @@ impl<'f> Session<'f> {
         self.history.pop();
         self.fe.reply_retracted();
         self.set_doc_req(Some(format!("{block}\nThe document's text above was extracted by Elisa from the attached file: answer from it directly.")));
+        self.doc_first = false;
         let phrase = crate::activity::Phrase::new("docs", "doc", &name, format!("Giving the model the text of {name} again"), format!("Gave the model the text of {name} again"));
         let aid = self.acts.begin(&mut *self.fe, &phrase);
         self.acts.end_with(&mut *self.fe, aid, "the reply said it could not read it", false);
@@ -467,10 +474,14 @@ impl<'f> Session<'f> {
         self.history.pop();
         self.fe.reply_retracted();
         self.debug(&format!("[retry: the reply said the user's facts as Elisa's own ({}); asked again in words]", claimed.join(", ")));
-        // worded as how to write this reply, never as a verdict on one the model cannot see (it was taken back):
-        // "Your reply was not sent…" got "You're right, I should…" as the answer (BUGS #86)
-        let (are, them) = if claimed.len() == 1 { ("is", "it") } else { ("are", "them") };
-        self.retry_note = Some(format!("(For this reply: {} {are} the user's own, not yours. Say {them} with \"you\" and \"your\", \
+        // worded as a plain fact, never as a verdict on a reply the model cannot see (it was taken back): "Your reply
+        // was not sent…" got "You're right, I should…" (BUGS #86); "For this reply: … the user's own, not yours"
+        // got an apology for text the user never saw and claims again ("I live in Hanoi too", 1 of 5 replays on
+        // qwen3-vl:2b-instruct, 2026-11-10); "about the person writing to you, not about you" got "I'm in Hanoi too"
+        // 2 of 5 and once a 2048-token description of the chat. This wording: no claim, no apology, short, 5 of 5.
+        // No "the user" in the third person either (BUGS #52).
+        let (is, facts, them) = if claimed.len() == 1 { ("is", "fact", "it") } else { ("are", "facts", "them") };
+        self.retry_note = Some(format!("({} {is} their {facts}, not yours: in a short reply, say {them} with \"you\" or \"your\", \
             never \"I\" or \"my\".)", claimed.join(", ")));
         let end = self.agent_loop(CheckRun::default(), false);
         self.retry_note = None;

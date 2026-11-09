@@ -111,6 +111,9 @@ struct Session<'f> {
     /// this turn's document text (the whole text, an overview or the parts the question needs): added to the turn's
     /// user message in this turn's requests only, never to the history, the saved session or a fold
     doc_req: Option<String>,
+    /// `doc_req` goes before the user's words, not after them: a follow-up's picked parts, so the question is the
+    /// last thing the model reads and no note has to point back at it (BUGS #38)
+    doc_first: bool,
     /// its estimated tokens (counted with system + tools while the turn runs)
     doc_req_tokens: usize,
     /// documents waiting for the next turn: the app's `send` {documents} or `-p … --attach FILE`
@@ -230,6 +233,8 @@ struct Session<'f> {
     goal_misses: u8,
     /// `goal` came from an explicit goal statement ("our goal for this session: …"): it does not drift
     goal_stated: bool,
+    /// the goal state before this request (`req_begin`): a cancelled turn puts it back (`drop_cancelled_turn`)
+    goal_before: (Option<String>, u8, bool),
     /// notes facts this run already found in its conversation (`context::fact_key`): a later fold keeps them though
     /// their turns are folded away (`merge_kept`)
     facts_ok: std::collections::HashSet<String>,
@@ -360,13 +365,13 @@ impl<'f> Session<'f> {
         let plugin_stamp = home.as_deref().and_then(plugins::state_stamp);
         let router = crate::router::Router::new(cfg.router.clone());
         let mut s = Session {
-            fe, cfg, client, store, tctx, cwd, max_ctx, vision: false, attach: Vec::new(), last_pics: Vec::new(), pics_next: false, last_pic_seen: String::new(), turn_pic: None, resumed_facts: false, recalled_values: Vec::new(), docs: Vec::new(), doc_req: None, doc_req_tokens: 0, doc_paths: Vec::new(), kept_docs: Vec::new(), doc_retry: None, topic_cards: Vec::new(), topic: Default::default(), doc_new: None, doc_refused: None, card_req: None, mcp, tools: Vec::new(), tools_tokens: 0, project, notes, notes_bg: true,
+            fe, cfg, client, store, tctx, cwd, max_ctx, vision: false, attach: Vec::new(), last_pics: Vec::new(), pics_next: false, last_pic_seen: String::new(), turn_pic: None, resumed_facts: false, recalled_values: Vec::new(), docs: Vec::new(), doc_req: None, doc_first: false, doc_req_tokens: 0, doc_paths: Vec::new(), kept_docs: Vec::new(), doc_retry: None, topic_cards: Vec::new(), topic: Default::default(), doc_new: None, doc_refused: None, card_req: None, mcp, tools: Vec::new(), tools_tokens: 0, project, notes, notes_bg: true,
             system: String::new(), system_tokens: 0, history: Vec::new(), real: None, calib: None, input: String::new(), interactive, declined_images: Vec::new(), yolo: yes, always,
             mem: None, turn_no: 0, folded: 0, fold_ids: Vec::new(), fold_retry_at: 0, digest_only: false, in_turn: false, folded_this_turn: false, tool_lines: Vec::new(), unsent: false, done_sent: false, acts: crate::activity::Turn::new(),
             recall_slow: false, save_slow: false, last_turn_at: None, last_failed: false, small_talk_turn: false, retry_note: None, index_rate: None, unindexed: 0, watch,
             card: None, card_id: None, card_ex: None, exchanges: 0, new_card: None, card_broken: false, pic_refused: false, checks_off: false, outside_mode: outside::Mode::Ask, outside_ok: Vec::new(), ast_stats: AstStats::default(), cards: 0,
             req: None, stats: metrics::Stats::default(),
-            card_log: Vec::new(), goal: None, goal_misses: 0, goal_stated: false, facts_ok: Default::default(), user_req: String::new(), warm: Arc::new(AtomicU8::new(WARM_UNKNOWN)),
+            card_log: Vec::new(), goal: None, goal_misses: 0, goal_stated: false, goal_before: (None, 0, false), facts_ok: Default::default(), user_req: String::new(), warm: Arc::new(AtomicU8::new(WARM_UNKNOWN)),
             reason_on: false, route: crate::route::Route::default(), router, routed: None, pic_refused_seen: false, gate: (false, false), ledger: context::Ledger::default(), turn_guard: Default::default(), audit, answer: None,
             home, file_cmds: Vec::new(), cmd_user: Vec::new(), cmd_plugins: pl.commands, cmd_project: Vec::new(),
             plugin_stamp, plugin_gone_tools: Vec::new(), plugin_infos: pl.infos, plugin_servers, proj_pending: None, proj_infos: Vec::new(), proj_declined: false,

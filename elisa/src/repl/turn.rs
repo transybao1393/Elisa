@@ -185,8 +185,8 @@ impl<'f> Session<'f> {
         (self.last_turn_at, self.last_failed) = (Some(crate::situation::now_secs()), !matches!(end, TurnEnd::Done));
         // a refused attachment's turn is not remembered: its answer is about a file Elisa never read
         // a turn whose tool the user said no to or cancelled keeps no answer: its result is not something that happened
-        let said_no = self.tool_lines.iter().any(|l| l.contains("→ denied by user") || l.contains("→ cancelled by user"))
-            || self.history.last().is_some_and(|m| m.role == Role::Assistant && texts(m).trim() == "[cancelled]");
+        // (a cancelled turn with no reply left the history and is not recorded at all: `drop_cancelled_turn`)
+        let said_no = self.tool_lines.iter().any(|l| l.contains("→ denied by user") || l.contains("→ cancelled by user"));
         if !self.unsent && !refused {
             let mut reply = self.history.iter().rev().find(|m| m.role == Role::Assistant).map(texts).unwrap_or_default().trim().to_string();
             // a reply that called no tools (plain chat) is not expected to carry a state card
