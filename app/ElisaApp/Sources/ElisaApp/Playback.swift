@@ -10,6 +10,7 @@
 //   --script FILE   the script (format below)       --seed N        RNG seed (default 1): same seed, same pacing
 //   --script-delay S  wait before the first prompt (default 3)       --script-cap S  time cap in seconds (default 2700)
 //   --script-from-final   start at the script's final block (with --continue: recall on a resumed session)
+//   --record          recording a demo: the playback's status-bar line, stop button and badge are hidden (ctrl-. still stops)
 // At the time cap the current turn finishes, the rest of the middle turns are skipped and the final block is played,
 // then the playback stops (a hard stop follows at cap + 1200 s). The final block starts at a line `@final`, else at
 // the slash commands just before the first prompt starting "what was the goal".
@@ -59,6 +60,9 @@ struct SplitMix: RandomNumberGenerator {
 @MainActor
 final class Playback {
     static let shared = Playback()
+    /// --record (with --script): recording a demo (README GIF); the playback's own status-bar line, stop button and
+    /// "automated test running" badge are not drawn. The input still takes no keys while it plays.
+    static let recording = CommandLine.arguments.contains("--record")
 
     enum Step {
         case say(String)

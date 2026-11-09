@@ -19,7 +19,7 @@ struct BottomStack: View {
             // --script playback: the boxes take no input until it is stopped (status bar ■ stop playback, ctrl-.)
             .disabled(m.playbackLine != nil)
             .overlay(alignment: .topTrailing) {
-                if m.playbackLine != nil {
+                if m.playbackLine != nil && !Playback.recording {
                     Text("automated test running").font(Fonts.mono(11)).foregroundStyle(p.warn)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(RoundedRectangle(cornerRadius: 4).fill(p.inputBg))
@@ -54,7 +54,7 @@ struct StatusBar: View {
                 HStack(spacing: 6) { Text("│").foregroundStyle(p.gut); Text(t) }
             }
             Spacer(minLength: 8)
-            if let pl = m.playbackLine {
+            if let pl = m.playbackLine, !Playback.recording {
                 Text(pl).foregroundStyle(p.fg)
                 Button { m.playbackStop?() } label: {
                     Text("■ stop playback").foregroundStyle(p.warn).padding(.horizontal, 6)
