@@ -137,6 +137,8 @@ final class EvalStore: ObservableObject {
     @Published var confirming: EvalTarget?
     /// how the last test ended, by model: "finished: 8/11", "cancelled", or why it could not run
     @Published var outcome: [String: (text: String, ok: Bool)] = [:]
+    /// the model of the test that ended last (its outcome is the scorecard window's status line)
+    @Published var lastEnded: String?
     private var errTail: [String] = []
     private var errHandle: FileHandle?
     private var buf = Data()
@@ -252,7 +254,7 @@ final class EvalStore: ObservableObject {
         errHandle?.readabilityHandler = nil
         errHandle = nil
         print("eval: \(model) ended, exit \(code)\(cancelled ? " (cancelled)" : "")\(code > 1 ? " · " + errTail.joined(separator: " | ") : "")")
-        defer { try? FileManager.default.removeItem(atPath: json) }
+        defer { try? FileManager.default.removeItem(atPath: json); lastEnded = model }
         if cancelled { outcome[model] = ("test cancelled", false); return }
         if code == 0 || code == 1, let d = FileManager.default.contents(atPath: json),
            let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any], let r = EvalRun.parse(j, report: j).first {
@@ -420,6 +422,16 @@ struct ScorecardView: View {
                     EvalControl(target: j.target, compact: true)
                 }
                 .padding(.horizontal, 22).padding(.bottom, 10)
+            } else if let name = store.lastEnded, let o = store.outcome[name] {
+                // how the last test ended ("test cancelled", "test finished: 9/11 passed", why it did not finish), as
+                // the model list says it: the progress row is gone, so this says what happened to it
+                HStack(spacing: 8) {
+                    Text(verbatim: "last test: \(name)").font(Fonts.mono(11, .semibold)).foregroundStyle(p.fg)
+                    Text(verbatim: o.text).font(Fonts.mono(11)).foregroundStyle(o.ok ? p.ok : p.warn).lineLimit(2).textSelection(.enabled)
+                    Button { store.lastEnded = nil } label: { Text(verbatim: "×").font(Fonts.mono(12)).foregroundStyle(p.fg2) }
+                        .buttonStyle(.plain).help("Dismiss")
+                }
+                .padding(.horizontal, 22).padding(.bottom, 10)
             }
             Rectangle().fill(p.sep).frame(height: 1)
             header.padding(.horizontal, 14).padding(.vertical, 6).background(p.bg2)
@@ -550,7 +562,7 @@ final class ScorecardWindow {
 
     func show(_ m: AppModel) {
         EvalStore.shared.load()
-        if let w = window { w.contentView = NSHostingView(rootView: ScorecardRoot(m: m)); w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        if let w = window { w.contentView = NSHostingView(rootView: ScorecardRoot(m: m)); Front.user(w); return }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 560), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         w.title = "Model Scorecard"
         w.titlebarAppearsTransparent = true
@@ -559,8 +571,7 @@ final class ScorecardWindow {
         w.minSize = NSSize(width: 900, height: 420)
         w.contentView = NSHostingView(rootView: ScorecardRoot(m: m))
         if !DebugFrame.place(w) { w.center() }
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        Front.user(w)
         window = w
     }
 }

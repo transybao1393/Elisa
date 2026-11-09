@@ -790,7 +790,7 @@ final class ConnectionsWindow {
             }
         }
         if let select { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { if let c = self.store.items.first(where: { $0.name == select }) { self.store.selected = c.id } } }
-        if let w = window { w.contentView = NSHostingView(rootView: view(m)); w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        if let w = window { w.contentView = NSHostingView(rootView: view(m)); Front.user(w); return }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 880), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         w.title = "Model Connections"
         w.titlebarAppearsTransparent = true
@@ -799,8 +799,7 @@ final class ConnectionsWindow {
         w.minSize = NSSize(width: 820, height: 840)
         w.contentView = NSHostingView(rootView: view(m))
         if !DebugFrame.place(w) { w.center() }
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        Front.user(w)
         window = w
     }
 

@@ -286,7 +286,7 @@ final class SandboxWindow {
     private var window: NSWindow?
 
     func show(_ m: AppModel) {
-        if let w = window { w.contentView = NSHostingView(rootView: SandboxRoot(m: m)); w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        if let w = window { w.contentView = NSHostingView(rootView: SandboxRoot(m: m)); Front.user(w); return }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         w.title = "Sandbox Images"
         w.titlebarAppearsTransparent = true
@@ -295,8 +295,7 @@ final class SandboxWindow {
         w.minSize = NSSize(width: 700, height: 420)
         w.contentView = NSHostingView(rootView: SandboxRoot(m: m))
         if !DebugFrame.place(w) { w.center() }
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        Front.user(w)
         window = w
     }
 }

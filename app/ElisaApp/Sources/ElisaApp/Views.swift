@@ -156,7 +156,7 @@ struct BlockView: View {
         case .user(let t, let cmd):
             VStack(alignment: .leading, spacing: 2) {
                 Pixel("YOU", color: p.fg2)
-                Text(t).font(cmd ? Fonts.mono(13.5, .medium) : Fonts.mono(13, .semibold)).foregroundStyle(p.fg).lineSpacing(5).textSelection(.enabled)
+                UserText(id: b.id, text: t, font: cmd ? Fonts.mono(13.5, .medium) : Fonts.mono(13, .semibold))
                 if !b.images.isEmpty { SentImages(images: b.images) }
             }
         case .info(let t, let tone):
@@ -171,6 +171,134 @@ struct BlockView: View {
                 .padding(.leading, 36)
             }
         }
+    }
+}
+
+/// Long texts (a big paste): what counts as long, and the short preview shown in its place.
+enum PasteText {
+    /// a paste this long goes to the pasted-text chip, and a message this long is shown collapsed
+    static let minChars = 4000
+    static let minLines = 60
+    /// the collapsed preview: at most this many lines and characters
+    static let previewLines = 12
+    static let previewChars = 1200
+
+    static func long(_ s: String) -> Bool {
+        if s.utf16.count >= minChars { return true }
+        var n = 0
+        for c in s.utf8 where c == 10 { n += 1; if n >= minLines { return true } }
+        return false
+    }
+
+    /// lines as a person counts them (a final line break does not start another)
+    static func lineCount(_ s: String) -> Int { s.utf8.reduce(1) { $1 == 10 ? $0 + 1 : $0 } - (s.hasSuffix("\n") ? 1 : 0) }
+
+    /// the first lines (at most previewLines and previewChars), and whether anything was left out
+    static func preview(_ s: String) -> (text: String, cut: Bool) {
+        var out = Substring()
+        var lines = 0
+        var end = s.startIndex
+        while end < s.endIndex, lines < previewLines {
+            let nl = s[end...].firstIndex(of: "\n") ?? s.endIndex
+            end = nl < s.endIndex ? s.index(after: nl) : nl
+            lines += 1
+        }
+        out = s[s.startIndex..<end]
+        var cut = end < s.endIndex
+        if out.count > previewChars { out = out.prefix(previewChars); cut = true }
+        return (String(out).trimmingCharacters(in: .newlines), cut)
+    }
+
+    static func size(_ s: String) -> String {
+        let b = s.utf8.count
+        return b >= 1024 ? String(format: "%.0f KB", Double(b) / 1024) : "\(b) bytes"
+    }
+}
+
+/// a sent message: in full, or, when long (a big paste), collapsed to its first lines with "… N more lines" and a
+/// button to read it all. Laying out a 114 KB message in one Text took ~550 MB that stayed; the full text is now laid
+/// out only when asked for, in pieces, in a lazy stack inside a bounded scroll area. The text is kept once (the block).
+struct UserText: View {
+    @EnvironmentObject var m: AppModel
+    @Environment(\.pal) var p
+    let id: UUID
+    let text: String
+    let font: Font
+
+    var body: some View {
+        if !PasteText.long(text) {
+            Text(text).font(font).foregroundStyle(p.fg).lineSpacing(5).textSelection(.enabled)
+        } else {
+            let open = m.expanded.contains(id)
+            let lines = PasteText.lineCount(text)
+            VStack(alignment: .leading, spacing: 6) {
+                if open {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(UserText.pieces(text).enumerated()), id: \.offset) { _, piece in
+                                Text(piece).font(font).foregroundStyle(p.fg).lineSpacing(5).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 420)
+                } else {
+                    let pv = PasteText.preview(text)
+                    Text(pv.text).font(font).foregroundStyle(p.fg).lineSpacing(5).textSelection(.enabled)
+                }
+                HStack(spacing: 10) {
+                    let pv = PasteText.preview(text)
+                    let shown = PasteText.lineCount(pv.text)
+                    Text(open ? "\(lines) line\(lines == 1 ? "" : "s") · \(PasteText.size(text))"
+                         : "… " + (lines > shown ? "\(lines - shown) more line\(lines - shown == 1 ? "" : "s")" : "more") + " · \(PasteText.size(text)) in all")
+                        .font(Fonts.mono(11.5)).foregroundStyle(p.fg2)
+                    Button { m.toggleExpand(id) } label: {
+                        Text(open ? "collapse" : "show all").font(Fonts.mono(11.5)).foregroundStyle(p.acc)
+                    }
+                    .buttonStyle(.plain)
+                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } label: {
+                        Text("copy").font(Fonts.mono(11.5)).foregroundStyle(p.acc)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy the whole message")
+                }
+            }
+        }
+    }
+
+    /// the text in pieces of about 2000 characters, cut at a line break where there is one
+    static func pieces(_ s: String) -> [String] {
+        var out: [String] = []
+        var i = s.startIndex
+        while i < s.endIndex {
+            let hard = s.index(i, offsetBy: 2000, limitedBy: s.endIndex) ?? s.endIndex
+            var j = hard
+            if hard < s.endIndex, let nl = s[i..<hard].lastIndex(of: "\n"), s.distance(from: i, to: nl) > 500 { j = s.index(after: nl) }
+            out.append(String(s[i..<j]))
+            i = j
+        }
+        return out
+    }
+}
+
+/// the pasted-text chip above the input: size, lines and the first line; × drops it
+struct PastedChip: View {
+    @EnvironmentObject var m: AppModel
+    @Environment(\.pal) var p
+    let text: String
+    var body: some View {
+        let first = text.prefix(200).split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        HStack(spacing: 8) {
+            Text("pasted text").font(Fonts.mono(11.5, .semibold)).foregroundStyle(p.acc)
+            Text("\(PasteText.size(text)) · \(PasteText.lineCount(text)) lines").font(Fonts.mono(11.5)).foregroundStyle(p.fg2)
+            Text(first).font(Fonts.mono(11.5)).foregroundStyle(p.tx).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            Button { m.pasted = nil } label: { Text("×").font(Fonts.mono(13)).foregroundStyle(p.fg2) }
+                .buttonStyle(.plain).help("Remove the pasted text")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(p.bg2))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(p.sep, lineWidth: 1))
     }
 }
 

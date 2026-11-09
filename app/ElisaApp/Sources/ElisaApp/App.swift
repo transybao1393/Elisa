@@ -19,6 +19,15 @@
 // --send TEXT (debug, repeatable): each time the session is ready, send the next TEXT as if typed (a slash command or a
 // prompt); approvals are left for the person (unlike --script). --plugin-setup-answer yes|no (debug): the Plugin
 // Setup window's Install / Trust or Not now is pressed 3 s after its question arrives.
+// --plugin-commands-open (debug): the Plugin Setup window shows every command's full text (collapsed by default).
+// --pace-front (debug, for CPU measurements): the Shades pace as in the key window in front, whatever the window's
+// real state (a debug launch never activates, so its window is never key).
+//
+// Focus (Front): a normal launch activates the app; a window the person opens (menu, button, typed /model) comes to the
+// front; a window an event opens (Plugin Setup on a plugin_preview / project_trust) is ordered in without taking focus
+// (no key, no activation) and, with the app in the background, bounces the Dock icon once and badges it. A debug or test
+// launch (--frames, --frame, --send, --script, --shots, --selftest, --eval-test, --plugins-add, …) never
+// activates the app.
 import AppKit
 import SwiftUI
 
@@ -26,6 +35,35 @@ import SwiftUI
 enum Boot {
     static let kit = Kit.locate()
     static let model = AppModel(kit: kit)
+}
+
+/// Who may bring a window forward (see the header).
+@MainActor
+enum Front {
+    /// a debug / test launch: the app never activates itself
+    nonisolated static let quiet: Bool = {
+        let a = CommandLine.arguments
+        return ["--frames", "--frame", "--frames-window", "--send", "--script", "--shots", "--selftest", "--eval-test",
+                "--plugins-add", "--connections-shot", "--plugin-setup-answer"].contains { a.contains($0) }
+    }()
+
+    /// a window the person opened (menu, button, typed command): to the front and the app active (not in a quiet launch)
+    static func user(_ w: NSWindow) {
+        if quiet { w.orderFront(nil); return }
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// a window an event opened: ordered in without taking focus (no key window change, no activation); in the
+    /// background the Dock icon bounces once and shows a badge until the app is active again
+    static func event(_ w: NSWindow) {
+        w.orderFront(nil)
+        if !NSApp.isActive && !quiet {
+            NSApp.requestUserAttention(.informationalRequest)
+            NSApp.dockTile.badgeLabel = "!"
+        }
+        print("front: \"\(w.title)\" shown by an event without focus · key window: \(NSApp.keyWindow.map { "\"\($0.title)\"" } ?? "none") · app active: \(NSApp.isActive) · frontmost app: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -39,9 +77,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setvbuf(stdout, nil, _IOLBF, 0)
         NSApp.setActivationPolicy(.regular)
-        MainActor.assumeIsolated { if let icon = Brand.appIcon { NSApp.applicationIconImage = icon } }
-        NSApp.activate(ignoringOtherApps: true)
-        MainActor.assumeIsolated { launch() }
+        MainActor.assumeIsolated {
+            if let icon = Brand.appIcon { NSApp.applicationIconImage = icon }
+            // a normal launch comes to the front; a debug / test launch never takes focus
+            if !Front.quiet { NSApp.activate(ignoringOtherApps: true) }
+            // the badge an event window left while in the background goes once the app is active
+            NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { NSApp.dockTile.badgeLabel = nil }
+            }
+            if Front.quiet {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                    print("front: launch · app active: \(NSApp.isActive) · key window: \(NSApp.keyWindow.map { "\"\($0.title)\"" } ?? "none") · frontmost app: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+                }
+            }
+            launch()
+        }
     }
 
     @MainActor private func launch() {
@@ -110,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let w = NSWindow(contentRect: DebugFrame.rect ?? NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
                 w.title = "Elisa"
                 w.titlebarAppearsTransparent = true
-                w.contentView = NSHostingView(rootView: MainWindow().environmentObject(m).frame(minWidth: 640, minHeight: 560))
+                w.contentView = NSHostingView(rootView: MainWindow().environmentObject(m).background(ShadePaceProbe()).frame(minWidth: 640, minHeight: 560))
                 w.isReleasedWhenClosed = false
                 DebugFrame.place(w)
                 w.orderFrontRegardless()

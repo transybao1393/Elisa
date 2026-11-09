@@ -12,7 +12,12 @@ struct PluginServer: Hashable {
     var name = "", runs = "container"
     var installed = false, running = false
     var tools: Int?, tokens: Int?
+    /// "ok" | "failed" | "not installed" (an older Elisa sends none)
+    var state: String?
+    /// why it did not start (docker's message and a hint), with state "failed"
+    var error: String?
     var host: Bool { runs == "host" }
+    var failed: Bool { state == "failed" || error != nil }
 }
 
 struct PluginInfo: Identifiable {
@@ -41,7 +46,8 @@ struct PluginInfo: Identifiable {
         servers = (j["servers"] as? [[String: Any]] ?? []).map { s in
             PluginServer(name: s["name"] as? String ?? "", runs: s["runs"] as? String ?? "container",
                          installed: s["installed"] as? Bool ?? false, running: s["running"] as? Bool ?? false,
-                         tools: (s["tools"] as? NSNumber)?.intValue, tokens: (s["tokens"] as? NSNumber)?.intValue)
+                         tools: (s["tools"] as? NSNumber)?.intValue, tokens: (s["tokens"] as? NSNumber)?.intValue,
+                         state: s["state"] as? String, error: (s["error"] as? String).flatMap { $0.isEmpty ? nil : $0 })
         }
     }
 
@@ -49,6 +55,7 @@ struct PluginInfo: Identifiable {
     var state: (text: String, tone: Tone) {
         if project { return trusted ? ("trusted", .ok) : ("not trusted yet", .warn) }
         if !trusted { return ("changed since you approved it · off until trusted", .warn) }
+        if enabled && servers.contains(where: \.failed) { return ("on, but NOT WORKING: a server failed to start", .err) }
         return enabled ? ("on", .ok) : ("off", .plain)
     }
 }
@@ -66,7 +73,8 @@ struct PluginPreview {
     }
     struct Mount: Hashable { var path: String; var write: Bool }
     struct Rule: Hashable { var level: String; var pattern: String; var broad: Bool }
-    struct Command: Hashable { var name: String; var description: String }
+    /// `text`: the full prompt the command sends to the model (an older Elisa sends none)
+    struct Command: Hashable { var name: String; var description: String; var args: String = ""; var text: String = "" }
     var op = "add", name = "", text = ""
     var version = "", oldVersion: String?, description = "", source = ""
     var host = false
@@ -94,7 +102,10 @@ struct PluginPreview {
                    env: s["env"] as? [String] ?? [], tools: s["tools"] as? String ?? "")
         }
         rules = (p["rules"] as? [[String: Any]] ?? []).map { Rule(level: $0["level"] as? String ?? "", pattern: $0["pattern"] as? String ?? "", broad: $0["broad"] as? Bool ?? false) }
-        commands = (p["commands"] as? [[String: Any]] ?? []).map { Command(name: $0["name"] as? String ?? "", description: $0["description"] as? String ?? "") }
+        commands = (p["commands"] as? [[String: Any]] ?? []).map {
+            Command(name: $0["name"] as? String ?? "", description: $0["description"] as? String ?? "",
+                    args: $0["args"] as? String ?? "", text: $0["text"] as? String ?? "")
+        }
         notes = p["notes"] as? [String] ?? []
         problems = p["problems"] as? [String] ?? []
         missingImages = p["missing_images"] as? [String] ?? []
@@ -155,16 +166,20 @@ final class PluginStore: ObservableObject {
         case "plugin_preview":
             preview = PluginPreview(e)
             trust = nil
-            PluginSetupWindow.shared.show(m)
+            PluginSetupWindow.shared.show(m, byEvent: true)
         case "project_trust":
             trust = ProjectTrust(e)
             preview = nil
-            PluginSetupWindow.shared.show(m)
+            PluginSetupWindow.shared.show(m, byEvent: true)
         case "plugin_result":
-            let ok = e["ok"] as? Bool ?? false
+            // installed but a server did not start (`working: false`): an error, not a success
+            let ok = (e["ok"] as? Bool ?? false) && (e["working"] as? Bool ?? true)
             let text = e["text"] as? String ?? ""
-            // the last line says what happened (the lines above are the servers' probe)
-            status = (text.split(separator: "\n").last.map(String.init) ?? text, ok)
+            // the last line says what happened (the lines above are the servers' probe); a failed server's own line
+            // (with docker's reason) is the one that says why
+            let lines = text.split(separator: "\n").map(String.init)
+            let why = ok ? nil : lines.first { $0.localizedCaseInsensitiveContains("fail") || $0.localizedCaseInsensitiveContains("not working") }
+            status = ((why.map { $0 + " · " } ?? "") + (lines.last ?? text), ok)
             // a setup that could not go ahead (problems) stays open so its problems can be read
             if preview?.problems.isEmpty ?? true { preview = nil }
         default: break
@@ -173,7 +188,7 @@ final class PluginStore: ObservableObject {
 
     /// the yes / no `approve` after a preview or a project's trust prompt: the setup window answers it
     func question(_ m: AppModel) {
-        if preview != nil || trust != nil { PluginSetupWindow.shared.show(m) }
+        if preview != nil || trust != nil { PluginSetupWindow.shared.show(m, byEvent: true) }
         // --plugin-setup-answer yes|no (debug): press the setup window's button after 3 s
         let a = CommandLine.arguments
         if let i = a.firstIndex(of: "--plugin-setup-answer"), i + 1 < a.count {
@@ -380,8 +395,13 @@ struct PluginsView: View {
                         Text(verbatim: "runs in container").font(Fonts.mono(11)).foregroundStyle(p.tx)
                     }
                     if !s.installed { Text(verbatim: "not installed").font(Fonts.mono(11)).foregroundStyle(p.warn) }
-                    if s.running { Text(verbatim: "running").font(Fonts.mono(11)).foregroundStyle(p.ok) }
-                    Text(verbatim: toolText(s.tools, s.tokens)).font(Fonts.mono(11)).foregroundStyle(p.fg2)
+                    if s.failed { Text(verbatim: "FAILED to start").font(Fonts.mono(11, .semibold)).foregroundStyle(p.err) }
+                    else if s.running { Text(verbatim: "running").font(Fonts.mono(11)).foregroundStyle(p.ok) }
+                    Text(verbatim: s.failed ? "its tools are missing" : toolText(s.tools, s.tokens)).font(Fonts.mono(11)).foregroundStyle(p.fg2)
+                }
+                if let e = s.error {
+                    Text(verbatim: e).font(Fonts.mono(11)).foregroundStyle(p.err).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true).padding(.leading, 72)
                 }
             }
             let facts = [pl.rules > 0 ? "\(pl.rules) rule\(pl.rules == 1 ? "" : "s")" : "no rules",
@@ -458,7 +478,7 @@ final class PluginsWindow {
     private var window: NSWindow?
 
     func show(_ m: AppModel) {
-        if let w = window { w.contentView = NSHostingView(rootView: PluginsRoot(m: m)); w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        if let w = window { w.contentView = NSHostingView(rootView: PluginsRoot(m: m)); Front.user(w); return }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         w.title = "Plugins"
         w.titlebarAppearsTransparent = true
@@ -467,8 +487,7 @@ final class PluginsWindow {
         w.minSize = NSSize(width: 760, height: 420)
         w.contentView = NSHostingView(rootView: PluginsRoot(m: m))
         if !DebugFrame.place(w) { w.center() }
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        Front.user(w)
         window = w
     }
 }
@@ -625,10 +644,8 @@ struct PluginSetupView: View {
             }
         }
         if !pv.commands.isEmpty {
-            section("Commands")
-            ForEach(pv.commands, id: \.self) { c in
-                line(c.name, c.description.isEmpty ? "—" : c.description)
-            }
+            section(pv.commands.contains { !$0.text.isEmpty } ? "Commands (each one's text is sent to the model)" : "Commands")
+            ForEach(pv.commands, id: \.self) { c in CommandText(c: c) }
         }
         ForEach(pv.notes, id: \.self) { n in
             Text(verbatim: "note: \(n)").font(Fonts.mono(11)).foregroundStyle(p.warn).fixedSize(horizontal: false, vertical: true)
@@ -686,6 +703,41 @@ struct PluginSetupView: View {
     }
 }
 
+/// a plugin command in the setup screen: name, arguments and description, and the full prompt it sends to the model,
+/// collapsed by default ("show text")
+private struct CommandText: View {
+    @Environment(\.pal) var p
+    let c: PluginPreview.Command
+    /// --plugin-commands-open (debug): every command's text shown
+    @State private var open = CommandLine.arguments.contains("--plugin-commands-open")
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(verbatim: c.name + (c.args.isEmpty ? "" : " " + c.args)).font(Fonts.mono(11.5, .semibold)).foregroundStyle(p.code)
+                    .frame(minWidth: 96, alignment: .leading)
+                Text(verbatim: c.description.isEmpty ? "—" : c.description).font(Fonts.mono(11.5)).foregroundStyle(p.tx)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if !c.text.isEmpty {
+                    let n = c.text.split(separator: "\n", omittingEmptySubsequences: false).count
+                    Button { open.toggle() } label: {
+                        Text(verbatim: open ? "▾ hide text" : "▸ show text (\(n) line\(n == 1 ? "" : "s"))").font(Fonts.mono(11)).foregroundStyle(p.acc)
+                    }
+                    .buttonStyle(.plain)
+                    .help("The full prompt this command sends to the model")
+                }
+            }
+            if open {
+                Text(verbatim: c.text).font(Fonts.mono(11)).foregroundStyle(p.tx).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(p.bg2))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(p.sep, lineWidth: 1))
+            }
+        }
+    }
+}
+
 private struct PluginSetupRoot: View {
     @ObservedObject var m: AppModel
     var body: some View { PluginSetupView(m: m).environment(\.pal, m.pal).preferredColorScheme(m.dark ? .dark : .light) }
@@ -699,12 +751,14 @@ final class PluginSetupWindow: NSObject, NSWindowDelegate {
     /// close() in progress: not the user closing it (no "no" answer from windowWillClose)
     private var closing = false
 
-    func show(_ m: AppModel) {
+    /// `byEvent`: opened by a session event (plugin_preview, project_trust, the yes / no question): shown without
+    /// taking focus (Front.event); else the person asked for it and it comes to the front
+    func show(_ m: AppModel, byEvent: Bool = false) {
         model = m
         if let w = window {
             if !w.isVisible { w.contentView = NSHostingView(rootView: PluginSetupRoot(m: m)) }
-            w.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            // already up: an event leaves it where it is
+            if byEvent { if !w.isVisible { Front.event(w) } } else { Front.user(w) }
             return
         }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 640), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -716,8 +770,7 @@ final class PluginSetupWindow: NSObject, NSWindowDelegate {
         w.delegate = self
         w.contentView = NSHostingView(rootView: PluginSetupRoot(m: m))
         if !DebugFrame.place(w) { w.center() }
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if byEvent { Front.event(w) } else { Front.user(w) }
         window = w
     }
 

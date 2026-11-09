@@ -40,8 +40,14 @@ struct StatusBar: View {
     var body: some View {
         HStack(spacing: 10) {
             StatusFace()
-            TimelineView(.periodic(from: .now, by: 1)) { tl in
-                Text(main(tl.date)).foregroundStyle(p.fg) + Text(hint).foregroundStyle(p.fg2)
+            // a 1 s clock only while the line shows a running time (thinking, a tool, a fold); idle it is redrawn
+            // only when the model changes
+            if clock {
+                TimelineView(.periodic(from: .now, by: 1)) { tl in
+                    Text(main(tl.date)).foregroundStyle(p.fg) + Text(hint).foregroundStyle(p.fg2)
+                }
+            } else {
+                Text(main(Date())).foregroundStyle(p.fg) + Text(hint).foregroundStyle(p.fg2)
             }
             if !m.model.isEmpty { ModelChip() }
             ForEach(items, id: \.self) { t in
@@ -67,6 +73,11 @@ struct StatusBar: View {
         .font(Fonts.mono(12))
         .foregroundStyle(p.fg2)
         .lineLimit(1)
+    }
+
+    private var clock: Bool {
+        if let j = m.job, j.done == nil, AppModel.isFold(j.label), m.phase != .exited, m.phase != .permission { return true }
+        return m.phase == .thinking || m.phase == .tool
     }
 
     private func main(_ now: Date) -> String {
@@ -115,6 +126,7 @@ struct InputBox: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if !m.attachments.isEmpty { AttachmentStrip() }
+            if let t = m.pasted { PastedChip(text: t) }
             row
         }
         .padding(.vertical, 11).padding(.horizontal, 14)
@@ -133,6 +145,7 @@ struct InputBox: View {
             ZStack(alignment: .topLeading) {
                 if m.input.isEmpty {
                     Text(m.phase == .exited ? "Elisa is not running · File > Open Folder…"
+                         : m.pasted != nil ? "Say what to do with the pasted text · ⏎ sends"
                          : m.attachments.isEmpty ? "Message Elisa · / for commands" : "Ask about the image · ⏎ sends")
                         .font(Fonts.mono(13)).foregroundStyle(p.fg2).frame(height: 22).allowsHitTesting(false)
                 }
@@ -144,7 +157,15 @@ struct InputBox: View {
                     .focused($focus)
                     .padding(.top, 3)
                     .onKeyPress(phases: .down) { k in key(k) }
-                    .onChange(of: m.input) { _, v in m.typing(!v.isEmpty); if m.slashSel >= max(1, m.slashItems.count) { m.slashSel = 0 } }
+                    .onChange(of: m.input) { old, v in
+                        // a long paste that came another way (Edit > Paste, a drop): out of the field into the chip
+                        if v.utf16.count - old.utf16.count >= PasteText.minChars, v.hasPrefix(old) {
+                            m.input = old
+                            m.paste(String(v.dropFirst(old.count)))
+                            return
+                        }
+                        m.typing(!v.isEmpty || m.pasted != nil); if m.slashSel >= max(1, m.slashItems.count) { m.slashSel = 0 }
+                    }
             }
             if m.busy && (!m.input.isEmpty || m.queued > 0) {
                 Text(m.queued > 0 ? "\(m.queued) queued · sends after this turn" : "queued · sends after this turn")
@@ -177,8 +198,12 @@ struct InputBox: View {
 
     private func key(_ k: KeyPress) -> KeyPress.Result {
         let menu = m.slashItems
-        // ⌘V with a picture on the clipboard attaches it; text pastes as usual
-        if k.key == "v" && k.modifiers == .command && m.pasteImages() { return .handled }
+        // ⌘V with a picture on the clipboard attaches it; a long text becomes the pasted-text chip (never in the field);
+        // other text pastes as usual
+        if k.key == "v" && k.modifiers == .command {
+            if m.pasteImages() { return .handled }
+            if let s = NSPasteboard.general.string(forType: .string), PasteText.long(s) { m.paste(s); return .handled }
+        }
         switch k.key {
         case .return:
             if k.modifiers.contains(.shift) || k.modifiers.contains(.option) { m.input += "\n"; return .handled }

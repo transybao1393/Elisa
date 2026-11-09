@@ -26,6 +26,8 @@
 //                         later boxes, in order); boxes with no line left are answered yes, as before
 //   @esc S                press Esc S seconds after the prompt above is sent (once; cancels the request / tool, and
 //                         an open permission box is answered no, as the key does)
+//   @paste FILE           paste FILE's text into the input box at once (as ⌘V does: a long text becomes a "pasted
+//                         text" chip) and send it
 //
 // JSON lines are accepted too (one object per line, mixed freely with the lines above):
 //   {"prompt": "TEXT"}  {"cmd": "/stats"}   typed and sent (also {"type": "prompt"|"cmd", "text": "TEXT"})
@@ -33,7 +35,9 @@
 //   {"answer": "yes"|"always"|"no"}   the next plain permission box's answer (as @answer)   {"esc": S}   (as @esc)
 //   {"pause": S}  {"scroll": true}  {"edits": true}   (also {"type": "pause"|"scroll"|"edits", ...};
 //   pause takes "s" or "seconds" too)
-// Every action is logged to stdout as `playback: +T.Ts <what>` (T = seconds since the playback started).
+// Every action is logged to stdout as `playback: +T.Ts <what>` (T = seconds since the playback started). A sent prompt
+// is logged by its length and its first 80 characters with secrets redacted (LogRedact, as ELISA_APP_LOG does): a
+// typed API key never reaches stdout.
 // While a script plays the app holds a user-initiated activity (no App Nap, no idle sleep), so timers keep running
 // when the display idles or the window is in the background; it ends when the playback stops.
 import AppKit
@@ -58,6 +62,8 @@ final class Playback {
 
     enum Step {
         case say(String)
+        /// a file's text, pasted and sent
+        case paste(String)
         case scroll, edits, wait(Double)
     }
 
@@ -91,7 +97,7 @@ final class Playback {
         // only an explicit stop ends it (the status bar's ■ stop playback, or ctrl-.): focus, clicks, scrolling and
         // window moves do not; the input box and the permission box are disabled while it runs
         model.playbackStop = { [weak self] in self?.stop("stopped by you (■ stop playback / ctrl-.)") }
-        turns = steps.filter { if case .say = $0 { return true }; return false }.count
+        turns = steps.filter { switch $0 { case .say, .paste: return true; default: return false } }.count
         model.playbackLine = "playback · starting"
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Elisa --script playback")
         task = Task { @MainActor in
@@ -161,11 +167,12 @@ final class Playback {
                 case "pause": out.append(.wait(num("pause") ?? num("s") ?? num("seconds") ?? 5))
                 case "scroll": out.append(.scroll)
                 case "edits": out.append(.edits)
-                default: print("playback: skipped line \(l.prefix(60))")
+                default: print("playback: skipped line \(Self.shown(l, 60))")
                 }
                 continue
             }
-            if l.hasPrefix("@plan") || l.hasPrefix("@test") { print("playback: planning is gone, skipped: \(l.prefix(60))"); continue }
+            if l.hasPrefix("@plan") || l.hasPrefix("@test") { print("playback: planning is gone, skipped: \(Self.shown(l, 60))"); continue }
+            if l.hasPrefix("@paste ") { out.append(.paste(String(l.dropFirst(7)).trimmingCharacters(in: .whitespaces))); continue }
             if l.hasPrefix("@outside") { outside(String(l.dropFirst(8))) }
             else if l.hasPrefix("@answer") { answer(String(l.dropFirst(7))) }
             else if l == "@esc" || l.hasPrefix("@esc ") { esc(Double(l.dropFirst(4).trimmingCharacters(in: .whitespaces))) }
@@ -187,6 +194,13 @@ final class Playback {
         m?.playbackLine = nil
         m?.playbackStop = nil
         m?.blocks.append(Block(kind: .info("[playback \(why)]", .plain)))
+    }
+
+    /// a prompt as the log shows it: secrets redacted (the whole text first, so a key is never cut into a shape the
+    /// redactor misses), then at most `n` characters, and the length
+    static func shown(_ t: String, _ n: Int) -> String {
+        let r = LogRedact.redact(t).replacingOccurrences(of: "\n", with: "⏎")
+        return "(\(t.count) chars) " + (r.count > n ? r.prefix(n) + "…" : r)
     }
 
     private func log(_ s: String) { print(String(format: "playback: +%.1fs ", Date().timeIntervalSince(t0)) + s) }
@@ -228,6 +242,18 @@ final class Playback {
             case .wait(let d): log("wait \(d)s"); await pause(d)
             case .scroll: await scroll()
             case .edits: await edits()
+            case .paste(let f):
+                turnNo += 1
+                m.playbackLine = "playback · turn \(turnNo)/\(turns)"
+                guard let text = try? String(contentsOfFile: f, encoding: .utf8) else { log("paste: cannot read \(f)"); continue }
+                m.paste(text)
+                await pause(r(0.5, 1.2))
+                guard live else { return }
+                enter(m.input)
+                log("pasted and sent [\(i)/\(steps.count)] \(text.count) chars from \((f as NSString).lastPathComponent)")
+                await waitTurn()
+                guard live else { return }
+                await read()
             case .say(let t):
                 turnNo += 1
                 m.playbackLine = "playback · turn \(turnNo)/\(turns)"
@@ -236,7 +262,7 @@ final class Playback {
                 await pause(r(0.3, 0.9))   // a look at what was typed before Enter
                 guard live else { return }
                 enter(t)
-                log("sent [\(i)/\(steps.count)] \(t.prefix(80))")
+                log("sent [\(i)/\(steps.count)] \(Self.shown(t, 80))")
                 await waitTurn(outs: stepOuts, answers: stepAnswers, esc: stepEsc)
                 guard live else { return }
                 await read()

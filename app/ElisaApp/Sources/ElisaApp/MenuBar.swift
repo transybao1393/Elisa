@@ -82,10 +82,10 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
     }
 
     @objc private func showWindow() {
-        NSApp.activate(ignoringOtherApps: true)
+        // the person clicked "Show Elisa" in the menu-bar item: to the front (Front.user)
         if let w = NSApp.windows.first(where: { $0.title == "Elisa" && $0.contentView != nil }) ?? NSApp.windows.first(where: { $0.canBecomeMain }) {
             if w.isMiniaturized { w.deminiaturize(nil) }
-            w.makeKeyAndOrderFront(nil)
+            Front.user(w)
         }
     }
 

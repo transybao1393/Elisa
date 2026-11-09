@@ -184,6 +184,9 @@ final class AppModel: ObservableObject {
     @Published var playbackLine: String?
     var playbackStop: (() -> Void)?
     @Published var input = ""
+    /// a long pasted text (PasteText.long), kept once here and not in the input field (a text field lays out, and its
+    /// undo stack keeps, every character: a 114 KB paste cost hundreds of MB); shown as a chip, sent after the typed text
+    @Published var pasted: String?
     @Published var slashSel = 0
     @Published var model = ""
     /// the server Elisa talks to (from `banner`), for the status bar's model chip
@@ -293,8 +296,18 @@ final class AppModel: ObservableObject {
 
     // MARK: - user actions
 
+    /// text pasted into the input box (⌘V, or the --script `@paste` line): a long one becomes the pasted-text chip
+    func paste(_ s: String) {
+        if PasteText.long(s) { pasted = pasted.map { $0 + "\n" + s } ?? s } else { input += s }
+    }
+
     func send(_ raw: String) {
         var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // the pasted-text chip goes with this message, after what was typed
+        if let p = pasted, phase != .exited, !t.hasPrefix("/") {
+            t = t.isEmpty ? p : t + "\n\n" + p
+            pasted = nil
+        }
         let imgs = attachments
         guard !t.isEmpty || !imgs.isEmpty, phase != .exited else { return }
         if t == "/exit" || t == "/quit" { NSApp.terminate(nil); return }

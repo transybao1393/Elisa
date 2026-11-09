@@ -43,6 +43,17 @@ final class ShadeKit {
     }
 
     var ready: Bool { svgFn != nil }
+
+    /// the frame rate for a calm loop (idle: a slow breath, a blink): low enough that the whole loop fits the frame
+    /// cache, so after the first loop no frame is rendered again (no JavaScript, no CoreSVG), only a cached bitmap drawn.
+    /// Small builds (face, mini) 5 fps; the dock 4–8 fps by its size (Medium 8, Large 7). Every tick re-runs a SwiftUI
+    /// update of the window, so the idle rates are what an idle window costs (about 2-3 % CPU at these rates).
+    func calmFps(_ state: String, pt: CGFloat, pad: CGFloat, scale: CGFloat) -> Double {
+        if pt <= 32 { return 5 }
+        let px = pt * (1 + 2 * pad) * scale
+        let loopBytes = Double(px * px * 4) * dur(state) / 1000
+        return max(4, min(8, (Double(bigBudget) / loopBytes).rounded(.down)))
+    }
     func dur(_ st: String) -> Double { durs[st] ?? 2000 }
 
     /// the kit's SVG for `state` at loop fraction `t` (the renderer's own call: `ElisaShade.svg(state, t, opts)`)
@@ -125,12 +136,15 @@ final class ShadePace: ObservableObject {
 
     /// awake, window not key
     static let unfocusedFps: Double = 8
+    /// --pace-front (debug, for CPU measurements): pace as in the key window in front, whatever the window's state
+    nonisolated static let front = CommandLine.arguments.contains("--pace-front")
 
     /// the frame rate for a Shade that would run at `base` showing `state`; 0 = paused (one still frame)
     func fps(_ base: Double, state: String) -> Double {
+        if state == "sleeping" { return 0 }
         // --shots / --frames render the window offscreen and expect it to animate as if in front
-        if Shots.scale != nil { return base }
-        if !visible || state == "sleeping" { return 0 }
+        if Shots.scale != nil || ShadePace.front { return base }
+        if !visible { return 0 }
         return key ? base : min(base, ShadePace.unfocusedFps)
     }
 
@@ -185,23 +199,105 @@ struct ShadeImage: View {
     @Environment(\.displayScale) private var scale
     @ObservedObject private var pace = ShadePace.shared
 
-    var body: some View {
-        let rate = pace.fps(fps, state: state)
-        let run = animate && rate > 0
-        let f = run ? rate : fps
-        TimelineView(.animation(minimumInterval: 1 / f, paused: !run)) { tl in
-            let dur = ShadeKit.shared.dur(state)
-            let n = max(1, Int((dur / 1000 * f).rounded(.up)))
-            let i = run ? Int(max(0, tl.date.timeIntervalSince(since)) * f) % n : n / 2
-            let t = animate ? Double(i) / Double(n) : 0.5
-            let img = ShadeKit.shared.image(state, t: t, loop: run ? n : 1, pt: size, detail: detail, bg: bg, props: props, pad: pad, scale: Shots.scale ?? max(1, scale))
-            ZStack {
-                if let img { Image(nsImage: img).resizable().interpolation(.high).frame(width: size * (1 + 2 * pad), height: size * (1 + 2 * pad)) }
-            }
-            .frame(width: size, height: size)
-        }
-        .allowsHitTesting(false)
+    /// the paced rate; idle (nothing happening) runs at the calm rate, whose whole loop is cached
+    private func rate(_ px: CGFloat) -> Double {
+        let r = pace.fps(fps, state: state)
+        guard state == "idle", r > 0, Shots.scale == nil else { return r }
+        return min(r, ShadeKit.shared.calmFps(state, pt: size, pad: pad, scale: px))
     }
+
+    var body: some View {
+        let px = Shots.scale ?? max(1, scale)
+        let rate = rate(px)
+        let run = animate && rate > 0
+        let side = size * (1 + 2 * pad)
+        ShadeFrames(cfg: .init(state: state, since: since, size: size, detail: detail, bg: bg, props: props, pad: pad,
+                               fps: run ? rate : 0, still: !animate, scale: px))
+            .frame(width: side, height: side)
+            .frame(width: size, height: size)
+            .allowsHitTesting(false)
+    }
+}
+
+/// The Shade's frames in an AppKit view with its own timer at the frame rate: a tick redraws only this view (a cached
+/// bitmap, see ShadeKit.image), never the window's SwiftUI graph. (A SwiftUI TimelineView tick re-ran the window's
+/// SwiftUI update, ~3-5 % CPU for an idle window at the calm rates; this costs a fraction of that.) Paused (fps 0) it
+/// holds one frame and runs no timer; off a window it runs none either. It draws in draw(_:), so cacheDisplay
+/// (--shots, --frames) captures it.
+struct ShadeFrames: NSViewRepresentable {
+    struct Cfg: Equatable {
+        var state: String, since: Date, size: CGFloat, detail: String, bg: String?, props: Bool, pad: CGFloat
+        /// 0 = paused
+        var fps: Double
+        /// not animated at all (Reduce Motion, an older reply): the loop's middle pose
+        var still: Bool
+        var scale: CGFloat
+    }
+    let cfg: Cfg
+
+    final class View: NSView {
+        var cfg: Cfg? { didSet { if cfg != oldValue { restart() } } }
+        private var timer: Timer?
+        private var img: NSImage?
+        private var frameNo = -1
+
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        /// on screen a tick only swaps the layer's bitmap (no CPU drawing); draw(_:) is for cacheDisplay captures
+        override var wantsUpdateLayer: Bool { true }
+        override func updateLayer() {
+            guard let l = layer else { return }
+            l.contentsGravity = .resize
+            l.minificationFilter = .trilinear
+            l.contents = img?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            restart()
+        }
+
+        private func restart() {
+            timer?.invalidate()
+            timer = nil
+            frameNo = -1
+            tick()
+            guard let c = cfg, c.fps > 0, window != nil else { return }
+            let t = Timer(timeInterval: 1 / c.fps, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.tick() } }
+            t.tolerance = 0.2 / c.fps
+            RunLoop.main.add(t, forMode: .common)
+            timer = t
+        }
+
+        /// the frame for now (the kit's `t = elapsed / dur`, on a grid of `fps` frames per second from `since`)
+        private func tick() {
+            guard let c = cfg else { return }
+            let run = c.fps > 0
+            let f = run ? c.fps : 24
+            let n = max(1, Int((ShadeKit.shared.dur(c.state) / 1000 * f).rounded(.up)))
+            let i = run ? Int(max(0, Date().timeIntervalSince(c.since)) * f + 0.001) % n : n / 2
+            guard i != frameNo else { return }
+            frameNo = i
+            let t = c.still ? 0.5 : Double(i) / Double(n)
+            img = ShadeKit.shared.image(c.state, t: t, loop: run ? n : 1, pt: c.size, detail: c.detail, bg: c.bg, props: c.props, pad: c.pad, scale: c.scale)
+            needsDisplay = true
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            NSGraphicsContext.current?.imageInterpolation = .high
+            img?.draw(in: bounds, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+
+        deinit { timer?.invalidate() }
+    }
+
+    func makeNSView(context: Context) -> View {
+        let v = View()
+        v.cfg = cfg
+        return v
+    }
+
+    func updateNSView(_ v: View, context: Context) { v.cfg = cfg }
 }
 
 /// the 22 px status-bar face (kit v2 svg-statusbar: ears and eyes, 12 states); `bg` is the window background, which
