@@ -1168,7 +1168,7 @@ pub fn check_line(it: &Intake, plan: &str) -> String {
     v.join(" · ")
 }
 
-/// The `doc_info` event's fields for `path` (`--serve-jsonl`; README "Attached documents").
+/// The `doc_info` event's fields for `path` (`--serve-jsonl`; docs/reference/documents.md "Attached documents").
 pub fn info_json(path: &str, it: &Intake, max_ctx: usize, history: usize) -> serde_json::Value {
     let (plan, tokens, budget) = fit(it, max_ctx, history);
     let span = |s: &Span| serde_json::json!({"title": s.title, "pages": [s.from, s.to]});
