@@ -24,9 +24,7 @@ fn files(root: &Path, out: &mut Vec<PathBuf>) {
 #[ignore]
 fn measure() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
-    let demo = elisa::demo_gateway::project_in(&std::env::temp_dir().join(format!("elisa-measure-{}", std::process::id()))).unwrap();
-    let sets: Vec<(String, PathBuf, Vec<PathBuf>)> = [("demo", demo.clone(), vec![demo.join("crates")]),
-        ("elisa", repo.clone(), vec![repo.join("elisa/src"), repo.join("elisa/mem/src")]),
+    let sets: Vec<(String, PathBuf, Vec<PathBuf>)> = [("elisa", repo.clone(), vec![repo.join("elisa/src"), repo.join("elisa/mem/src")]),
         ("engine", repo.clone(), vec![repo.join("engine/crates")]),
         ("app (swift)", repo.clone(), vec![repo.join("app")])]
         .into_iter().map(|(n, root, dirs)| { let mut v = vec![]; for d in &dirs { files(d, &mut v); } (n.to_string(), root, v) }).collect();
@@ -67,5 +65,4 @@ fn measure() {
                 whole as f64 / med as f64, whole as f64 / big as f64);
         }
     }
-    let _ = std::fs::remove_dir_all(demo.parent().unwrap());
 }

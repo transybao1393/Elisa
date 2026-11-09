@@ -128,12 +128,18 @@ struct EditsPane: View {
             ScrollView {
                 VStack(spacing: 0) {
                     ForEach(Array(m.edits.enumerated()), id: \.element.id) { i, e in
+                        // a denied / failed edit is struck through and says so: it never reached the file
+                        let off = e.failed != nil
                         HStack(spacing: 8) {
                             Text("\(i + 1)").frame(width: 14, alignment: .leading)
-                            Text(e.kind == "edit" ? "Edit" : "Write").foregroundStyle(p.fg)
-                            Text(e.path).foregroundStyle(p.code).lineLimit(1).truncationMode(.head)
-                            if e.add > 0 { Text("+\(e.add)").foregroundStyle(p.ok) }
-                            if e.del > 0 { Text("−\(e.del)").foregroundStyle(p.err) }
+                            Text(e.kind == "edit" ? "Edit" : "Write").foregroundStyle(off ? p.fg2 : p.fg).strikethrough(off)
+                            Text(e.path).foregroundStyle(off ? p.fg2 : p.code).strikethrough(off).lineLimit(1).truncationMode(.head)
+                            if off {
+                                Text(e.failed == "denied" ? "denied" : "not applied").foregroundStyle(p.err).lineLimit(1).fixedSize()
+                            } else {
+                                if e.add > 0 { Text("+\(e.add)").foregroundStyle(p.ok) }
+                                if e.del > 0 { Text("−\(e.del)").foregroundStyle(p.err) }
+                            }
                             Spacer()
                             Text("t\(e.turn)")
                         }

@@ -144,7 +144,7 @@ they bring in that carry the document parsing:
 | ecb (via lopdf) | 0.1.2 | MIT | Copyright (c) magic-akari | <https://github.com/RustCrypto/block-modes> |
 | calamine | 0.38.0 | MIT | Copyright (c) 2016 Johann Tuffe | <https://github.com/tafia/calamine> |
 | quick-xml (via calamine) | 0.42.0 | MIT | Copyright (c) 2016 Johann Tuffe | <https://github.com/tafia/quick-xml> |
-| zip (via calamine, `deflate` only) | 9.4.2 | MIT | Copyright (c) 2014 Mathijs van de Nes | <https://github.com/zip-rs/zip2> |
+| zip (direct for .docx text in src/attach.rs, and via calamine; `deflate` only) | 9.4.2 | MIT | Copyright (c) 2014 Mathijs van de Nes | <https://github.com/zip-rs/zip2> |
 
 The other crates they add are the usual `MIT OR Apache-2.0` set (RustCrypto aes / cbc / md-5 / sha2 for PDF
 decryption, euclid, flate2, codepage, atoi_simd, fast-float2, rand, …) plus these permissive ones: encoding_rs 0.8

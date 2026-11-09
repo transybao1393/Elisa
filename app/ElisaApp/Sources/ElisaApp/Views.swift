@@ -41,13 +41,6 @@ struct MainWindow: View {
         .ignoresSafeArea()
         .environment(\.pal, p)
         .preferredColorScheme(m.dark ? .dark : .light)
-        .overlayPreferenceValue(ShotRects.self) { prefs in
-            GeometryReader { g in
-                let _ = Shots.shared.record(prefs.mapValues { g[$0] })
-                Color.clear
-            }
-            .ignoresSafeArea()
-        }
     }
 }
 
@@ -108,6 +101,8 @@ struct TranscriptColumn: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             ForEach(m.blocks) { b in BlockView(b: b).copyMenu("Copy Message") { m.plainText(b) } }
+                            // what Elisa is doing right now, in words (Activity.swift)
+                            if let a = m.liveLine { LiveActivityLine(a: a) }
                             Color.clear.frame(height: 1).id("end")
                         }
                         .padding(.top, 20).padding(.leading, side).padding(.trailing, dockW).padding(.bottom, 6)
@@ -158,6 +153,7 @@ struct BlockView: View {
                 Pixel("YOU", color: p.fg2)
                 UserText(id: b.id, text: t, font: cmd ? Fonts.mono(13.5, .medium) : Fonts.mono(13, .semibold))
                 if !b.images.isEmpty { SentImages(images: b.images) }
+                if !b.docs.isEmpty { SentDocs(docs: b.docs) }
             }
         case .info(let t, let tone):
             InfoLine(text: t, tone: tone)
@@ -166,7 +162,9 @@ struct BlockView: View {
                 ReplyMarker(live: b.live || b.id == m.lastReplyID).offset(y: -3)
                 VStack(alignment: .leading, spacing: 8) {
                     Pixel("ELISA", color: p.acc)
-                    ForEach(b.parts) { part in PartView(part: part) }
+                    // steps reported in words: one quiet line that opens to them and to the tool rows (Activity.swift)
+                    if b.actSummary != nil { ActivitySummaryView(b: b) }
+                    ForEach(m.activitySeen ? b.parts.filter { !$0.isTool } : b.parts) { part in PartView(part: part) }
                 }
                 .padding(.leading, 36)
             }
@@ -307,9 +305,37 @@ struct InfoLine: View {
     let text: String
     let tone: Tone
     var body: some View {
-        Text(text).font(Fonts.mono(12)).lineSpacing(4)
-            .foregroundStyle(tone == .err ? p.err : tone == .warn ? p.warn : tone == .ok ? p.ok : p.fg2)
-            .textSelection(.enabled)
+        let c = tone == .err ? p.err : tone == .warn ? p.warn : tone == .ok ? p.ok : p.fg2
+        if let rows = Self.commandRows(text) {
+            // a command list (/help): two columns, so a wrapped description stays under its own start
+            let w = min(rows.compactMap(\.cmd).map { Fonts.monoWidth($0, 12) }.max() ?? 0, Fonts.monoWidth(String(repeating: "m", count: 14), 12))
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+                    if let cmd = r.cmd {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Text(cmd).foregroundStyle(p.code).frame(width: w, alignment: .leading)
+                            Text(r.text).fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        Text(r.text).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .font(Fonts.mono(12)).foregroundStyle(c).textSelection(.enabled)
+        } else {
+            Text(text).font(Fonts.mono(12)).lineSpacing(4).foregroundStyle(c).textSelection(.enabled)
+        }
+    }
+
+    /// `/name   what it does` lines (at least three): each split into the command and its description; other lines
+    /// (a heading, a closing note) keep the whole width. nil: not a command list
+    static func commandRows(_ s: String) -> [(cmd: String?, text: String)]? {
+        let lines = s.components(separatedBy: "\n")
+        guard lines.filter({ $0.hasPrefix("/") }).count >= 3 else { return nil }
+        return lines.map { l in
+            guard l.hasPrefix("/"), let sp = l.firstIndex(where: { $0 == " " }) else { return (nil, l) }
+            return (String(l[..<sp]), l[sp...].trimmingCharacters(in: .whitespaces))
+        }
     }
 }
 
@@ -517,7 +543,7 @@ struct Prose: View {
                 if seg.code {
                     CodeBox(lang: seg.lang, code: seg.text)
                 } else if !seg.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(inline(seg.text.trimmingCharacters(in: .newlines))).lineSpacing(5).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    MarkdownBlocks(text: seg.text.trimmingCharacters(in: .newlines), inline: inline)
                 }
             }
         }
@@ -549,7 +575,12 @@ struct Prose: View {
             guard let i = r.inlinePresentationIntent else { continue }
             if i.contains(.code) { a[r.range].foregroundColor = p.code }
             if i.contains(.stronglyEmphasized) { a[r.range].font = Fonts.mono(13, .semibold); a[r.range].foregroundColor = p.fg }
+            // slanted by a font matrix: the bundled face has no italic, so `.italic()` drew it upright
+            if i.contains(.emphasized) { a[r.range].font = Fonts.monoItalic(13, i.contains(.stronglyEmphasized) ? .semibold : .regular) }
+            if i.contains(.strikethrough) { a[r.range].strikethroughStyle = .single; a[r.range].foregroundColor = p.fg2 }
         }
+        // links: clickable, in the accent colour
+        for r in a.runs where r.link != nil { a[r.range].foregroundColor = p.acc; a[r.range].underlineStyle = .single }
         return a
     }
 }
@@ -715,14 +746,19 @@ struct CheckRowView: View {
     var body: some View {
         let (badge, bc): (String, Color) = row.running ? ("RUN", p.acc) : row.passed ? ("OK", p.ok) : row.fixing ? ("FIX", p.warn) : ("ERR", p.err)
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(badge).font(Fonts.pixel(10)).tracking(0.6).foregroundStyle(p.bg).padding(.horizontal, 5).frame(height: 18).background(bc)
+            // badge and "check" never give up width (a long "→ stopped" outcome squeezed them to one letter per line)
+            Text(badge).font(Fonts.pixel(10)).tracking(0.6).foregroundStyle(p.bg).lineLimit(1).fixedSize()
+                .padding(.horizontal, 5).frame(height: 18).background(bc)
             if !row.known || row.cmd.isEmpty {
                 // a status this app does not know: Elisa's own line
                 Text(row.line.isEmpty ? "check" : row.line).font(Fonts.mono(12.5)).foregroundStyle(p.tx).lineLimit(1)
             } else {
-                Text("check").font(Fonts.mono(12.5, .semibold)).foregroundStyle(p.fg)
-                Text(row.cmd).font(Fonts.mono(12.5)).foregroundStyle(p.code).lineLimit(1).fixedSize()
-                outcome.font(Fonts.mono(12.5)).lineLimit(1).truncationMode(.tail).layoutPriority(1)
+                // one text that wraps under itself in a narrow row: nothing is squeezed out (the outcome vanished,
+                // or "check" went one letter per line, when the three pieces fought for one line)
+                (Text("check ").font(Fonts.mono(12.5, .semibold)).foregroundStyle(p.fg)
+                    + Text(row.cmd).font(Fonts.mono(12.5)).foregroundStyle(p.code)
+                    + Text(" ") + outcome.font(Fonts.mono(12.5)))
+                    .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
             }
             Spacer(minLength: 8)
             if row.running {

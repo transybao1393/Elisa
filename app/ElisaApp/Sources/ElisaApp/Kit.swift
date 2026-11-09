@@ -139,13 +139,20 @@ enum Fonts {
     static func mono(_ size: CGFloat, _ w: Font.Weight = .regular) -> Font {
         chivo ? noLigatures("Chivo Mono", size, w) : .system(size: size, weight: w, design: .monospaced)
     }
+    /// Chivo Mono slanted, for *emphasis* and block quotes. Only the upright face is bundled, and SwiftUI's `.italic()`
+    /// finds no italic in it (the text stayed upright), so the upright glyphs are sheared by a font matrix instead
+    static func monoItalic(_ size: CGFloat, _ w: Font.Weight = .regular) -> Font {
+        chivo ? noLigatures("Chivo Mono", size, w, slant: true) : .system(size: size, weight: w, design: .monospaced).italic()
+    }
+    /// the shear of `monoItalic`: tan(12°), about a usual italic angle
+    static let slant: CGFloat = 0.2126
 
     /// Chivo Mono ships fi / fl / ff / ffi / ffl ligatures (GSUB liga, on by default): in a monospace face they squeeze
     /// two letters into one cell, so "file" looked broken. Every app font is made here with ligatures (common + rare)
     /// and contextual alternates off. Cached per family/size/weight (fonts are made in view bodies).
     private static var cache: [String: Font] = [:]
-    private static func noLigatures(_ family: String, _ size: CGFloat, _ w: Font.Weight) -> Font {
-        let key = "\(family)|\(size)|\(w)"
+    private static func noLigatures(_ family: String, _ size: CGFloat, _ w: Font.Weight, slant: Bool = false) -> Font {
+        let key = "\(family)|\(size)|\(w)|\(slant)"
         if let f = cache[key] { return f }
         let weights: [Font.Weight: NSFont.Weight] = [.ultraLight: .ultraLight, .thin: .thin, .light: .light, .regular: .regular,
             .medium: .medium, .semibold: .semibold, .bold: .bold, .heavy: .heavy, .black: .black]
@@ -156,7 +163,13 @@ enum Fonts {
         ]
         let d = NSFontDescriptor(fontAttributes: [.family: family, .traits: [NSFontDescriptor.TraitKey.weight: (weights[w] ?? .regular).rawValue]])
             .addingAttributes([.featureSettings: off])
-        let f = NSFont(descriptor: d, size: size).map { Font($0) } ?? .custom(family, size: size).weight(w)
+        let f: Font
+        if slant {
+            var m = CGAffineTransform(a: 1, b: 0, c: Self.slant, d: 1, tx: 0, ty: 0)
+            f = Font(CTFontCreateWithFontDescriptor(d as CTFontDescriptor, size, &m))
+        } else {
+            f = NSFont(descriptor: d, size: size).map { Font($0) } ?? .custom(family, size: size).weight(w)
+        }
         cache[key] = f
         return f
     }

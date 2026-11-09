@@ -58,18 +58,15 @@ if os.path.exists(p("stubborn")):
         time.sleep(1)
 "#;
 
-const SCRATCH: &str = "/private/tmp/claude-501/-Users-johnathan-Development-Elisa/9d0ae66b-82b1-48d8-92fe-3abb6f1159be/scratchpad/host";
-
 struct Dir(PathBuf);
 impl Drop for Dir {
     fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
 }
 
-/// a temp dir under the scratch area (falls back to the system temp dir), with the fake server in it
+/// a temp dir under the system temp dir, with the fake server in it
 fn dir(tag: &str) -> Dir {
     static N: AtomicUsize = AtomicUsize::new(0);
-    let base = if Path::new(SCRATCH).parent().is_some_and(Path::exists) { PathBuf::from(SCRATCH) } else { std::env::temp_dir() };
-    let d = base.join(format!("hardening-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+    let d = std::env::temp_dir().join(format!("hardening-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join("server.py"), SERVER).unwrap();
@@ -148,7 +145,10 @@ fn mcp_servers_get_a_clean_environment_without_api_keys() {
     for k in env.as_object().unwrap().keys() {
         assert!(elisa::mcp::inherited(k) || ["GIVEN", "ELISA_HARDENING_PASS"].contains(&k.as_str())
             // set by the OS / python itself, not inherited
-            || ["__CF_USER_TEXT_ENCODING", "PWD", "SHLVL", "_", "OLDPWD", "VERSIONER_PYTHON_VERSION", "__PYVENV_LAUNCHER__"].contains(&k.as_str()), "unexpected variable {k}: {out}");
+            || ["__CF_USER_TEXT_ENCODING", "PWD", "SHLVL", "_", "OLDPWD", "VERSIONER_PYTHON_VERSION", "__PYVENV_LAUNCHER__"].contains(&k.as_str())
+            // not in our own environment, so it cannot have been inherited: set on the way in, e.g. SDKROOT, CPATH,
+            // LIBRARY_PATH and MANPATH by the Xcode shim when `python3` resolves to /usr/bin/python3 (a fresh Mac, CI)
+            || std::env::var_os(k).is_none(), "unexpected variable {k}: {out}");
     }
     // a server without env_pass does not get the pass-through name
     let (out, _) = call(&mut h, "bare_env");
@@ -568,7 +568,8 @@ fn a_session_denies_a_changed_server_under_yes_until_trusted_and_audits_it_all()
     assert_eq!(denials.len(), 1, "{lines:?}");
     assert!(denials[0]["outcome"] == "denied" && denials[0]["answer"] == "policy" && denials[0]["detail"].as_str().unwrap().contains("tool list changed"), "{denials:?}");
     assert_eq!(ev("approval").iter().filter(|a| a["answer"] == "auto").count(), 2);
-    assert!(ev("server_start").len() >= 4 && ev("server_stop").len() >= 4, "{lines:?}");
+    // runs 1, 2 and 4 start the server for their call; run 3 (/trust, no call) starts none (lazy start)
+    assert!(ev("server_start").len() >= 3 && ev("server_stop").len() >= 3, "{lines:?}");
     assert_eq!(ev("trust").len(), 1);
     let f = std::fs::read_dir(home.join(".elisa/audit")).unwrap().next().unwrap().unwrap().path();
     assert_eq!(elisa::audit::verify(&f), Ok(lines.len()));
@@ -608,8 +609,9 @@ fn a_filtered_tool_is_not_offered_and_its_call_is_refused_without_approval_and_m
     let o = elisa(&d.0, &["--base-url", &m.url()], "/mcp\n/mcp fake\n/context\n/exit\n");
     let all = format!("{}\n{}", o.stdout, o.stderr);
     assert!(!all.contains("tool list changed"), "{all}");
-    assert!(all.contains("MCP servers: 2 running · 5 off\n"), "{all}");
-    assert!(all.contains("fake · user · running · stdio python3 · 1 of 4 tools · ~") && all.contains(" tokens · pinned\n  echo\n"), "{all}");
+    // no call in this session: no server started (each starts on its first call)
+    assert!(all.contains("MCP servers: 0 running · 2 not started · 5 off\n"), "{all}");
+    assert!(all.contains("fake · user · not started (starts when needed) · stdio python3 · 1 of 4 tools · ~") && all.contains(" tokens · pinned\n  echo\n"), "{all}");
     assert!(all.contains("gone · user · off by config ([mcp.gone] enabled = false)"), "{all}");
     assert!(all.contains("web · built-in · off by config (web = \"off\")"), "{all}");
     assert!(all.contains("  echo — echo text\n  not offered (filter), 3:\n    env, limits, crash"), "{all}");

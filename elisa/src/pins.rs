@@ -136,6 +136,33 @@ impl Pins {
     }
 }
 
+/// The last tool list each server listed (`tools/list`, as sent), next to the pins: `~/.elisa/mcp-tools.json`, keyed
+/// like the pins (`key`). A session offers a server's tools from here without starting it (`mcp_host::Host::open`);
+/// the server starts on the first call to one of them.
+pub const LISTS_FILE: &str = ".elisa/mcp-tools.json";
+
+pub fn lists_in(home: &Path) -> PathBuf { home.join(LISTS_FILE) }
+
+/// the cached tool lists (unreadable or broken: none)
+pub fn load_lists(path: &Path) -> Map<String, Value> {
+    std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.as_object().cloned()).unwrap_or_default()
+}
+
+/// Caches `list` under `key` (read again first, so other sessions' entries stay); nothing is written when it is
+/// already there as it is. Via a temp file and a rename.
+pub fn cache_list(path: &Path, key: &str, list: &[Value]) -> Result<(), String> {
+    let mut map = load_lists(path);
+    let v = Value::Array(list.to_vec());
+    if map.get(key) == Some(&v) { return Ok(()); }
+    map.insert(key.to_string(), v);
+    if let Some(d) = path.parent() { std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?; }
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(&Value::Object(map)).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, text + "\n").map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// What changed from the tool list `old` to `new` (both as listed), or None when they pin the same.
 pub fn changed(old: &[Value], new: &[Value]) -> Option<String> { changed_by(old, new, &|_| true) }
 

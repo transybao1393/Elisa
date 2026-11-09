@@ -91,6 +91,9 @@ pub struct Providers {
     pub active: String,
     #[serde(default)]
     pub providers: BTreeMap<String, Profile>,
+    /// the hosted intent router (`router.rs`): its URL and key, kept like a connection's key; absent = off
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<crate::router::RouterConf>,
 }
 
 pub fn path_in(home: &Path) -> PathBuf { home.join(".config/elisa/providers.toml") }
@@ -121,7 +124,8 @@ impl Profile {
                 if !http(&self.base_url) { return bad(format!("base_url must start with http:// or https:// (got {:?})", self.base_url)); }
                 if self.model.is_empty() { return bad("model is required".into()); }
                 if !self.command.is_empty() || !self.url.is_empty() || !self.tool.is_empty() { return bad(format!("command, url and tool are only for type = \"{MCP}\"")); }
-                if self.kind == OPENAI && self.max_ctx.unwrap_or(0) == 0 { return bad("max_ctx is required for type = \"openai\" (the API does not report the model's window)".into()); }
+                // openai: max_ctx may be left out; the window then comes from the server (`backend::detect`: llama.cpp
+                // /props n_ctx, LM Studio's context length, vLLM max_model_len, Ollama's loaded context)
             }
             MCP => {
                 if self.command.is_empty() == self.url.is_empty() { return bad("set exactly one of command (stdio) or url (HTTP)".into()); }
@@ -199,6 +203,7 @@ impl Providers {
             if n == NONE { return Err(format!("provider name {NONE:?} is reserved")); }
             p.validate(n)?;
         }
+        if let Some(r) = &self.router { r.validate()?; }
         if !self.active.is_empty() && !self.providers.contains_key(&self.active) {
             return Err(format!("active = {:?}: no such provider", self.active));
         }
@@ -268,7 +273,8 @@ fn profile_from(v: &Value, old: &Providers) -> (String, Profile) {
 
 /// `--providers-save`: the window's whole list replaces the saved one.
 pub fn from_json(v: &Value, old: &Providers) -> Result<Providers, String> {
-    let mut f = Providers { active: str_of(v, "active"), providers: BTreeMap::new() };
+    // the window lists connections only: the router setting is kept as saved
+    let mut f = Providers { active: str_of(v, "active"), providers: BTreeMap::new(), router: old.router.clone() };
     for e in v["providers"].as_array().ok_or("providers: not a list")? {
         let (n, p) = profile_from(e, old);
         if f.providers.insert(n.clone(), p).is_some() { return Err(format!("two connections are named {n:?}")); }

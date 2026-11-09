@@ -52,10 +52,14 @@ pub struct Message {
     pub content: Vec<Block>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// the model that wrote an assistant message (bug #66), never sent to the API. None: written in this run (stamped
+    /// with the session's model on save); "" = unknown (a session saved before models were recorded)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Message {
-    pub fn new(role: Role, content: Vec<Block>) -> Self { Message { role, content, id: None } }
+    pub fn new(role: Role, content: Vec<Block>) -> Self { Message { role, content, id: None, model: None } }
     pub fn user_text(t: impl Into<String>) -> Self { Message::new(Role::User, vec![Block::Text { text: t.into() }]) }
     pub fn assistant_text(t: impl Into<String>) -> Self { Message::new(Role::Assistant, vec![Block::Text { text: t.into() }]) }
 }

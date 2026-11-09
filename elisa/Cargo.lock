@@ -389,6 +389,7 @@ dependencies = [
  "tree-sitter-typescript",
  "ureq",
  "walkdir",
+ "zip",
 ]
 
 [[package]]

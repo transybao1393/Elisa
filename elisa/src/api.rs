@@ -26,8 +26,13 @@ pub struct CallMetric {
     pub stop_reason: String,
 }
 
-/// a simple turn's output cap (`Client::simple_cap`): a greeting or a short answer needs far less
+/// the smallest simple-turn output cap (`simple_out`)
 pub const SIMPLE_OUT: usize = 1024;
+
+/// A simple turn's output cap (`Client::simple_cap`) for a `max_ctx` window: 1/8 of it, 1024..=4096 (2048 on a 16K
+/// window). 2026-11-09: a flat 1024 cut plain chat answers about a paper mid-sentence on a 16K window, three times
+/// in a row.
+pub fn simple_out(max_ctx: usize) -> usize { (max_ctx / 8).clamp(SIMPLE_OUT, 4 * SIMPLE_OUT) }
 
 /// How often a streaming call that waits on the server (for the response head or the next line) looks at the
 /// cancel flag.
@@ -100,6 +105,9 @@ pub fn transient(e: &str) -> bool {
     if let Some(code) = e.strip_prefix("HTTP ").and_then(|r| r.get(..3)).and_then(|c| c.parse::<u16>().ok()) { return (500..600).contains(&code); }
     e.contains("JSON input") || e.contains("tool call") || e.contains("invalid character")
 }
+
+/// How long a retry waits on a server that is still loading its model (HTTP 503).
+const RETRY_WAIT: Duration = Duration::from_secs(3);
 
 /// The decode window `ui::status` uses too: below this there is no honest tok/s.
 pub const MIN_DECODE_S: f64 = 0.2;
@@ -225,6 +233,22 @@ pub struct Client {
     ollama_thinks: AtomicBool,
     /// the turn in progress is a simple one (`set_simple`): no reasoning where the connection can switch it off
     simple: AtomicBool,
+    /// what the backend is and can do (`backend::detect`, `set_caps`)
+    caps: crate::backend::Caps,
+    /// the tools go in the system prompt as text (`backend::Tools::Text`): set from the caps, or after a server
+    /// refused `tools`
+    text_tools: AtomicBool,
+    /// Gemini's explicit cache of the system prompt and tools (`backend::GeminiCache`)
+    gemini: Mutex<crate::backend::GeminiCache>,
+    /// the model has no vision (`set_vision`): image parts never go out (`context::without_images`, BUGS #62)
+    blind: AtomicBool,
+}
+
+/// An error that says the server or model takes no `tools` (Ollama "does not support tools", llama.cpp without
+/// `--jinja`, an OpenAI-style server's "tool_choice"/"tools" not supported): then the tools go in the prompt as text.
+pub fn no_tools_error(e: &str) -> bool {
+    let l = e.to_ascii_lowercase();
+    l.contains("does not support tools") || l.contains("requires --jinja") || (l.contains("tool") && (l.contains("not supported") || l.contains("unsupported")))
 }
 
 enum Part {
@@ -258,8 +282,10 @@ pub fn warm_took(body: &str) -> bool {
     !body.contains("text_delta") && !body.contains("\"tool_use\"") && re.captures_iter(body).all(|c| &c[1] == "0")
 }
 
-pub(crate) fn err_message(body: &str) -> String {
+pub fn err_message(body: &str) -> String {
     serde_json::from_str::<Value>(body).ok()
+        // Gemini's OpenAI endpoint may wrap it in a list: `[{"error": {…}}]`
+        .map(|v| if v.is_array() { v[0].clone() } else { v })
         // Anthropic / OpenAI `{"error": {"message": …}}`, Ollama `{"error": "…"}`
         .and_then(|v| v["error"]["message"].as_str().or(v["error"].as_str()).map(String::from))
         .unwrap_or_else(|| body.chars().take(300).collect())
@@ -268,7 +294,9 @@ pub(crate) fn err_message(body: &str) -> String {
 /// Returns whether the server reported `cache_read_input_tokens` at all (0 counts as reported).
 fn read_usage(u: &Value, usage: &mut Usage) -> bool {
     let n = |k: &str| u[k].as_u64().map(|x| x as usize);
-    if let Some(x) = n("input_tokens").filter(|&x| x > 0) { usage.input_tokens = x; }
+    // Anthropic: `input_tokens` excludes both the cache read and the cache write; a write is prefilled too
+    let read_now = n("input_tokens").unwrap_or(0) + n("cache_creation_input_tokens").unwrap_or(0);
+    if read_now > 0 { usage.input_tokens = read_now; }
     if let Some(x) = n("output_tokens") { usage.output_tokens = x; }
     let cached = n("cache_read_input_tokens");
     if let Some(x) = cached.filter(|&x| x > 0) { usage.cache_read_input_tokens = x; }
@@ -287,6 +315,8 @@ pub fn request_base(url: &str, transport: &Transport) -> String {
 
 impl Client {
     pub fn new(cfg: &Config) -> Client {
+        // only a connect timeout: no read timeout, so a server without a prompt cache that prefills a long prompt for
+        // minutes before its first byte is waited for, not taken for a stall (Esc stops it: `post_lines`)
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_connect(Some(Duration::from_secs(10)))
@@ -306,8 +336,54 @@ impl Client {
             ollama_ctx: std::sync::atomic::AtomicUsize::new(0),
             ollama_thinks: AtomicBool::new(false),
             simple: AtomicBool::new(false),
+            caps: crate::backend::Caps::default(),
+            text_tools: AtomicBool::new(false),
+            gemini: Mutex::new(crate::backend::GeminiCache::default()),
+            blind: AtomicBool::new(false),
         }
     }
+
+    /// Whether the model can see pictures (the session's detected caps / config). Without vision, every request has
+    /// its image parts replaced by a short text stub, wherever they came from (an old saved session, a resumed one).
+    pub fn set_vision(&self, vision: bool) { self.blind.store(!vision, Ordering::Relaxed); }
+
+    /// `req`'s messages as this model may get them: None = as they are (`set_vision`)
+    fn seen(&self, req: &Request) -> Option<Vec<Message>> {
+        if self.blind.load(Ordering::Relaxed) { crate::context::without_images(req.messages) } else { None }
+    }
+
+    /// The backend found at connect time (`backend::detect`): an Ollama server gets its native API with the window
+    /// `num_ctx`, a server without native tools gets them as text.
+    pub fn set_caps(&mut self, caps: crate::backend::Caps, num_ctx: usize) {
+        if caps.kind == crate::backend::Kind::Ollama && self.transport == Transport::OpenAi { self.use_ollama(num_ctx, caps.thinking); }
+        self.text_tools.store(caps.tools == crate::backend::Tools::Text, Ordering::Relaxed);
+        self.caps = caps;
+    }
+
+    /// what `set_caps` was given (the default, `Kind::Unknown`, before)
+    pub fn caps(&self) -> &crate::backend::Caps { &self.caps }
+
+    /// the tools currently go in the prompt as text
+    pub fn text_tools(&self) -> bool { self.text_tools.load(Ordering::Relaxed) }
+
+    /// llama.cpp with `--slot-save-path`: save slot 0's processed prompt to `file` (in the server's slot dir).
+    /// Ok((tokens, ms)).
+    pub fn slot_save(&self, file: &str) -> Result<(usize, f64), String> {
+        if !self.caps.slot_save { return Err("the server has no slot save".into()); }
+        crate::backend::slot_action(crate::backend::root(&self.base), &self.key, 0, "save", file)
+    }
+
+    /// llama.cpp with `--slot-save-path`: load `file` into slot 0. Ok((tokens, ms)).
+    pub fn slot_restore(&self, file: &str) -> Result<(usize, f64), String> {
+        if !self.caps.slot_save { return Err("the server has no slot save".into()); }
+        crate::backend::slot_action(crate::backend::root(&self.base), &self.key, 0, "restore", file)
+    }
+
+    /// the server's address as the slot map records it
+    pub fn base(&self) -> &str { &self.base }
+
+    /// the model the requests name
+    pub fn model(&self) -> &str { &self.model }
 
     /// Talk to this `openai` connection through Ollama's native API, with the window `num_ctx` on every request.
     pub fn use_ollama(&self, num_ctx: usize, thinks: bool) {
@@ -333,9 +409,9 @@ impl Client {
     /// The output cap of a simple turn's agent calls, where the model then does not reason (Ollama's native API, or
     /// Anthropic's API without `think`); None elsewhere (a reasoning model behind another server could spend a small
     /// cap on reasoning and never answer).
-    pub fn simple_cap(&self) -> Option<usize> {
+    pub fn simple_cap(&self, max_ctx: usize) -> Option<usize> {
         let quiet = self.ollama_ctx.load(Ordering::Relaxed) > 0 || (self.transport == Transport::Anthropic && !self.think);
-        (self.simple.load(Ordering::Relaxed) && quiet).then_some(SIMPLE_OUT)
+        (self.simple.load(Ordering::Relaxed) && quiet).then(|| simple_out(max_ctx))
     }
 
     /// The project the requests are for (`PROJECT_HEADER`; default: the process's current dir at `new`).
@@ -373,7 +449,12 @@ impl Client {
     /// the label the next calls' metrics get (`set_kind`)
     pub fn kind(&self) -> String { self.kind.lock().map(|k| k.clone()).unwrap_or_default() }
 
-    fn body(&self, req: &Request, stream: bool) -> Value { body_of(&self.model, self.think, req, stream) }
+    fn body(&self, req: &Request, stream: bool) -> Value {
+        let mut b = body_of(&self.model, self.think, req, stream);
+        // Anthropic's own API: Elisa's cache breakpoints (not on a count: it takes none)
+        if stream && self.caps.cache == crate::backend::Cache::AnthropicBreakpoints { crate::backend::anthropic_breakpoints(&mut b); }
+        b
+    }
 
     /// GET {base}/health -> info.max_ctx (streamdense gateway). None if absent/unreachable.
     pub fn server_max_ctx(&self) -> Option<usize> {
@@ -403,6 +484,8 @@ impl Client {
     /// answered but generated (no warm-up support), Err on an error status / no connection.
     pub fn warm_job(&self, req: &Request) -> impl FnOnce() -> Result<bool, String> + Send + 'static {
         let no_model = self.model.trim().is_empty();
+        let msgs = self.seen(req);
+        let req = &Request { messages: msgs.as_deref().unwrap_or(req.messages), ..*req };
         let mut body = self.body(req, false);
         body["max_tokens"] = json!(0);
         let post = self.post("/v1/messages").header("x-streamdense-warm", "1");
@@ -435,14 +518,83 @@ impl Client {
     /// usually whole); the second failure is the error.
     pub fn send(&self, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
         if self.model.trim().is_empty() { return Err(NO_MODEL.into()); }
+        let msgs = self.seen(req);
+        let req = &Request { messages: msgs.as_deref().unwrap_or(req.messages), ..*req };
         let mut wrote = false;
-        let first = self.send_once(req, cancel, &mut |t: &str| { wrote = true; on_text(t) });
+        let first = self.send_tools(req, cancel, &mut |t: &str| { wrote = true; on_text(t) });
         match first {
+            // the server refused `tools`: from now on they go in the prompt as text
+            Err(e) if !req.tools.is_empty() && !self.text_tools() && no_tools_error(&e) && !wrote && !cancel.load(Ordering::Relaxed) => {
+                self.text_tools.store(true, Ordering::Relaxed);
+                self.send_tools(req, cancel, on_text).map_err(|e2| format!("{e2} (tools sent as text after: {e})"))
+            }
             Err(e) if transient(&e) && !wrote && !cancel.load(Ordering::Relaxed) => {
-                self.send_once(req, cancel, on_text).map_err(|e2| if e2 == e { format!("{e} (tried twice)") } else { format!("{e2} (tried twice; first: {e})") })
+                // a server still loading its model (503) gets a moment first; a broken tool call is resampled at once
+                if e.starts_with("HTTP 503") || e.to_ascii_lowercase().contains("loading model") {
+                    let t = Instant::now();
+                    while t.elapsed() < RETRY_WAIT && !cancel.load(Ordering::Relaxed) { std::thread::sleep(CANCEL_POLL); }
+                }
+                self.send_tools(req, cancel, on_text).map_err(|e2| if e2 == e { format!("{e} (tried twice)") } else { format!("{e2} (tried twice; first: {e})") })
             }
             r => r,
         }
+    }
+
+    /// One attempt, with the tools as text when the backend has no native tool calling (`backend::Tools::Text`): they
+    /// are described in the system prompt, earlier calls and results become text, and a call the reply writes as
+    /// `<tool_call>{…}</tool_call>` becomes a real one.
+    fn send_tools(&self, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
+        if req.tools.is_empty() || !self.text_tools() { return self.send_once(req, cancel, on_text); }
+        let system = format!("{}{}", req.system, crate::backend::text_tools_prompt(req.tools));
+        let msgs = crate::backend::textify(req.messages);
+        let r2 = Request { system: &system, tools: &[], messages: &msgs, max_tokens: req.max_tokens };
+        let mut reply = self.send_once(&r2, cancel, on_text)?;
+        if reply.stop_reason == "cancelled" { return Ok(reply); }
+        let mut calls = Vec::new();
+        let mut content = Vec::new();
+        for b in std::mem::take(&mut reply.content) {
+            match b {
+                Block::Text { text } => {
+                    let (rest, c) = crate::backend::text_calls(&text, req.tools);
+                    if !rest.is_empty() { content.push(Block::Text { text: rest }); }
+                    calls.extend(c);
+                }
+                b => content.push(b),
+            }
+        }
+        let any = !calls.is_empty();
+        for (i, (name, input)) in calls.into_iter().enumerate() { content.push(Block::ToolUse { id: format!("call_text_{i}"), name, input }); }
+        if any && reply.stop_reason == "end_turn" { reply.stop_reason = "tool_use".into(); }
+        reply.content = content;
+        Ok(reply)
+    }
+
+    /// llama.cpp / OpenAI-style extras for this backend; for Gemini, the explicit cache when it pays (created here).
+    fn dialect(&self, req: &Request) -> crate::openai::Dialect {
+        use crate::backend::{Cache, Kind};
+        let mut d = crate::openai::Dialect { kind: self.caps.kind, ..Default::default() };
+        if self.caps.cache == Cache::LlamaCpp {
+            d.cache_prompt = true;
+            if self.caps.slot_save && self.caps.slots > 1 { d.id_slot = Some(0); }
+        }
+        if self.caps.kind == Kind::Gemini && !self.key.is_empty() {
+            let hash = crate::backend::prefix_hash(req.system, req.tools);
+            let tokens = crate::context::estimate_tokens(req.system) + crate::context::estimate_tokens(&serde_json::to_string(req.tools).unwrap_or_default());
+            let Ok(mut g) = self.gemini.lock() else { return d };
+            match g.decide(hash, tokens, &self.model, Instant::now()) {
+                Ok(name) => d.cached_content = name,
+                Err(h) => match crate::backend::gemini_create_cache(&self.base, &self.key, &self.model, req.system, req.tools) {
+                    Ok(name) => {
+                        let until = Instant::now() + Duration::from_secs(crate::backend::GEMINI_TTL_S.saturating_sub(15));
+                        g.active = Some((h, name.clone(), until));
+                        d.cached_content = Some(name);
+                    }
+                    // not cheaper after all (too small for this model, no caching on it): the prefix goes as usual
+                    Err(_) => g.failed = Some(h),
+                },
+            }
+        }
+        d
     }
 
     fn send_once(&self, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
@@ -456,7 +608,8 @@ impl Client {
                 return Ok(r);
             }
             Transport::OpenAi => {
-                let (r, seen) = crate::openai::send(&self.agent, &self.base, &self.key, &self.model, req, cancel, on_text)?;
+                let d = self.dialect(req);
+                let (r, seen) = crate::openai::send_with(&self.agent, &self.base, &self.key, &self.model, req, &d, cancel, on_text)?;
                 self.record(&r, seen);
                 return Ok(r);
             }

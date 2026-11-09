@@ -8,7 +8,7 @@
 //! session's tool output cap), cut at a page / row boundary with a `next:` hint so a big file is read in parts.
 use crate::outside;
 use serde_json::{json, Value};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
@@ -77,6 +77,8 @@ pub fn serve(args: &[String]) -> i32 {
     let cfg = DocsCfg { root: outside::root(&root), max_chars };
     // a parser panic on a malformed file is caught per call (`guard`); keep its message off stderr
     std::panic::set_hook(Box::new(|_| {}));
+    // the session's result cache, when it handed one over (`cache::child_env`)
+    crate::cache::from_env();
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines().map_while(Result::ok) {
@@ -167,19 +169,54 @@ fn pdf_error(p: &str, e: pdf_extract::Error) -> String {
     }
 }
 
+fn is_pdf(bytes: &[u8]) -> bool { bytes[..bytes.len().min(1024)].windows(5).any(|w| w == b"%PDF-") }
+
+/// the PDF loaded and opened (an empty user password is opened on load; anything else stays encrypted)
+fn load_pdf(p: &str, bytes: &[u8]) -> Result<pdf_extract::Document, String> {
+    guard(p, || {
+        let mut doc = pdf_extract::Document::load_mem(bytes).map_err(|e| pdf_error(p, e))?;
+        if doc.is_encrypted() && doc.decrypt("").is_err() { return Err(format!("{p} is a password-protected PDF; it cannot be read")); }
+        if doc.get_pages().is_empty() { return Err(format!("{p}: the PDF has no pages")); }
+        Ok(doc)
+    })
+}
+
+/// one page's text, tidied; None when the parser fails on it
+fn page_text(doc: &pdf_extract::Document, n: u32) -> Option<String> {
+    let mut s = String::new();
+    match catch_unwind(AssertUnwindSafe(|| pdf_extract::output_doc_page(doc, &mut pdf_extract::PlainTextOutput::new(&mut s), n))) {
+        Ok(Ok(())) => Some(tidy(&s)),
+        _ => None,
+    }
+}
+
+/// Every page's text (None: that page could not be read), cached by the file's content (`cache::docs_json`, kind
+/// `docs`): a second read of the same PDF, by `docs_pdf` or an attachment, does not parse it again.
+fn pdf_texts(p: &str, path: &Path) -> Result<Vec<Option<String>>, String> {
+    crate::cache::docs_json(path, "pdf_pages", || {
+        let bytes = std::fs::read(path).map_err(|e| format!("cannot read {p}: {e}"))?;
+        if !is_pdf(&bytes) { return Err(format!("{p} is not a PDF")); }
+        let doc = load_pdf(p, &bytes)?;
+        let total = doc.get_pages().len() as u32;
+        Ok((1..=total).map(|n| page_text(&doc, n)).collect())
+    })
+}
+
 fn read_pdf(p: &str, pages: Option<&str>, cfg: &DocsCfg) -> Result<String, String> {
     let path = project_file(p, cfg)?;
-    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {p}: {e}"))?;
-    if !bytes[..bytes.len().min(1024)].windows(5).any(|w| w == b"%PDF-") {
+    let mut head = Vec::with_capacity(1024);
+    std::fs::File::open(&path).and_then(|f| f.take(1024).read_to_end(&mut head)).map_err(|e| format!("cannot read {p}: {e}"))?;
+    if !is_pdf(&head) {
         return Err(format!("{p} is not a PDF{}", if SHEET_EXTS.contains(&ext(&path).as_str()) { " (use docs_sheet)" } else { "" }));
     }
-    let doc = guard(p, || {
-        let mut doc = pdf_extract::Document::load_mem(&bytes).map_err(|e| pdf_error(p, e))?;
-        // an empty user password is opened on load; anything else stays encrypted
-        if doc.is_encrypted() && doc.decrypt("").is_err() { return Err(format!("{p} is a password-protected PDF; it cannot be read")); }
-        Ok(doc)
-    })?;
-    let total = doc.get_pages().len() as u32;
+    // all pages (or a PDF already in the cache): the cached page texts; a few pages of an uncached PDF: only those
+    // pages are parsed (a big PDF's first `pages="3"` stays quick)
+    enum Src { All(Vec<Option<String>>), Doc(Box<pdf_extract::Document>) }
+    let src = if pages.is_none() || crate::cache::docs_has(&path, "pdf_pages") { Src::All(pdf_texts(p, &path)?) } else {
+        let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {p}: {e}"))?;
+        Src::Doc(Box::new(load_pdf(p, &bytes)?))
+    };
+    let total = match &src { Src::All(v) => v.len() as u32, Src::Doc(d) => d.get_pages().len() as u32 };
     if total == 0 { return Err(format!("{p}: the PDF has no pages")); }
     let want = match pages { Some(s) => parse_pages(s, total)?, None => (1..=total).collect() };
     let room = room(cfg);
@@ -187,15 +224,11 @@ fn read_pdf(p: &str, pages: Option<&str>, cfg: &DocsCfg) -> Result<String, Strin
     let (mut shown, mut texts) = (Vec::new(), 0);
     let mut cut_page = None;
     for &n in &want {
-        let text = guard(p, || {
-            let mut s = String::new();
-            pdf_extract::output_doc_page(&doc, &mut pdf_extract::PlainTextOutput::new(&mut s), n).map_err(|e| e.to_string())?;
-            Ok(tidy(&s))
-        });
+        let text = match &src { Src::All(v) => v.get(n as usize - 1).cloned().flatten(), Src::Doc(d) => page_text(d, n) };
         let text = match text {
-            Ok(t) if t.is_empty() => "[no text on this page]".to_string(),
-            Ok(t) => { texts += 1; t }
-            Err(_) => "[the text of this page could not be read]".to_string(),
+            Some(t) if t.is_empty() => "[no text on this page]".to_string(),
+            Some(t) => { texts += 1; t }
+            None => "[the text of this page could not be read]".to_string(),
         };
         let block = format!("--- page {n} ---\n{text}\n");
         let used = body.chars().count();
@@ -224,6 +257,35 @@ fn read_pdf(p: &str, pages: Option<&str>, cfg: &DocsCfg) -> Result<String, Strin
     }
     Ok(out)
 }
+
+/// The text of every page of a PDF, one string per page ("" for a page without text): for a document attached to a
+/// message (`attach.rs`), which the caller has already copied into the project. The same parser and errors as
+/// `docs_pdf`.
+pub fn pdf_pages(path: &Path) -> Result<Vec<String>, String> {
+    let p = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    Ok(pdf_texts(&p, path)?.into_iter().map(Option::unwrap_or_default).collect())
+}
+
+/// one sheet's name and its rows of cell text
+pub type SheetRows = (String, Vec<Vec<String>>);
+
+/// Every sheet of a spreadsheet (or the one table of a CSV / TSV) as (sheet name, rows of cell text); the name is ""
+/// for CSV / TSV. For an attached document (`attach.rs`), with `docs_sheet`'s parser.
+pub fn sheet_rows(path: &Path) -> Result<Vec<SheetRows>, String> {
+    let p = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let e = ext(path);
+    if e == "csv" || e == "tsv" || !SHEET_EXTS.contains(&e.as_str()) {
+        let (name, _, table, _) = load_sheet(&p, path, None)?;
+        return Ok(vec![(name, table.rows)]);
+    }
+    // one parse of the whole workbook (cached), every sheet from it
+    let book = workbook(&p, path)?;
+    if book.is_empty() { return Err(format!("{p} has no sheets")); }
+    book.into_iter().map(|(n, r)| r.map(|(_, rows)| (n.clone(), rows)).map_err(|e| format!("cannot read sheet {n:?} of {p}: {e}"))).collect()
+}
+
+/// the spreadsheet extensions `docs_sheet` reads
+pub fn is_sheet(path: &Path) -> bool { SHEET_EXTS.contains(&ext(path).as_str()) }
 
 // ---------- spreadsheets ----------
 
@@ -356,29 +418,46 @@ fn load_sheet(p: &str, path: &Path, sheet: Option<&str>) -> Result<(String, Vec<
         return Err(format!("{p}: unknown spreadsheet format{}{hint}; docs_sheet reads xlsx, xlsm, xlsb, xls, ods, csv and tsv",
             if e.is_empty() { String::new() } else { format!(" .{e}") }));
     }
-    guard(p, || {
+    let book = workbook(p, path)?;
+    let names: Vec<String> = book.iter().map(|(n, _)| n.clone()).collect();
+    let mut note = None;
+    let name = match sheet {
+        None => names.first().cloned().ok_or_else(|| format!("{p} has no sheets"))?,
+        Some(s) => match names.iter().find(|n| n.as_str() == s).or_else(|| names.iter().find(|n| n.eq_ignore_ascii_case(s))) {
+            Some(n) => n.clone(),
+            None if names.len() == 1 => {
+                note = Some(format!("[no sheet {s:?}; read the only sheet, {:?}]", names[0]));
+                names[0].clone()
+            }
+            None => return Err(format!("{p} has no sheet {s:?} (sheets: {})", names.join(", "))),
+        },
+    };
+    let (start, rows) = match book.into_iter().find(|(n, _)| *n == name).map(|(_, r)| r) {
+        Some(Ok(t)) => t,
+        Some(Err(e)) => return Err(format!("cannot read sheet {name:?} of {p}: {e}")),
+        None => return Err(format!("{p} has no sheet {name:?}")),
+    };
+    Ok((name, names, Table { start, rows }, note))
+}
+
+/// a workbook's sheets in order: (name, (first cell, rows of cell text) or why the sheet could not be read)
+type Book = Vec<(String, Result<((u32, u32), Vec<Vec<String>>), String>)>;
+
+/// Every sheet of a workbook, parsed once and cached by the file's content (`cache::docs_json`, kind `docs`).
+fn workbook(p: &str, path: &Path) -> Result<Book, String> {
+    crate::cache::docs_json(path, "workbook", || guard(p, || {
         use calamine::Reader;
         let mut wb = calamine::open_workbook_auto(path).map_err(|e| {
             let m = e.to_string();
             if m.to_lowercase().contains("password") || m.to_lowercase().contains("encrypt") { format!("{p} is password-protected; it cannot be read") } else { format!("cannot read {p} as a spreadsheet: {m}") }
         })?;
         let names = wb.sheet_names();
-        let mut note = None;
-        let name = match sheet {
-            None => names.first().cloned().ok_or_else(|| format!("{p} has no sheets"))?,
-            Some(s) => match names.iter().find(|n| n.as_str() == s).or_else(|| names.iter().find(|n| n.eq_ignore_ascii_case(s))) {
-                Some(n) => n.clone(),
-                None if names.len() == 1 => {
-                    note = Some(format!("[no sheet {s:?}; read the only sheet, {:?}]", names[0]));
-                    names[0].clone()
-                }
-                None => return Err(format!("{p} has no sheet {s:?} (sheets: {})", names.join(", "))),
-            },
-        };
-        let range = wb.worksheet_range(&name).map_err(|e| format!("cannot read sheet {name:?} of {p}: {e}"))?;
-        let rows = range.rows().map(|r| r.iter().map(cell_text).collect()).collect();
-        Ok((name, names, Table { start: range.start().unwrap_or((0, 0)), rows }, note))
-    })
+        Ok(names.into_iter().map(|name| {
+            let r = wb.worksheet_range(&name).map(|range| (range.start().unwrap_or((0, 0)), range.rows().map(|r| r.iter().map(cell_text).collect()).collect()))
+                .map_err(|e| e.to_string());
+            (name, r)
+        }).collect())
+    }))
 }
 
 fn read_sheet(p: &str, sheet: Option<&str>, range: Option<&str>, cfg: &DocsCfg) -> Result<String, String> {

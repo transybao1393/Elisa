@@ -192,6 +192,16 @@ fn glob_caps_at_200() {
 }
 
 #[test]
+fn glob_over_a_huge_tree_stops_early_with_a_hint() {
+    // BUGS #25: glob over the whole disk ran 151 s; an explicit huge tree now stops at the time / file cap
+    let t0 = Instant::now();
+    let o = run("glob", json!({"pattern": "**/*", "path": "/usr"}), &ToolCtx { cwd: PathBuf::from("/"), ..ToolCtx::default() });
+    assert!(t0.elapsed().as_secs() < 15, "took {:?}", t0.elapsed());
+    assert!(!o.is_error);
+    assert!(o.content.contains("search stopped early") && o.content.contains("narrow the pattern"), "{}", &o.content[o.content.len().saturating_sub(300)..]);
+}
+
+#[test]
 fn grep_with_glob_filter() {
     let t = Tmp::new();
     t.put("src/a.rs", b"fn main() {}\nlet needle = 1;\n");
@@ -509,6 +519,17 @@ fn glob_with_an_absolute_pattern_names_its_directory() {
     assert_eq!(tools::glob_args(&json!({"pattern": "*.py", "path": "src"})), ("src".to_string(), "*.py".to_string()));
     let lit = tools::glob_args(&json!({"pattern": format!("{root}/src")}));
     assert_eq!(lit, (format!("{root}/src"), "*".to_string()));
+    // BUGS #25: a leading `/` that names no real directory is the project root, not the whole disk
+    let o = run("glob", json!({"pattern": "/*"}), &ctx);
+    assert_eq!(o.content, "src/a.py", "/* lists the project");
+    for p in ["/*", "/", "/**/*.py", "/src/*.py"] {
+        assert!(elisa::outside::check("glob", &json!({"pattern": p}), &t.0).is_none(), "{p}: no outside approval");
+    }
+    assert_eq!(tools::glob_args(&json!({"pattern": "/*"})), (".".to_string(), "*".to_string()));
+    assert_eq!(tools::glob_args(&json!({"pattern": "/"})), (".".to_string(), "*".to_string()));
+    assert_eq!(run("glob", json!({"pattern": "/src/*.py"}), &ctx).content, "src/a.py", "no /src on disk: the project's src");
+    assert_eq!(tools::glob_args(&json!({"pattern": "/*", "path": "/etc"})), ("/etc".to_string(), "*".to_string()), "an explicit path stands");
+    assert!(elisa::outside::check("glob", &json!({"pattern": "/*", "path": "/etc"}), &t.0).is_some());
     // outside: the outside-the-project rules see it (ask / deny like read), not a silent "no files found"
     let out = elisa::outside::check("glob", &json!({"pattern": "/etc/*"}), &t.0).expect("outside");
     assert!(!out.write());

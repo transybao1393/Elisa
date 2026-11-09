@@ -71,7 +71,7 @@ struct ScrollWatcher: NSViewRepresentable {
             }
         }
 
-        /// the next scroll comes from the user (also used by --shots to scroll up "as a user would")
+        /// the next scroll comes from the user (also used by --script playback to scroll up "as a user would")
         func markUserInput() {
             inputPending = true
             DispatchQueue.main.async { [weak self] in self?.inputPending = false }
@@ -126,7 +126,7 @@ struct ScrollWatcher: NSViewRepresentable {
 
 @MainActor
 enum ScrollHold {
-    /// the transcript's scroll view (--shots scrolls it to show the pill)
+    /// the transcript's scroll view (--script playback scrolls it)
     static weak var view: NSScrollView?
     static weak var watcher: ScrollWatcher.WatchView?
     /// distance from the bottom (points) at which a user scroll counts as "scrolled up"
@@ -138,7 +138,7 @@ enum ScrollHold {
         return max(0, doc.isFlipped ? b.maxY - vis.maxY : vis.minY - b.minY)
     }
 
-    /// scroll up by `pt` points, as a user would (--shots)
+    /// scroll up by `pt` points, as a user would (--script playback)
     static func scrollUp(_ pt: CGFloat) {
         guard let sv = view, let doc = sv.documentView else { return }
         watcher?.markUserInput()

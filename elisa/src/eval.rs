@@ -38,6 +38,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("security.toml", include_str!("../evals/security.toml")),
     ("context.toml", include_str!("../evals/context.toml")),
     ("model.toml", include_str!("../evals/model.toml")),
+    ("backends.toml", include_str!("../evals/backends.toml")),
 ];
 
 // ---------- case files ----------
@@ -80,6 +81,9 @@ pub struct Case {
     pub approve: Option<String>,
     /// the window the fake model's /health reports (fake cases; default 32768)
     pub max_ctx: Option<usize>,
+    /// fake cases: the scripted model speaks this backend's protocol instead of the gateway's (`eval_fake::BACKENDS`:
+    /// ollama, llamacpp, lmstudio, vllm, mlx, localai, gpt4all, openai, anthropic), with its detection endpoints
+    pub backend: Option<String>,
     #[serde(default)]
     pub script: Vec<ScriptItem>,
     #[serde(default)]
@@ -142,6 +146,10 @@ pub struct Turn {
     /// press Esc (`interrupt`) at the first streamed text
     #[serde(default)]
     pub interrupt: bool,
+    /// documents attached to this message (`send.documents`, src/attach.rs): paths relative to the case's project
+    /// (`../home/x.csv` is a file outside it)
+    #[serde(default)]
+    pub attach: Vec<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -191,6 +199,9 @@ pub fn parse_cases(file: &str, text: &str) -> Result<Vec<Case>, String> {
         if c.id.trim().is_empty() { return Err(format!("{file}: a case has no id")); }
         if c.suite.is_empty() { return Err(format!("{at}: no suite")); }
         if c.kind != "fake" && c.kind != "model" { return Err(format!("{at}: kind must be \"fake\" or \"model\" (got {:?})", c.kind)); }
+        if let Some(b) = c.backend.as_deref().filter(|b| !crate::eval_fake::BACKENDS.contains(b)) {
+            return Err(format!("{at}: backend {b:?}: use one of {}", crate::eval_fake::BACKENDS.join(", ")));
+        }
         if c.turns.is_empty() { return Err(format!("{at}: no turns")); }
         if c.kind == "model" && !c.script.is_empty() { return Err(format!("{at}: a model case has no script")); }
         for ch in &c.checks {
@@ -394,6 +405,20 @@ pub fn stop_on_signal() {
 #[cfg(not(unix))]
 pub fn stop_on_signal() {}
 
+/// A file check's path with a `*` in its file name (`.elisa/notes/*.md`: notes are one file per session id): the
+/// newest matching file, by numeric name (session ids are unix seconds), else by name. No `*`: the path itself.
+fn newest_match(p: &Path) -> PathBuf {
+    let Some(name) = p.file_name().and_then(|n| n.to_str()).filter(|n| n.contains('*')) else { return p.to_path_buf() };
+    let (pre, suf) = name.split_once('*').unwrap_or((name, ""));
+    let dir = p.parent().unwrap_or(Path::new("."));
+    let key = |f: &str| (f[pre.len()..f.len() - suf.len()].parse::<u64>().ok(), f.to_string());
+    std::fs::read_dir(dir).ok().and_then(|rd| rd.flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .filter(|f| f.len() >= pre.len() + suf.len() && f.starts_with(pre) && f.ends_with(suf))
+        .max_by_key(|f| key(f)))
+        .map_or_else(|| p.to_path_buf(), |f| dir.join(f))
+}
+
 // ---------- one session over JSON lines ----------
 
 struct Session { child: Child, stdin: ChildStdin, rx: Receiver<Value> }
@@ -565,9 +590,12 @@ fn drive(c: &Case, opts: &Options, root: &Path, v: &Vars, r: &mut CaseResult) ->
         std::fs::write(project.join(".elisa/config.toml"), v.s(&c.project_config)).map_err(|e| e.to_string())?;
     }
     let fake = c.kind == "fake";
-    let fm = if fake { Some(FakeModel::start(script_of(c, v), c.max_ctx.unwrap_or(32768)).map_err(|e| format!("fake model: {e}"))?) } else { None };
+    let backend = c.backend.clone().unwrap_or_default();
+    let fm = if fake { Some(FakeModel::start_as(script_of(c, v), c.max_ctx.unwrap_or(32768), &backend).map_err(|e| format!("fake model: {e}"))?) } else { None };
     let mut extra: Vec<String> = Vec::new();
     match &fm {
+        Some(f) if backend == "anthropic" => extra.extend(["--base-url".into(), f.url(), "--type".into(), "anthropic".into(), "--model".into(), "eval-fake".into()]),
+        Some(f) if !backend.is_empty() => extra.extend(["--base-url".into(), format!("{}/v1", f.url()), "--type".into(), "openai".into(), "--model".into(), "eval-fake".into()]),
         Some(f) => extra.extend(["--base-url".into(), f.url(), "--type".into(), "streamdense".into(), "--model".into(), "eval-fake".into()]),
         None => {
             // only the connection file: the user's config.toml, MCP servers and memory stay out of the case
@@ -609,7 +637,11 @@ fn drive(c: &Case, opts: &Options, root: &Path, v: &Vars, r: &mut CaseResult) ->
             let send = v.s(send);
             let req_start = fm.as_ref().map_or(0, |f| f.requests().len());
             let t1 = Instant::now();
-            s.cmd(json!({"type": "send", "text": send}));
+            let mut msg = json!({"type": "send", "text": send});
+            if !t.attach.is_empty() {
+                msg["documents"] = json!(t.attach.iter().map(|a| json!({"path": root.join("project").join(v.s(a)).display().to_string()})).collect::<Vec<_>>());
+            }
+            s.cmd(msg);
             let mut tl = TurnLog { send: send.clone(), slash: send.starts_with('/'), req_start, ..Default::default() };
             let mut answers = t.approvals.iter();
             let mut pressed = false;
@@ -625,6 +657,7 @@ fn drive(c: &Case, opts: &Options, root: &Path, v: &Vars, r: &mut CaseResult) ->
                         s.cmd(json!({"type": "approve", "answer": a}));
                     }
                     "pick" => s.cmd(json!({"type": "pick", "index": null})),
+                    "reply_retracted" => tl.reply.clear(),
                     _ => {}
                 }
                 let end = e["type"] == "turn_done";
@@ -684,9 +717,11 @@ fn metrics(turns: &[TurnLog], m: &mut Metrics) {
     }
 }
 
-/// an info line saying the loop guard (or the same-result repeat check) stopped the turn
+/// an info line saying the loop guard (or the same-result repeat check) stopped the turn's tool loop: the turn's stop,
+/// or the stop that asks the model once for an answer with no tools (`repl::agent_loop`, BUGS #54)
 fn loop_stop(t: &str) -> bool {
-    t.starts_with("[stopped: ") && (t.contains("kept repeating") || t.contains("kept cycling") || t.contains("returned the same result") || t.contains("paged the file"))
+    (t.starts_with("[stopped: ") || (t.starts_with("[loop guard: ") && t.contains("asking the model to answer")))
+        && (t.contains("kept repeating") || t.contains("kept cycling") || t.contains("returned the same result") || t.contains("paged the file"))
 }
 
 // ---------- checks ----------
@@ -842,7 +877,7 @@ fn evaluate(ch: &Check, cx: &Ctx) -> CheckResult {
             }
         }
         "file_contains" | "file_not_contains" => {
-            let p = cx.path(ch.path.as_deref().unwrap_or(""));
+            let p = newest_match(&cx.path(ch.path.as_deref().unwrap_or("")));
             match std::fs::read_to_string(&p) {
                 Ok(s) => { let has = s.contains(&text); let pass = has == (k == "file_contains"); ok(k, pass, format!("{} {} {text:?}{}", ch.path.as_deref().unwrap_or(""), if has { "has" } else { "lacks" }, if pass { String::new() } else { format!(" — file: {:?}", short(&s)) })) }
                 Err(e) => ok(k, k == "file_not_contains", format!("{}: {e}", ch.path.as_deref().unwrap_or(""))),
@@ -1212,7 +1247,7 @@ mod tests {
     #[test]
     fn builtin_cases_parse_and_have_unique_ids() {
         let all = load_cases(None).unwrap();
-        assert!((20..=80).contains(&all.len()), "{} cases", all.len());
+        assert!((20..=100).contains(&all.len()), "{} cases", all.len());
         assert!(all.iter().any(|c| c.kind == "model") && all.iter().any(|c| c.kind == "fake"));
         assert_eq!(select(&all, "model", None).unwrap().iter().filter(|c| c.kind != "model").count(), 0);
         assert!(select(&all, "nope", None).is_err());
@@ -1235,6 +1270,8 @@ mod tests {
         assert!(name_is("read", "read|grep") && name_is("sec_secrets", "sec_*") && name_is("x", "*") && !name_is("bash", "read"));
         assert!(loop_stop("[stopped: the model kept repeating calls that already ran; say how to proceed]"));
         assert!(!loop_stop("[stopped after 30 steps; say \"continue\" to go on]"));
+        assert!(loop_stop("[loop guard: the model kept repeating calls that already ran; asking the model to answer with what it has, no tools]"));
+        assert!(!loop_stop("[loop guard: 10 tool steps without a change. If you have enough to answer, answer now]"));
     }
 
     #[test]

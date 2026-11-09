@@ -35,7 +35,7 @@ pub fn k(n: usize) -> String {
 pub fn status(r: &Reply, ctx_used: usize, max_ctx: usize) -> Status {
     let gen = r.total_s - r.ttft_s;
     let (tok_s, ttft_s) = if gen >= crate::api::MIN_DECODE_S && r.usage.output_tokens > 0 { (Some(r.usage.output_tokens as f64 / gen), r.ttft_s) } else { (None, r.total_s) };
-    Status { tok_s, ttft_s, ctx_used, max_ctx, reused: r.usage.cache_read_input_tokens, output_tokens: r.usage.output_tokens }
+    Status { tok_s, ttft_s, ctx_used, max_ctx, reused: r.usage.cache_read_input_tokens, output_tokens: r.usage.output_tokens, estimated: false }
 }
 
 /// `23.4 tok/s · ttft 0.6s`; with no decode window (a tool-call-only reply, or under 0.2 s of decode) there is no honest
@@ -51,7 +51,9 @@ pub fn speed(st: &Status) -> String {
 pub fn status_text(st: &Status) -> String {
     let pct = st.ctx_used * 100 / st.max_ctx.max(1);
     let sp = if st.tok_s.is_some() { speed(st) } else { format!("{} tok · {}", st.output_tokens, speed(st)) };
-    let mut s = format!("{sp} · ctx {}/{} ({pct}%)", k(st.ctx_used), k(st.max_ctx));
+    // `~`: Elisa's own count (the server reported none, or a number that means something else)
+    let est = if st.estimated { "~" } else { "" };
+    let mut s = format!("{sp} · ctx {est}{}/{} ({pct}%{})", k(st.ctx_used), k(st.max_ctx), if st.estimated { ", estimated" } else { "" });
     if st.reused > 0 { s += &format!(" · reused {}", k(st.reused)); }
     s
 }
@@ -123,38 +125,8 @@ pub fn local_time(ts: u64) -> String {
     }
 }
 
-/// Hides `<state>…</state>` blocks from streamed text (tags may be split across deltas).
-#[derive(Default)]
-pub struct StateFilter { buf: String, inside: bool }
-
-impl StateFilter {
-    /// Visible part of `delta` that is safe to print now.
-    pub fn push(&mut self, delta: &str) -> String {
-        self.buf.push_str(delta);
-        let mut out = String::new();
-        loop {
-            let tag = if self.inside { "</state>" } else { "<state>" };
-            if let Some(i) = self.buf.find(tag) {
-                if !self.inside { out.push_str(&self.buf[..i]); }
-                self.buf.drain(..i + tag.len());
-                self.inside = !self.inside;
-                continue;
-            }
-            // keep a possible partial tag at the end
-            let keep = (1..tag.len()).rev().find(|&n| self.buf.ends_with(&tag[..n])).unwrap_or(0);
-            let cut = self.buf.len() - keep;
-            if !self.inside { out.push_str(&self.buf[..cut]); }
-            self.buf.drain(..cut);
-            return out;
-        }
-    }
-    /// End of a reply: what is still held back (nothing inside an unclosed block).
-    pub fn finish(&mut self) -> String {
-        let out = if self.inside { String::new() } else { std::mem::take(&mut self.buf) };
-        *self = StateFilter::default();
-        out
-    }
-}
+/// Hides state-card text from streamed text (`context::CardFilter`: tags and lines may be split across deltas).
+pub type StateFilter = crate::context::CardFilter;
 
 /// Line-based frontend: stdin input, model text on stdout, everything else dim/red on stderr.
 #[derive(Default)]
@@ -258,7 +230,7 @@ impl Frontend for Plain {
     fn recalled(&mut self, hits: &[String]) { for h in hits { dim(&format!("↺ {h}")); } }
     fn error(&mut self, s: &str) { error(s); }
     fn notes_saved(&mut self, notes: &str) {
-        dim("notes saved to .elisa/notes.md:");
+        dim("notes saved to .elisa/notes/ (this session's own):");
         for l in notes.lines() { dim(&format!("  {l}")); }
     }
     fn compacted(&mut self, from_tokens: usize, to_tokens: usize) {

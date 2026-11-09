@@ -6,7 +6,10 @@ use serde_json::{json, Map, Value};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-fn messages(system: &str, msgs: &[Message]) -> Vec<Value> {
+fn messages(system: &str, msgs: &[Message]) -> Vec<Value> { messages_ids(system, msgs, &|id: &str| id.to_string()) }
+
+/// The history in OpenAI form; `id` maps Elisa's tool call ids to ones the server accepts (Mistral: `backend::mistral_id`).
+fn messages_ids(system: &str, msgs: &[Message], id_of: &dyn Fn(&str) -> String) -> Vec<Value> {
     let mut out = Vec::with_capacity(msgs.len() + 1);
     if !system.is_empty() { out.push(json!({"role": "system", "content": system})); }
     for m in msgs {
@@ -14,7 +17,7 @@ fn messages(system: &str, msgs: &[Message]) -> Vec<Value> {
         match m.role {
             Role::Assistant => {
                 let calls: Vec<Value> = m.content.iter().filter_map(|b| match b {
-                    Block::ToolUse { id, name, input } => Some(json!({"id": id, "type": "function", "function": {"name": name, "arguments": input.to_string()}})),
+                    Block::ToolUse { id, name, input } => Some(json!({"id": id_of(id), "type": "function", "function": {"name": name, "arguments": input.to_string()}})),
                     _ => None,
                 }).collect();
                 let mut a = json!({"role": "assistant", "content": text});
@@ -26,7 +29,7 @@ fn messages(system: &str, msgs: &[Message]) -> Vec<Value> {
                 for b in &m.content {
                     if let Block::ToolResult { tool_use_id, content, is_error } = b {
                         let c = if *is_error { format!("[error] {content}") } else { content.clone() };
-                        out.push(json!({"role": "tool", "tool_call_id": tool_use_id, "content": c}));
+                        out.push(json!({"role": "tool", "tool_call_id": id_of(tool_use_id), "content": c}));
                     }
                 }
                 let images: Vec<Value> = m.content.iter().filter_map(|b| match b {
@@ -53,12 +56,37 @@ fn tokens_field(base: &str) -> &'static str {
     if crate::provider::host(base) == "api.openai.com" { "max_completion_tokens" } else { "max_tokens" }
 }
 
-pub fn body(base: &str, model: &str, req: &Request) -> Value {
+/// What a backend wants on top of the plain request (`backend::Caps`).
+#[derive(Clone, Debug, Default)]
+pub struct Dialect {
+    pub kind: crate::backend::Kind,
+    /// llama.cpp: `cache_prompt: true` (reuse the slot's matching prefix; the default on new builds, stated so an
+    /// older one does it too)
+    pub cache_prompt: bool,
+    /// llama.cpp with slot save: the slot every request uses, so the saved file is this session's
+    pub id_slot: Option<usize>,
+    /// Gemini: an explicit `cachedContents/…` holding the system prompt and tools (then both stay out of the request)
+    pub cached_content: Option<String>,
+}
+
+pub fn body(base: &str, model: &str, req: &Request) -> Value { body_with(base, model, req, &Dialect::default()) }
+
+pub fn body_with(base: &str, model: &str, req: &Request, d: &Dialect) -> Value {
+    use crate::backend::Kind;
     let mut b = Map::new();
     b.insert("model".into(), json!(model));
     b.insert(tokens_field(base).into(), json!(req.max_tokens));
-    b.insert("messages".into(), Value::Array(messages(req.system, req.messages)));
-    if !req.tools.is_empty() {
+    let cached = d.cached_content.is_some();
+    let system = if cached { "" } else { req.system };
+    let msgs = if d.kind == Kind::Mistral { messages_ids(system, req.messages, &crate::backend::mistral_id) } else { messages(system, req.messages) };
+    b.insert("messages".into(), Value::Array(msgs));
+    if let Some(c) = &d.cached_content {
+        // Gemini's OpenAI endpoint: Google's own fields go in `extra_body.google`
+        b.insert("extra_body".into(), json!({"google": {"cached_content": c}}));
+    }
+    if d.cache_prompt { b.insert("cache_prompt".into(), json!(true)); }
+    if let Some(i) = d.id_slot { b.insert("id_slot".into(), json!(i)); }
+    if !req.tools.is_empty() && !cached {
         let tools: Vec<Value> = req.tools.iter().map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}})).collect();
         b.insert("tools".into(), Value::Array(tools));
     }
@@ -78,6 +106,8 @@ pub struct Stream {
     finish: String,
     usage: Usage,
     cache_seen: bool,
+    /// llama.cpp `timings`: (prompt_n, cache_n)
+    timings: Option<(usize, usize)>,
     /// a first delta came: the seconds to it are the reply's ttft
     pub started: bool,
 }
@@ -90,12 +120,23 @@ impl Stream {
         if !v["error"].is_null() {
             return Err(v["error"]["message"].as_str().map_or_else(|| v["error"].to_string(), String::from));
         }
-        if let Some(u) = v["usage"].as_object() {
+        // usage: OpenAI / vLLM / OpenRouter / LM Studio / MLX `usage` (in a last chunk), Groq `x_groq.usage`
+        if let Some(u) = v["usage"].as_object().or_else(|| v["x_groq"]["usage"].as_object()) {
             let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
-            let cached = u.get("prompt_tokens_details").and_then(|d| d["cached_tokens"].as_u64());
+            // the reused part: OpenAI-style `prompt_tokens_details.cached_tokens`, DeepSeek `prompt_cache_hit_tokens`
+            let cached = u.get("prompt_tokens_details").and_then(|d| d["cached_tokens"].as_u64())
+                .or_else(|| u.get("prompt_cache_hit_tokens").and_then(Value::as_u64));
             self.cache_seen |= cached.is_some();
             // Anthropic's usage (what Elisa counts in) keeps the cached part apart from input_tokens
-            self.usage = Usage { input_tokens: n("prompt_tokens").saturating_sub(cached.unwrap_or(0) as usize), output_tokens: n("completion_tokens"), cache_read_input_tokens: cached.unwrap_or(0) as usize, reasoning_tokens: 0 };
+            let reasoning = u.get("completion_tokens_details").and_then(|d| d["reasoning_tokens"].as_u64()).unwrap_or(0) as usize;
+            self.usage = Usage { input_tokens: n("prompt_tokens").saturating_sub(cached.unwrap_or(0) as usize), output_tokens: n("completion_tokens"), cache_read_input_tokens: cached.unwrap_or(0) as usize, reasoning_tokens: reasoning.min(n("completion_tokens")) };
+        }
+        // llama.cpp's `timings` (last chunk): `prompt_n` tokens read now, `cache_n` reused from the slot
+        if let Some(t) = v["timings"].as_object() {
+            let n = |k: &str| t.get(k).and_then(Value::as_u64).map(|x| x as usize);
+            if let (Some(p), Some(c)) = (n("prompt_n"), n("cache_n")) {
+                self.timings = Some((p, c));
+            }
         }
         let c = &v["choices"][0];
         if let Some(f) = c["finish_reason"].as_str() { self.finish = f.to_string(); }
@@ -113,7 +154,15 @@ impl Stream {
         }
         for tc in d["tool_calls"].as_array().map_or(&[][..], Vec::as_slice) {
             self.started = true;
-            let i = tc["index"].as_u64().unwrap_or(self.calls.len().saturating_sub(1) as u64) as usize;
+            let i = match tc["index"].as_u64() {
+                Some(i) => i as usize,
+                None => {
+                    // no index: a fragment continues the last call unless it starts a new one (an id or a name of its
+                    // own, while the last call already has its name)
+                    let starts = tc["id"].as_str().is_some_and(|s| !s.is_empty()) || tc["function"]["name"].as_str().is_some_and(|s| !s.is_empty());
+                    match self.calls.last() { Some(c) if !(starts && !c.name.is_empty()) => self.calls.len() - 1, _ => self.calls.len() }
+                }
+            };
             if self.calls.len() <= i { self.calls.resize_with(i + 1, Call::default); }
             let call = &mut self.calls[i];
             if let Some(s) = tc["id"].as_str().filter(|s| !s.is_empty()) { call.id = s.to_string(); }
@@ -126,7 +175,16 @@ impl Stream {
     }
 
     /// (content, stop_reason, usage, the server reported a cached count)
-    pub fn finish(self, cancelled: bool) -> (Vec<Block>, String, Usage, bool) {
+    pub fn finish(mut self, cancelled: bool) -> (Vec<Block>, String, Usage, bool) {
+        // llama.cpp: its timings say what was reused; they win over a usage without `cached_tokens`
+        if let Some((p, c)) = self.timings {
+            if !self.cache_seen {
+                let total = (self.usage.input_tokens + self.usage.cache_read_input_tokens).max(p + c);
+                self.usage.cache_read_input_tokens = c;
+                self.usage.input_tokens = total.saturating_sub(c);
+                self.cache_seen = true;
+            }
+        }
         let mut content = Vec::new();
         if !self.text.is_empty() { content.push(Block::Text { text: self.text }); }
         if cancelled { return (content, "cancelled".into(), self.usage, self.cache_seen); }
@@ -149,6 +207,12 @@ impl Stream {
 /// One streamed call; the bool is `cache_seen` for the metrics.
 #[allow(clippy::too_many_arguments)]
 pub fn send(agent: &ureq::Agent, base: &str, key: &str, model: &str, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<(Reply, bool), String> {
+    send_with(agent, base, key, model, req, &Dialect::default(), cancel, on_text)
+}
+
+/// `send` with a backend's extras (`Dialect`).
+#[allow(clippy::too_many_arguments)]
+pub fn send_with(agent: &ureq::Agent, base: &str, key: &str, model: &str, req: &Request, d: &Dialect, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<(Reply, bool), String> {
     let t0 = Instant::now();
     publish(Phase::Sent);
     let _idle = PhaseGuard;
@@ -156,7 +220,7 @@ pub fn send(agent: &ureq::Agent, base: &str, key: &str, model: &str, req: &Reque
         .header("content-type", "application/json").header("accept", "text/event-stream");
     if !key.is_empty() { rq = rq.header("authorization", format!("Bearer {key}")); }
     // the network reads run on their own thread: Esc stops at once, also before the first byte (`api::post_lines`)
-    let mut lines = crate::api::post_lines(rq, body(base, model, req).to_string(), cancel)?;
+    let mut lines = crate::api::post_lines(rq, body_with(base, model, req, d).to_string(), cancel)?;
     if lines.is_some() { publish(Phase::Started); }
     let mut s = Stream::default();
     let mut ttft = None;

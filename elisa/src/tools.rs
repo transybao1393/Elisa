@@ -35,6 +35,10 @@ const READ_LIMIT: usize = 400;
 /// this many padding lines in a row collapse to one marker line in `read` (a blank line or two is ordinary code)
 const PADDING_RUN_MIN: usize = 3;
 const GLOB_MAX: usize = 200;
+/// a glob walk stops after this long, this many files looked at, or this many matches
+const GLOB_SECS: u64 = 5;
+const GLOB_SCAN_MAX: usize = 100_000;
+const GLOB_HITS_MAX: usize = 10_000;
 const GREP_MAX: usize = 100;
 const BASH_BUF_MAX: usize = 16 << 20;
 /// code files in a directory outline
@@ -661,17 +665,23 @@ fn rel_slash(root: &Path, p: &Path) -> String {
 /// leading part becomes the directory (`/etc/ssh/*.conf` → `/etc/ssh`, `*.conf`; a literal path with no wildcard
 /// lists that directory, or matches that one file), so the outside-the-project rules see it (`outside::check`) and an
 /// absolute pattern inside the project works. Otherwise `path` (default ".") and the pattern as given.
+/// A leading `/` that names no real directory (`/`, `/*`, `/**/*.py`, `/src/*.py` with no `/src`) is the project
+/// root as a small model writes it ("list the files in this folder" → `/*` searched the whole disk, BUGS #25): it is
+/// relative to `path`, so only an explicit outside path reaches the outside-the-project rules.
 pub fn glob_args(input: &Value) -> (String, String) {
     let pat = sv(input, "pattern").trim();
     let home = || std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let relative = |p: &str| (opt_str(input, "path").unwrap_or(".").to_string(), if p.is_empty() { "*".to_string() } else { p.to_string() });
     let abs = if let Some(r) = pat.strip_prefix("~/") { format!("{}/{r}", home().trim_end_matches('/')) }
         else if pat == "~" { home() } else if pat.starts_with('/') { pat.to_string() } else {
-            return (opt_str(input, "path").unwrap_or(".").to_string(), pat.to_string());
+            return relative(pat);
         };
     let parts: Vec<&str> = abs.split('/').collect();
     let wild = parts.iter().position(|c| c.contains(['*', '?', '{', '['])).unwrap_or(parts.len());
     let base = parts[..wild].join("/");
-    let base = if base.is_empty() { "/".to_string() } else { base };
+    if pat.starts_with('/') && (base.trim_matches('/').is_empty() || !Path::new(&base).exists()) {
+        return relative(pat.trim_start_matches('/'));
+    }
     if wild < parts.len() { return (base, parts[wild..].join("/")); }
     let bp = Path::new(&base);
     match (bp.is_dir(), bp.parent(), bp.file_name()) {
@@ -686,16 +696,22 @@ fn glob(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
     let re = glob_re(&pat)?;
     let root = resolve(ctx, &dir);
     if !root.is_dir() { return Err(format!("not a directory: {}", root.display())); }
-    let mut hits: Vec<String> = walk(&root)
-        .filter(|e| re.is_match(&rel_slash(&root, e.path())))
-        .map(|e| rel(ctx, e.path()))
-        .collect();
-    if hits.is_empty() { return Ok("no files found".into()); }
+    // a huge tree (a whole disk, a home folder) stops at a time / file cap instead of running for minutes
+    let deadline = Instant::now() + Duration::from_secs(GLOB_SECS);
+    let (mut hits, mut seen, mut cut) = (Vec::new(), 0usize, false);
+    for e in walk(&root) {
+        seen += 1;
+        if seen > GLOB_SCAN_MAX || hits.len() >= GLOB_HITS_MAX || (seen % 256 == 0 && Instant::now() >= deadline) { cut = true; break; }
+        if re.is_match(&rel_slash(&root, e.path())) { hits.push(rel(ctx, e.path())); }
+    }
+    let stop = format!("[search stopped early (over {GLOB_SECS} s or too many files under {}): narrow the pattern or the path]", root.display());
+    if hits.is_empty() { return Ok(if cut { format!("no files found\n{stop}") } else { "no files found".into() }); }
     hits.sort();
     let n = hits.len();
     hits.truncate(GLOB_MAX);
     let mut out = hits.join("\n");
-    if n > GLOB_MAX { out.push_str(&format!("\n[{GLOB_MAX} of {n} files shown]")); }
+    if n > GLOB_MAX { out.push_str(&format!("\n[{GLOB_MAX} of {}{n} files shown]", if cut { "at least " } else { "" })); }
+    if cut { out.push('\n'); out.push_str(&stop); }
     Ok(out)
 }
 

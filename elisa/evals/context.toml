@@ -4,10 +4,13 @@ kind = "fake"
 
 [[case]]
 id = "context.clear_merges_notes"
-description = "/clear merges into the earlier notes, lists the files really changed, drops an invented claim (QA longrun H2)"
+description = "/clear in a continued session merges into that session's notes, lists the files really changed, drops an invented claim (QA longrun H2); the continued session's own notes file is untouched"
 config = "memory = false\n"
 [[case.files]]
-path = ".elisa/notes.md"
+path = ".elisa/sessions/100.json"
+content = '[{"role":"user","content":[{"type":"text","text":"remember the codename BLUE HERON, the owner is Mira Tanaka"}]},{"role":"assistant","content":[{"type":"text","text":"Noted."}]}]'
+[[case.files]]
+path = ".elisa/notes/100.md"
 content = "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n"
 [[case.script]]
 tool = { name = "write", input = { path = "hello.txt", content = "hi there\n" } }
@@ -16,33 +19,42 @@ text = "Wrote it."
 [[case.script]]
 text = "## Done\n- Wrote hello.txt with a greeting. REAL-DONE\n- Added restock_cost(items) to core.py.\n- Wrote hello.txt with a greeting. REAL-DONE\n\n## Files touched\nNo files were touched in this session.\n\n## Current state / next step\nnothing open"
 [[case.turns]]
+restart = true
+continue = true
 send = "create hello.txt saying hi there"
 approvals = ["yes"]
 [[case.turns]]
 send = "/clear"
 [[case.checks]]
 type = "file_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/100.md"
+text = "Codename BLUE HERON, owner Mira Tanaka."
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes/*.md"
 text = "BLUE HERON"
 [[case.checks]]
 type = "file_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
 text = "## Files changed (Elisa's own edit records)\n- hello.txt: written (new file)"
 [[case.checks]]
 type = "file_not_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
 text = "No files were touched"
 [[case.checks]]
 type = "file_not_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
 text = "restock_cost"
 
 [[case]]
 id = "context.clear_keeps_facts_memory_on"
-description = "/clear with memory on (the default) after a tiny session keeps the earlier notes' facts, not only the file records; the next request carries the fact once (notes, not repeated as a pinned fact)"
+description = "/clear with memory on (the default) in a continued tiny session keeps its notes' facts, not only the file records; the next request carries the fact once (notes, not repeated as a pinned fact)"
 config = "memory = true\n"
 [[case.files]]
-path = ".elisa/notes.md"
+path = ".elisa/sessions/100.json"
+content = '[{"role":"user","content":[{"type":"text","text":"remember the codename BLUE HERON, the owner is Mira Tanaka"}]},{"role":"assistant","content":[{"type":"text","text":"Noted."}]}]'
+[[case.files]]
+path = ".elisa/notes/100.md"
 content = "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n"
 [[case.script]]
 tool = { name = "write", input = { path = "hello.txt", content = "hi there\n" } }
@@ -53,6 +65,8 @@ text = "## Done\n- Wrote hello.txt with a greeting. REAL-DONE\n- Added restock_c
 [[case.script]]
 text = "BLUE HERON."
 [[case.turns]]
+restart = true
+continue = true
 send = "create hello.txt saying hi there"
 approvals = ["yes"]
 [[case.turns]]
@@ -61,19 +75,23 @@ send = "/clear"
 send = "what is the codename?"
 [[case.checks]]
 type = "file_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/100.md"
 text = "Codename BLUE HERON, owner Mira Tanaka."
 [[case.checks]]
 type = "file_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
+text = "Codename BLUE HERON, owner Mira Tanaka."
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes/*.md"
 text = "## Files changed (Elisa's own edit records)\n- hello.txt: written (new file)"
 [[case.checks]]
 type = "file_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
 text = "REAL-DONE"
 [[case.checks]]
 type = "file_not_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
 text = "restock_cost"
 [[case.checks]]
 type = "request_contains"
@@ -111,19 +129,19 @@ event = "compacted"
 turn = 2
 [[case.checks]]
 type = "file_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
 text = "REAL-NOTE-1"
 [[case.checks]]
 type = "file_not_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
 text = "will be erased"
 [[case.checks]]
 type = "file_not_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
 text = "Also known as"
 [[case.checks]]
 type = "file_not_contains"
-path = ".elisa/notes.md"
+path = ".elisa/notes/*.md"
 text = "<state>"
 [[case.checks]]
 type = "request_contains"
@@ -132,7 +150,9 @@ turn = 3
 
 [[case]]
 id = "context.new_session_no_old_card"
-description = "a new session does not inherit the last session's state card; --continue does (QA runtime B1, longrun H1)"
+description = "a new session does not inherit the last session's state card; --continue of that new session has none either: cards belong to their session (QA runtime B1, longrun H1); the card comes from a tool turn (plain chat carries none, BUGS #22)"
+[[case.script]]
+tool = { name = "glob", input = { pattern = "*.md" } }
 [[case.script]]
 text = "ok\n<state>\ngoal: OLD-GOAL-X\ndone: …\nkeep: must-not-lose facts\nnext: OLD-NEXT-X\n</state>"
 [[case.script]]
@@ -154,7 +174,7 @@ text = "OLD-GOAL-X"
 turn = 2
 [[case.checks]]
 type = "info_not_contains"
-text = "continuing from state card"
+text = "continuing your last conversation"
 turn = 2
 [[case.checks]]
 type = "info_contains"
@@ -162,11 +182,11 @@ text = "no state card yet"
 turn = 3
 [[case.checks]]
 type = "info_contains"
-text = "continuing from state card #"
+text = "continuing your last conversation"
 turn = 4
 [[case.checks]]
 type = "info_contains"
-text = "goal: OLD-GOAL-X"
+text = "no state card yet"
 turn = 4
 [[case.checks]]
 type = "info_not_contains"
@@ -198,3 +218,306 @@ turn = 1
 [[case.checks]]
 type = "reply_contains"
 text = "after"
+
+[[case]]
+id = "context.new_session_ignores_old_notes"
+description = "a new session in a folder with an earlier session's notes (legacy notes.md and a per-session file) answers \"hey\" with none of the old task in the request; the old notes stay as they were (2026-11-09: a 2B model answered \"hey\" with an old Python-async task)"
+config = "memory = false\n"
+[[case.files]]
+path = ".elisa/notes.md"
+content = "## Goal\nFix a Python async example that raises RuntimeError. OLD-TASK-GOAL\n\n## Current state / next step\nCheck the folder for the file. OLD-TASK-NEXT\n"
+[[case.files]]
+path = ".elisa/sessions/100.json"
+content = '[{"role":"user","content":[{"type":"text","text":"fix my async example"}]},{"role":"assistant","content":[{"type":"text","text":"No file found."}]}]'
+[[case.files]]
+path = ".elisa/notes/100.md"
+content = "## Goal\nFix a Python async example that raises RuntimeError. OLD-TASK-GOAL\n"
+[[case.script]]
+text = "Hi! How can I help?"
+[[case.script]]
+text = "I can chat, answer questions, look things up and help with files or code."
+[[case.turns]]
+send = "hey"
+[[case.turns]]
+send = "what can you do for me?"
+[[case.checks]]
+type = "request_not_contains"
+text = "OLD-TASK"
+turn = 1
+[[case.checks]]
+type = "request_not_contains"
+text = "## Notes from"
+turn = 1
+[[case.checks]]
+type = "request_not_contains"
+text = "OLD-TASK"
+turn = 2
+[[case.checks]]
+type = "request_not_contains"
+text = "asyncio"
+turn = 2
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes.md"
+text = "OLD-TASK-NEXT"
+[[case.checks]]
+type = "file_contains"
+path = ".elisa/notes/100.md"
+text = "OLD-TASK-GOAL"
+
+[[case]]
+id = "context.greet_first_ever"
+description = "\"hey\" with no context at all (no earlier session, no history) is sent as the user's words alone: no situation line (`situation.rs`), the cheapest request"
+config = "memory = false\n"
+[[case.script]]
+text = "Hi! How can I help?"
+[[case.turns]]
+send = "hey"
+[[case.checks]]
+type = "request_not_contains"
+text = "(Situation:"
+[[case.checks]]
+type = "no_tools_offered"
+
+[[case]]
+id = "context.greet_returning_offers_title"
+description = "a new session's \"hey\" after a recent earlier session gets one situation line offering that session's title (never its notes); the line stays out of the new session's title"
+config = "memory = false\n"
+[[case.files]]
+path = ".elisa/sessions/100.json"
+content = '[{"role":"user","content":[{"type":"text","text":"plan a 3-day trip to Tokyo"}]},{"role":"assistant","content":[{"type":"text","text":"Day 1: Asakusa. Day 2: Shibuya. Day 3: Ginza."}]}]'
+[[case.files]]
+path = ".elisa/session-meta/100.meta"
+content = "2\tplan a 3-day trip to Tokyo"
+[[case.files]]
+path = ".elisa/notes/100.md"
+content = "## Facts to remember\n- The user hates sushi. ZEBRA-NOTES\n"
+[[case.script]]
+text = "Hey! Want to pick up the Tokyo trip, or something new?"
+[[case.turns]]
+send = "hey"
+[[case.checks]]
+type = "request_contains"
+text = "(Situation: returning user"
+[[case.checks]]
+type = "request_contains"
+text = "plan a 3-day trip to Tokyo"
+[[case.checks]]
+type = "request_not_contains"
+text = "ZEBRA-NOTES"
+[[case.checks]]
+type = "request_not_contains"
+text = "sushi"
+[[case.checks]]
+type = "file_not_contains"
+path = ".elisa/session-meta/*.meta"
+text = "Situation"
+
+[[case]]
+id = "context.greet_mid_conversation"
+description = "\"hey\" a moment after a real request in the same conversation gets a short situation line with the topic that asks for a brief greeting back (BUGS #45); the first turn got none"
+config = "memory = false\n"
+[[case.script]]
+text = "Day 1: Asakusa. Day 2: Shibuya. Day 3: Ginza."
+[[case.script]]
+text = "Yes? More on the Tokyo trip?"
+[[case.turns]]
+send = "plan a 3-day trip to Tokyo"
+[[case.turns]]
+send = "hey"
+[[case.checks]]
+type = "request_not_contains"
+text = "(Situation:"
+turn = 1
+[[case.checks]]
+type = "request_contains"
+text = "(Situation: same chat"
+turn = 2
+[[case.checks]]
+type = "request_contains"
+text = "topic: \"plan a 3-day trip to Tokyo\""
+turn = 2
+
+[[case]]
+id = "context.greet_after_answered_question"
+description = "\"hey\" after a question that was already answered gets no topic to go on with (BUGS #8: \"Hi! More on what's your favourite colour?\")"
+config = "memory = false\n"
+[[case.script]]
+text = "I like teal."
+[[case.script]]
+text = "Hi again!"
+[[case.turns]]
+send = "what's your favourite colour?"
+[[case.turns]]
+send = "hey"
+[[case.checks]]
+type = "request_contains"
+text = "(Situation: same chat"
+turn = 2
+[[case.checks]]
+type = "request_not_contains"
+text = "topic:"
+turn = 2
+[[case.checks]]
+type = "request_not_contains"
+text = "More on"
+turn = 2
+
+[[case]]
+id = "context.greet_thanks_no_line"
+description = "\"thanks!\" mid-conversation is answered from the history alone: no situation line, no tools"
+config = "memory = false\n"
+[[case.script]]
+text = "Day 1: Asakusa. Day 2: Shibuya. Day 3: Ginza."
+[[case.script]]
+text = "You're welcome, enjoy Tokyo!"
+[[case.turns]]
+send = "plan a 3-day trip to Tokyo"
+[[case.turns]]
+send = "thanks!"
+[[case.checks]]
+type = "request_not_contains"
+text = "(Situation:"
+turn = 2
+[[case.checks]]
+type = "no_tools_offered"
+turn = 2
+
+[[case]]
+id = "context.topic_cards_follow_the_talk"
+description = "two papers, a card each: every turn sends only the card and the pages of the topic it is about, back and forth; a resume sends none until a message picks one (2026-11-09 card #647)"
+[[case.files]]
+path = "ta.txt"
+content = "TradingAgents: Multi-Agents LLM Financial Trading Framework\n\nTA-DOC-MARK. Bull researchers and bear researchers debate each stock. The trader agent decides. The risk management team reviews every trade. Researchers debate; the trader agent acts; the risk team vetoes.\n"
+[[case.files]]
+path = "kr.txt"
+content = "Kronos: A Foundation Model for the Language of Financial Markets\n\nKR-DOC-MARK. Kronos tokenizes candlestick K-line sequences with a hierarchical tokenizer and pretrains an autoregressive transformer. The tokenizer quantizes candlestick data; Kronos forecasts volatility.\n"
+[[case.script]]
+text = "It is about trading agents.\n<state>\ngoal: summarize the TradingAgents framework TA-CARD\nnext: explain the researcher debate\n</state>"
+[[case.script]]
+text = "It is about Kronos.\n<state>\ngoal: summarize the Kronos tokenizer KR-CARD\nnext: explain the candlestick tokenizer\n</state>"
+[[case.script]]
+text = "kronos answer"
+[[case.script]]
+text = "trading answer"
+[[case.script]]
+text = "kronos again"
+[[case.script]]
+text = "trading again"
+[[case.script]]
+text = "Monday"
+[[case.script]]
+text = "hello"
+[[case.script]]
+text = "kronos after resume"
+[[case.turns]]
+send = "summarize this paper"
+attach = ["ta.txt"]
+[[case.turns]]
+send = "summarize this one"
+attach = ["kr.txt"]
+[[case.turns]]
+send = "how does Kronos tokenize candlestick data?"
+[[case.turns]]
+send = "back to TradingAgents: what do the bull and bear researchers do?"
+[[case.turns]]
+send = "and the candlestick tokenizer, how does it quantize?"
+[[case.turns]]
+send = "what does the risk team in TradingAgents decide?"
+[[case.turns]]
+send = "what day is today?"
+[[case.turns]]
+restart = true
+continue = true
+send = "hello there"
+[[case.turns]]
+send = "tell me more about Kronos"
+[[case.checks]]
+type = "request_contains"
+text = "TA-DOC-MARK"
+turn = 1
+[[case.checks]]
+type = "request_not_contains"
+text = "TA-CARD"
+turn = 2
+[[case.checks]]
+type = "request_contains"
+text = "KR-CARD"
+turn = 3
+[[case.checks]]
+type = "request_contains"
+text = "KR-DOC-MARK"
+turn = 3
+[[case.checks]]
+type = "request_not_contains"
+text = "TA-CARD"
+turn = 3
+[[case.checks]]
+type = "request_not_contains"
+text = "TA-DOC-MARK"
+turn = 3
+[[case.checks]]
+type = "request_contains"
+text = "TA-CARD"
+turn = 4
+[[case.checks]]
+type = "request_contains"
+text = "TA-DOC-MARK"
+turn = 4
+[[case.checks]]
+type = "request_not_contains"
+text = "KR-CARD"
+turn = 4
+[[case.checks]]
+type = "request_not_contains"
+text = "KR-DOC-MARK"
+turn = 4
+[[case.checks]]
+type = "request_contains"
+text = "KR-CARD"
+turn = 5
+[[case.checks]]
+type = "request_contains"
+text = "KR-DOC-MARK"
+turn = 5
+[[case.checks]]
+type = "request_not_contains"
+text = "TA-CARD"
+turn = 5
+[[case.checks]]
+type = "request_contains"
+text = "TA-CARD"
+turn = 6
+[[case.checks]]
+type = "request_not_contains"
+text = "KR-DOC-MARK"
+turn = 6
+[[case.checks]]
+type = "request_not_contains"
+text = "-CARD"
+turn = 7
+[[case.checks]]
+type = "request_not_contains"
+text = "-DOC-MARK"
+turn = 7
+[[case.checks]]
+type = "request_not_contains"
+text = "-CARD"
+turn = 8
+[[case.checks]]
+type = "event"
+event = "history"
+text = "summarize this paper"
+turn = 8
+[[case.checks]]
+type = "request_contains"
+text = "KR-CARD"
+turn = 9
+[[case.checks]]
+type = "request_contains"
+text = "KR-DOC-MARK"
+turn = 9
+[[case.checks]]
+type = "request_not_contains"
+text = "TA-CARD"
+turn = 9

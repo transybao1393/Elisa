@@ -62,8 +62,11 @@ pub const REASONING_ROOM: usize = 3072;
 /// Elisa's prompt "hi" reasoned 3,000 tokens for 30-150 s and still answered nothing). With this prefill it answers in
 /// well under a second and still calls a tool when the request needs one. The wording was picked from six tried on
 /// Elisa's real request: without the hint about a plain first sentence the 2B model often answered with only the
-/// state card.
-pub const NO_THINK_PREFILL: &str = "<think>\nA simple message, so no long reasoning. My reply starts with a plain sentence for the user (for a greeting or thanks: a short friendly line asking what to do next); if it needs a file or command, I call the tool instead. The <state> card goes at the very end.\n</think>\n\n";
+/// state card. 2026-11-09 (BUGS #30, #50, #52): "my reply is a plain, natural sentence or two" made a request to write
+/// a plan or a story get a one-line promise ("Sure! I'll help draft… What would you like to focus on?"), and the user's
+/// facts came back as "My name is Elisa, and my meeting code is ORCHID-42". (A version "speaking to them as you" made
+/// replies open with "You're the one who…" and repeat across turns.)
+pub const NO_THINK_PREFILL: &str = "<think>\nNo long reasoning needed. My reply is plain, natural text for the user: short for chat (a greeting or thanks: one friendly line); if they asked me to write something, the full text now. If it truly needs a tool, I call it instead.\n</think>\n\n";
 
 /// Does `model` take the `<think>…</think>` prefill (the Qwen3 family: its chat format closes reasoning that way)?
 pub fn takes_prefill(model: &str) -> bool { let m = model.to_lowercase(); m.contains("qwen3") || m.contains("qwq") }

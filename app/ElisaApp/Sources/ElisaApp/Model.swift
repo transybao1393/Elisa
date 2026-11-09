@@ -83,6 +83,34 @@ struct Block: Identifiable {
     var live = false
     /// a user message's attached pictures, as sent (thumbnails in the transcript)
     var images: [NSImage] = []
+    /// a reply's finished steps in plain words (`activity` done events, Activity.swift) and its one summary line
+    var acts: [ActivityItem] = []
+    var actSummary: String?
+    /// a user message's attached documents, as sent (chips in the transcript)
+    var docs: [DocAttachment] = []
+}
+
+/// A resumed conversation's earlier turns (`history` {items: [{role: user|assistant, text}]}, sent right after the
+/// banner or a resume line, elisa/src/context.rs `earlier_turns`): normal user and reply blocks (markdown via Prose)
+/// between two divider lines, so a continued conversation never looks empty.
+enum EarlierTurns {
+    static let before = "— earlier in this conversation —"
+    static let after = "— continued —"
+
+    static func blocks(_ e: [String: Any]) -> [Block] {
+        let items = (e["items"] as? [[String: Any]]) ?? []
+        var out: [Block] = []
+        for i in items {
+            guard let t = i["text"] as? String, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            switch i["role"] as? String {
+            case "user": out.append(Block(kind: .user(t, cmd: false)))
+            case "assistant": out.append(Block(kind: .reply, parts: [Part(kind: .prose(t))]))
+            default: continue
+            }
+        }
+        if out.isEmpty { return [] }
+        return [Block(kind: .info(before, .plain))] + out + [Block(kind: .info(after, .plain))]
+    }
 }
 
 struct DiffLine: Identifiable { let id: Int; let k: String; let o: Int?; let n: Int?; let t: String }
@@ -159,7 +187,7 @@ final class AppModel: ObservableObject {
     /// the edit panel's width: dragged on its left edge (double-click resets to the max), kept while ctrl-o hides it;
     /// max = the kit's 440, min 264 (60%). Saved per user in UserDefaults ("editsWidth"), clamped into range on load
     @Published var editsWidth: CGFloat = AppModel.loadEditsWidth() {
-        didSet { if persistPrefs && editsWidth != oldValue { UserDefaults.standard.set(Double(editsWidth), forKey: "editsWidth") } }
+        didSet { if editsWidth != oldValue { UserDefaults.standard.set(Double(editsWidth), forKey: "editsWidth") } }
     }
     static let editsWidthRange: ClosedRange<CGFloat> = 264...440
     func setEditsWidth(_ v: CGFloat) { editsWidth = min(max(v.rounded(), Self.editsWidthRange.lowerBound), Self.editsWidthRange.upperBound) }
@@ -171,14 +199,12 @@ final class AppModel: ObservableObject {
     /// ctrl-s; range = the kit's dock sizes Medium..Large (128..168). Saved per user as a number in UserDefaults
     /// ("shadeSize"); the old S/M/L strings migrate: Small or Medium -> Medium, Large -> Large
     @Published var shadeSize: CGFloat = AppModel.loadShadeSize() {
-        didSet { if persistPrefs && shadeSize != oldValue { UserDefaults.standard.set(Double(shadeSize), forKey: "shadeSize") } }
+        didSet { if shadeSize != oldValue { UserDefaults.standard.set(Double(shadeSize), forKey: "shadeSize") } }
     }
     /// Shade hidden (the tray's hide button; the status-bar face brings it back); remembered like "shadeSize"
     @Published var shadeHidden = UserDefaults.standard.bool(forKey: "shadeHidden") {
-        didSet { if persistPrefs { UserDefaults.standard.set(shadeHidden, forKey: "shadeHidden") } }
+        didSet { UserDefaults.standard.set(shadeHidden, forKey: "shadeHidden") }
     }
-    /// --shots sets this false so its size changes never overwrite the user's choice
-    var persistPrefs = true
     @Published var queued = 0
     /// --script playback running: its status-bar line ("playback · turn 7/21"); nil = off. playbackStop ends it
     @Published var playbackLine: String?
@@ -197,6 +223,17 @@ final class AppModel: ObservableObject {
     @Published var attachments: [Attachment] = []
     /// the pictures of the message just sent, shown on its `user` line when Elisa echoes it
     var sentImages: [NSImage] = []
+    /// pictures refused at attach time since the last message (the model has no vision): the next `send` says so in
+    /// `images_refused`, so Elisa answers a question about them honestly instead of the model making one up (BUGS #61)
+    var refusedImages = 0
+    /// documents waiting to go with the next message (any model: Elisa reads them, src/attach.rs)
+    @Published var documents: [DocAttachment] = []
+    /// the documents of the message just sent, shown on its `user` line
+    var sentDocs: [DocAttachment] = []
+    /// each attached file's intake result (`doc_info`, by the path sent): the chip's one-line result and its panel
+    @Published var docInfo: [String: DocInfo] = [:]
+    /// the JSONL protocol the running Elisa speaks (`hello.protocol`); documents need 2
+    var protocolVersion = 1
     @Published var cwd = ""
     @Published var maxCtx = 0
     @Published var yolo = false
@@ -217,15 +254,17 @@ final class AppModel: ObservableObject {
     @Published var heldLines = 0
     @Published var heldNew = false
     @Published var scrollTick = 0
-    var demo = false
+    /// the live line (Activity.swift): Elisa's current step, a step waiting out its first 300 ms, app-side work
+    @Published var liveAct: LiveActivity?
+    var nextAct: LiveActivity?
+    @Published var localAct: LiveActivity?
+    /// this Elisa reports its steps in words: tool rows move into each reply's step list
+    @Published var activitySeen = false
     var folder: String?
     var extraArgs: [String] = []
     private var turn = 0
     private var cur: Int?
     private var typingSent = false
-    /// --shots: events are held while a picture is taken
-    var hold = false
-    private var held: [[String: Any]] = []
     var onEventHook: ([String: Any]) -> Void = { _ in }
 
     init(kit: Kit?) {
@@ -233,6 +272,7 @@ final class AppModel: ObservableObject {
         layout = Layout.load(kit)
         elisa.onEvent = { [weak self] e in self?.event(e) }
         elisa.onExit = { [weak self] c in self?.exited(c) }
+        DispatchQueue.main.async { [weak self] in if let self { DevReload.shared.watch(self) } }
     }
 
     private lazy var palDark = Palette.load(kit, dark: true)
@@ -254,31 +294,37 @@ final class AppModel: ObservableObject {
 
     func start() {
         welcome = false
-        attachments = []; sentImages = []; vision = false
+        attachments = []; sentImages = []; vision = false; documents = []; sentDocs = []
         blocks = []; edits = []; editIdx = 0; stat = nil; sumIn = 0; sumOut = 0; turn = 0; cur = nil; queued = 0
-        approval = nil; picker = nil; watchLine = nil; auditLine = nil; job = nil; compactLine = nil; cardNo = nil; expanded = []
+        approval = nil; picker = nil; liveAct = nil; nextAct = nil; watchLine = nil; auditLine = nil; job = nil; compactLine = nil; cardNo = nil; expanded = []
         scrollHeld = false; heldLines = 0; heldNew = false
         PluginStore.shared.sessionEnded()
         setPhase(.starting)
-        do { try elisa.start(cwd: folder, demo: demo, extra: extraArgs + ["--theme", dark ? "dark" : "light"]) }
+        do { try elisa.start(cwd: folder, extra: extraArgs + ["--theme", dark ? "dark" : "light"]) }
         catch { blocks.append(Block(kind: .info(error.localizedDescription, .err))); setPhase(.exited) }
+        // a launch's --continue is for the first session only: a later new session (another folder, a restart after
+        // exit) starts clean, as the person expects; reconnect() adds it back for its own restart
+        extraArgs.removeAll { $0 == "--continue" || $0 == "--continue-open" }
     }
 
     func stop() { elisa.stopNow() }
+    /// the core process is alive (CloseTest)
+    var elisaRunning: Bool { elisa.running }
 
     /// a saved Model Connections change: Elisa reads its connection at start, so restart it on this project's session
     func reconnect() {
         // on the welcome screen there is no session yet: the next folder opened uses the new connection
         guard !welcome else { return }
         let extra = extraArgs
-        if !extraArgs.contains("--continue") { extraArgs.append("--continue") }
+        // the conversation open now, whatever was said in it (BUGS #63: a short chat was skipped as not worth continuing)
+        extraArgs.removeAll { $0 == "--continue" }
+        extraArgs.append("--continue-open")
         start()
         extraArgs = extra
     }
 
     func open(folder f: String) {
         folder = f
-        demo = false
         UserDefaults.standard.set(f, forKey: "lastFolder")
         UserDefaults.standard.set(Array(([f] + recentFolders.filter { $0 != f }).prefix(5)), forKey: "recentFolders")
         start()
@@ -309,7 +355,8 @@ final class AppModel: ObservableObject {
             pasted = nil
         }
         let imgs = attachments
-        guard !t.isEmpty || !imgs.isEmpty, phase != .exited else { return }
+        let docs = documents
+        guard !t.isEmpty || !imgs.isEmpty || !docs.isEmpty || refusedImages > 0, phase != .exited else { return }
         if t == "/exit" || t == "/quit" { NSApp.terminate(nil); return }
         if t == "/model" { ConnectionsWindow.shared.show(self); return }
         var f: [String: Any] = [:]
@@ -320,12 +367,30 @@ final class AppModel: ObservableObject {
             sentImages = imgs.map(\.thumb)
             attachments = []
         }
+        if !docs.isEmpty && !t.hasPrefix("/") {
+            // the path only: Elisa copies the file into the project's upload area and reads it there
+            if t.isEmpty { t = docs.count == 1 ? "Summarise this document." : "Summarise these documents." }
+            f["documents"] = docs.map { ["path": $0.url.path] }
+            sentDocs = docs
+            documents = []
+        }
+        if refusedImages > 0 && !t.hasPrefix("/") {
+            // the refused picture with no words: the question it would have carried
+            if t.isEmpty { t = refusedImages == 1 ? "What is in this image?" : "What is in these images?" }
+            f["images_refused"] = refusedImages
+            refusedImages = 0
+        }
         f["text"] = t
+        Speak.shared.stop()
         elisa.send("send", f)
         typingSent = false
     }
 
+    /// an attached document: let the core read it into its cache now, before ⏎
+    func prefetchDoc(_ path: String) { elisa.send("prefetch", ["documents": [["path": path]]]) }
+
     func typing(_ nonempty: Bool) {
+        if nonempty { Speak.shared.stop() }
         guard phase == .idle, nonempty != typingSent else { return }
         typingSent = nonempty
         elisa.send("typing", ["nonempty": nonempty])
@@ -369,6 +434,7 @@ final class AppModel: ObservableObject {
 
     /// Esc: deny a pending permission (the kit: esc = no), else interrupt the turn
     func interrupt() {
+        Speak.shared.interrupted()
         if approval != nil { answer(word: "no"); return }
         if picker != nil { pick(nil); return }
         elisa.send("interrupt")
@@ -429,7 +495,7 @@ final class AppModel: ObservableObject {
         if n != heldLines { heldLines = n }
     }
 
-    /// --shots: feed a synthetic event line through the same path as Elisa's
+    /// --inject: feed a synthetic event line through the same path as Elisa's
     func inject(_ e: [String: Any]) { apply(e) }
 
     func editPrev() { editIdx = max(0, editIdx - 1) }
@@ -437,15 +503,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - events
 
-    func release() {
-        hold = false
-        let h = held
-        held = []
-        for e in h { event(e) }
-    }
-
     private func event(_ e: [String: Any]) {
-        if hold { held.append(e); return }
         apply(e)
         onEventHook(e)
     }
@@ -463,6 +521,9 @@ final class AppModel: ObservableObject {
     }
 
     private func add(_ k: Part.Kind) { let r = reply(); blocks[r].parts.append(Part(kind: k)) }
+    /// the current turn's reply block (created on first use) / nil outside a turn (Activity.swift)
+    func currentReply() -> Int { reply() }
+    var currentBlock: Int? { cur.flatMap { $0 < blocks.count ? $0 : nil } }
 
     /// the transcript line of a fold in progress ("compacting the conversation…"), by its block / part id, so it can
     /// be updated in place and become the result line when the fold ends
@@ -542,12 +603,17 @@ final class AppModel: ObservableObject {
         switch s(e, "type") {
         case "hello":
             commands = (e["commands"] as? [[String]] ?? []).compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
+            protocolVersion = max(1, n(e, "protocol"))
         case "banner":
             model = s(e, "model"); baseURL = s(e, "base_url"); vision = (e["vision"] as? Bool) ?? false; cwd = s(e, "cwd"); maxCtx = n(e, "max_ctx")
-            var t = "[\(demo ? "demo · scripted gateway, no model" : model) · \(title) · ctx \(k(maxCtx))"
+            var t = "[\(model) · \(title) · ctx \(k(maxCtx))"
             if let r = e["resumed"] as? NSNumber { t += " · resumed \(r.intValue) messages" }
             if let notes = e["notes"] as? String, !notes.isEmpty { t += " · notes loaded (/notes)" }
             blocks.append(Block(kind: .info(t + "]", .plain)))
+        case "history":
+            if let c = cur, c < blocks.count { blocks[c].live = false }
+            cur = nil
+            blocks.append(contentsOf: EarlierTurns.blocks(e))
         case "ready":
             setPhase(.idle)
         case "queued":
@@ -558,8 +624,10 @@ final class AppModel: ObservableObject {
             cur = nil
             scrollHeld = false; heldNew = false
             let cmd = t.hasPrefix("/")
+            Speak.shared.newTurn()
             var ub = Block(kind: .user(t, cmd: cmd))
             if !sentImages.isEmpty { ub.images = sentImages; sentImages = [] }
+            if !sentDocs.isEmpty { ub.docs = sentDocs; sentDocs = [] }
             blocks.append(ub)
             if !cmd { turn += 1 }
             setPhase(.thinking)
@@ -645,7 +713,12 @@ final class AppModel: ObservableObject {
                 t.output = e["output"] as? String ?? ""
                 editIndex = t.editIndex
             }
-            if let i = editIndex, i < edits.count, err { edits[i].failed = note }
+            // a denied or failed edit never reached the file: marked so (Edits pane), and the pane goes back to the
+            // newest edit that did land, so the real diff stays in view
+            if let i = editIndex, i < edits.count, err || note == "denied" || (e["red"] as? Bool ?? false) {
+                edits[i].failed = note.isEmpty ? "failed" : note
+                if editIdx == i, let j = edits.lastIndex(where: { $0.failed == nil }) { editIdx = j }
+            }
             approval = nil
             setPhase(.thinking)
         case "info":
@@ -713,7 +786,20 @@ final class AppModel: ObservableObject {
                                fidget: (e["fidget"] as? Bool) ?? false)
             f.since = f.state == shade.state ? shade.since : Date()
             shade = f
+        case "activity":
+            activityEvent(e)
+        case "doc_info":
+            let i = DocInfo(e)
+            if !i.path.isEmpty { docInfo[i.path] = i }
+        case "reply_retracted":
+            // the reply said it could not read the attached document; Elisa asks once more and the new reply follows
+            if let c = cur, c < blocks.count {
+                blocks[c].parts.removeAll { if case .prose = $0.kind { return true }; if case .footer = $0.kind { return true }; return false }
+            }
         case "turn_done":
+            activityTurnDone()
+            // Speak Replies (Speak.swift): the turn's final reply, now that it is complete
+            if let c = cur, c < blocks.count { Speak.shared.turnDone(blocks[c].parts) { [weak self] t in self?.blocks.append(Block(kind: .info(t, .warn))) } }
             if let c = cur, c < blocks.count { blocks[c].live = false }
             cur = nil
             approval = nil

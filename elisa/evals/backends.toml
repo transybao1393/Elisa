@@ -1,0 +1,317 @@
+# elisa eval · backends: Elisa against each backend's protocol (a scripted model speaking it, with its detection
+# endpoints: src/eval_fake.rs). Each case: detection (the /model lines), then one tool turn read -> answer. Cloud APIs are
+# told apart by host, so their dialects are covered by the protocol replicas in tests/fake_server.rs instead.
+suite = "backends"
+kind = "fake"
+
+[[case]]
+id = "backends.ollama"
+description = "Ollama: detected, and a tool turn (read, then the answer) works in its protocol"
+backend = "ollama"
+max_ctx = 8192
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "The launch code is 7341."
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "The file says the launch code is 7341."
+[[case.turns]]
+send = "/model"
+[[case.turns]]
+send = "read notes.txt and tell me the code"
+[[case.checks]]
+type = "info_contains"
+text = "backend: Ollama"
+[[case.checks]]
+type = "info_contains"
+text = "Ollama: native API, window 8192"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+tool = "read"
+text = "7341"
+[[case.checks]]
+type = "reply_contains"
+text = "7341"
+[[case.checks]]
+type = "request_contains"
+text = '"num_ctx":8192'
+
+[[case]]
+id = "backends.llamacpp"
+description = "llama.cpp llama-server: detected, and a tool turn (read, then the answer) works in its protocol"
+backend = "llamacpp"
+max_ctx = 8192
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "The launch code is 7341."
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "The file says the launch code is 7341."
+[[case.turns]]
+send = "/model"
+[[case.turns]]
+send = "read notes.txt and tell me the code"
+[[case.checks]]
+type = "info_contains"
+text = "backend: llama.cpp llama-server"
+[[case.checks]]
+type = "info_contains"
+text = "detected by GET /props"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+tool = "read"
+text = "7341"
+[[case.checks]]
+type = "reply_contains"
+text = "7341"
+[[case.checks]]
+type = "request_contains"
+text = '"cache_prompt":true'
+
+[[case]]
+id = "backends.lmstudio"
+description = "LM Studio: detected, and a tool turn (read, then the answer) works in its protocol"
+backend = "lmstudio"
+max_ctx = 8192
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "The launch code is 7341."
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "The file says the launch code is 7341."
+[[case.turns]]
+send = "/model"
+[[case.turns]]
+send = "read notes.txt and tell me the code"
+[[case.checks]]
+type = "info_contains"
+text = "backend: LM Studio"
+[[case.checks]]
+type = "info_contains"
+text = "detected by GET /api/v0/models"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+tool = "read"
+text = "7341"
+[[case.checks]]
+type = "reply_contains"
+text = "7341"
+
+[[case]]
+id = "backends.vllm"
+description = "vLLM: detected, and a tool turn (read, then the answer) works in its protocol"
+backend = "vllm"
+max_ctx = 8192
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "The launch code is 7341."
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "The file says the launch code is 7341."
+[[case.turns]]
+send = "/model"
+[[case.turns]]
+send = "read notes.txt and tell me the code"
+[[case.checks]]
+type = "info_contains"
+text = "backend: vLLM"
+[[case.checks]]
+type = "info_contains"
+text = "detected by GET /v1/models (owned_by vllm)"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+tool = "read"
+text = "7341"
+[[case.checks]]
+type = "reply_contains"
+text = "7341"
+
+[[case]]
+id = "backends.mlx"
+description = "MLX mlx_lm.server: detected, and a tool turn (read, then the answer) works in its protocol"
+backend = "mlx"
+max_ctx = 8192
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "The launch code is 7341."
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "The file says the launch code is 7341."
+[[case.turns]]
+send = "/model"
+[[case.turns]]
+send = "read notes.txt and tell me the code"
+[[case.checks]]
+type = "info_contains"
+text = "backend: MLX mlx_lm.server"
+[[case.checks]]
+type = "info_contains"
+text = "Python BaseHTTP server"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+tool = "read"
+text = "7341"
+[[case.checks]]
+type = "reply_contains"
+text = "7341"
+
+[[case]]
+id = "backends.localai"
+description = "LocalAI: detected, and a tool turn (read, then the answer) works in its protocol"
+backend = "localai"
+max_ctx = 8192
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "The launch code is 7341."
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "The file says the launch code is 7341."
+[[case.turns]]
+send = "/model"
+[[case.turns]]
+send = "read notes.txt and tell me the code"
+[[case.checks]]
+type = "info_contains"
+text = "backend: LocalAI"
+[[case.checks]]
+type = "info_contains"
+text = "detected by GET /version"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+tool = "read"
+text = "7341"
+[[case.checks]]
+type = "reply_contains"
+text = "7341"
+
+[[case]]
+id = "backends.gpt4all"
+description = "GPT4All: detected, and a tool turn (read, then the answer) works in its protocol"
+backend = "gpt4all"
+max_ctx = 8192
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "The launch code is 7341."
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "The file says the launch code is 7341."
+[[case.turns]]
+send = "/model"
+[[case.turns]]
+send = "read notes.txt and tell me the code"
+[[case.checks]]
+type = "info_contains"
+text = "backend: GPT4All"
+[[case.checks]]
+type = "info_contains"
+text = "owned_by humanity"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+tool = "read"
+text = "7341"
+[[case.checks]]
+type = "reply_contains"
+text = "7341"
+
+[[case]]
+id = "backends.openai"
+description = "OpenAI-compatible server: detected, and a tool turn (read, then the answer) works in its protocol"
+backend = "openai"
+max_ctx = 8192
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "The launch code is 7341."
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "The file says the launch code is 7341."
+[[case.turns]]
+send = "/model"
+[[case.turns]]
+send = "read notes.txt and tell me the code"
+[[case.checks]]
+type = "info_contains"
+text = "backend: OpenAI-compatible server"
+[[case.checks]]
+type = "info_contains"
+text = "usage may be missing"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+tool = "read"
+text = "7341"
+[[case.checks]]
+type = "reply_contains"
+text = "7341"
+
+[[case]]
+id = "backends.anthropic"
+description = "Anthropic-compatible server: detected, and a tool turn (read, then the answer) works in its protocol"
+backend = "anthropic"
+max_ctx = 8192
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "The launch code is 7341."
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "The file says the launch code is 7341."
+[[case.turns]]
+send = "/model"
+[[case.turns]]
+send = "read notes.txt and tell me the code"
+[[case.checks]]
+type = "info_contains"
+text = "backend: Anthropic-compatible server"
+[[case.checks]]
+type = "info_contains"
+text = "type = anthropic"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+tool = "read"
+text = "7341"
+[[case.checks]]
+type = "reply_contains"
+text = "7341"

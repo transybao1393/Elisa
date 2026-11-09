@@ -55,12 +55,9 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
         refresh()
     }
 
-    /// the status item's button (--shots renders it offscreen)
-    var button: NSStatusBarButton? { item?.button }
-
     func menuNeedsUpdate(_ menu: NSMenu) { refresh() }
 
-    /// "ready · ~/code/ferrous" / "thinking… · demo gateway"
+    /// "ready · ~/code/ferrous" / "thinking… · ~/code/ferrous"
     static func stateLine(_ m: AppModel) -> String {
         let s: String = switch m.phase {
         case .starting: "starting"

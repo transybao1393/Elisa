@@ -68,7 +68,7 @@ path = "x.txt"
 [[case.checks]]
 type = "tool_result_contains"
 name = "bash"
-text = "denied by user: do not call this tool again"
+text = "denied by user: the user said no, so NOTHING was done"
 [[case.checks]]
 type = "audit_has"
 event = "denial"
@@ -211,3 +211,223 @@ prefix = "docs_"
 [[case.checks]]
 type = "approval_for"
 tool = "docs_sheet"
+
+[[case]]
+id = "tools.route_chat_no_tools"
+description = "intent routing (route = \"auto\"): plain chat turns carry no tool definitions at all"
+[[case.script]]
+text = "Hey! What can I do for you?"
+[[case.script]]
+text = "Why don't scientists trust atoms? They make up everything."
+[[case.script]]
+text = "Paris."
+[[case.turns]]
+send = "hey"
+[[case.turns]]
+send = "tell me a joke"
+[[case.turns]]
+send = "what's the capital of France"
+[[case.checks]]
+type = "no_tools_offered"
+prefix = ""
+[[case.checks]]
+type = "reply_contains"
+text = "Paris"
+
+[[case]]
+id = "tools.route_code_and_follow_up"
+description = "a file / code turn carries the code tools (not the web ones); a follow-up keeps them; a thanks drops them"
+approve = "yes"
+[[case.files]]
+path = "calc.py"
+content = "def average(xs):\n    return sum(xs) / (len(xs) + 1)\n"
+[[case.script]]
+tool = { name = "read", input = { path = "calc.py" } }
+[[case.script]]
+text = "average divides by len + 1."
+[[case.script]]
+text = "Divide by len(xs) instead."
+[[case.script]]
+text = "You're welcome!"
+[[case.turns]]
+send = "read calc.py and tell me what's wrong"
+[[case.turns]]
+send = "it still gives the wrong average"
+[[case.turns]]
+send = "thanks!"
+[[case.checks]]
+type = "tools_offered"
+prefix = "read"
+turn = 1
+[[case.checks]]
+type = "tools_offered"
+prefix = "edit"
+turn = 1
+[[case.checks]]
+type = "tools_offered"
+prefix = "bash"
+turn = 1
+[[case.checks]]
+type = "no_tools_offered"
+prefix = "web_"
+turn = 1
+[[case.checks]]
+type = "tools_offered"
+prefix = "edit"
+turn = 2
+[[case.checks]]
+type = "no_tools_offered"
+prefix = ""
+turn = 3
+
+[[case]]
+id = "tools.route_widen_on_unoffered_tool"
+description = "a call to a session tool the route left out widens the route and runs (after the usual approval), never a failed turn"
+approve = "yes"
+[[case.files]]
+path = "notes.txt"
+content = "buy oat milk\n"
+[[case.script]]
+tool = { name = "read", input = { path = "notes.txt" } }
+[[case.script]]
+text = "Your note says: buy oat milk."
+[[case.turns]]
+send = "what do my notes say?"
+[[case.checks]]
+type = "tool_result_contains"
+name = "read"
+text = "oat milk"
+[[case.checks]]
+type = "tools_offered"
+prefix = "read"
+[[case.checks]]
+type = "reply_contains"
+text = "oat milk"
+
+[[case]]
+id = "tools.attach_small_document_inline"
+description = "a small attached document (a CSV outside the project) is copied into .elisa/uploads and its text goes into the turn whole: one model call, no tools"
+[[case.home_files]]
+path = "Downloads/sales.csv"
+content = "region,amount\nnorth,120\nsouth,80\neast,45\n"
+[[case.script]]
+text = "The amount column adds up to 245."
+[[case.turns]]
+send = "what's the total of the amount column?"
+attach = ["../home/Downloads/sales.csv"]
+[[case.checks]]
+type = "no_tools_offered"
+prefix = ""
+[[case.checks]]
+type = "request_contains"
+text = "[Attached: sales.csv, 4 rows]"
+[[case.checks]]
+type = "request_contains"
+text = "south,80"
+[[case.checks]]
+type = "max_steps"
+n = 1
+[[case.checks]]
+type = "reply_contains"
+text = "245"
+
+[[case]]
+id = "tools.attach_large_document_overview"
+description = "a large attached document with a vague request gets an overview inline (headings, first sentences, the full file's path): one model call, no tools, and a doc_info event with its fit"
+max_ctx = 16384
+[[case.home_files]]
+path = "Downloads/guide.md"
+content = "## Office rules\nEvery team member keeps the kitchen tidy and labels food in the fridge before the weekend clean-up starts.\nThe rest of this paragraph repeats so that the guide is long enough to need an overview instead of the whole text.\n\n"
+repeat = 400
+[[case.script]]
+text = "It is an office guide about keeping the kitchen tidy."
+[[case.turns]]
+send = "read this one for me"
+attach = ["../home/Downloads/guide.md"]
+[[case.checks]]
+type = "no_tools_offered"
+prefix = ""
+[[case.checks]]
+type = "request_contains"
+text = "overview below, ask about any part for detail]"
+[[case.checks]]
+type = "request_contains"
+text = "The full file is saved at .elisa/uploads/"
+[[case.checks]]
+type = "max_steps"
+n = 1
+[[case.checks]]
+type = "event"
+event = "doc_info"
+text = "fits as overview"
+
+[[case]]
+id = "tools.attach_refusal_retried"
+description = "a reply saying it cannot read the attached document is replaced: the turn is asked once more with the text and a line saying it is right there"
+max_ctx = 16384
+[[case.home_files]]
+path = "Downloads/guide.md"
+content = "## Office rules\nEvery team member keeps the kitchen tidy and labels food in the fridge before the weekend clean-up starts.\nThe rest of this paragraph repeats so that the guide is long enough to need an overview instead of the whole text.\n\n"
+repeat = 400
+[[case.script]]
+text = "I'm sorry, but I can't process the file you've attached."
+[[case.script]]
+text = "It is an office guide about keeping the kitchen tidy."
+[[case.turns]]
+send = "summarise"
+attach = ["../home/Downloads/guide.md"]
+[[case.checks]]
+type = "request_contains"
+text = "answer from it directly"
+[[case.checks]]
+type = "reply_contains"
+text = "kitchen tidy"
+[[case.checks]]
+type = "reply_not_contains"
+text = "can't process"
+
+[[case]]
+id = "tools.attach_text_stays_out_of_history"
+description = "an attached document's text goes into the request of the turn that needs it only: the history keeps the reference line, a later question about it gets its own pages, a new topic gets none"
+max_ctx = 16384
+[[case.home_files]]
+path = "Downloads/guide.md"
+content = "## Office rules\nEvery team member keeps the kitchen tidy and labels food in the fridge before the weekend clean-up starts.\nThe rest of this paragraph repeats so that the guide is long enough to need an overview instead of the whole text.\n\n## Parking\nParking permits are issued by the facilities desk on the ground floor.\n\n"
+repeat = 300
+[[case.script]]
+text = "It is an office guide about the kitchen and parking."
+[[case.script]]
+text = "The facilities desk issues parking permits."
+[[case.script]]
+text = "Waves fold on the shore."
+[[case.turns]]
+send = "read this one for me"
+attach = ["../home/Downloads/guide.md"]
+[[case.turns]]
+send = "who issues parking permits?"
+[[case.turns]]
+send = "write me a haiku about the sea"
+[[case.checks]]
+type = "request_contains"
+text = "overview below"
+turn = 1
+[[case.checks]]
+type = "request_contains"
+text = "[Attached: guide.md,"
+turn = 2
+[[case.checks]]
+type = "request_not_contains"
+text = "overview below"
+turn = 2
+[[case.checks]]
+type = "request_contains"
+text = "picked for this question"
+turn = 2
+[[case.checks]]
+type = "request_not_contains"
+text = "picked for this question"
+turn = 3
+[[case.checks]]
+type = "request_not_contains"
+text = "labels food in the fridge"
+turn = 3

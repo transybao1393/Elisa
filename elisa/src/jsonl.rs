@@ -2,7 +2,9 @@
 //! (`app/ElisaApp`). The agent loop is the same `repl::run_session` the TUI and plain mode run (same turn loop, same
 //! speed rules: byte-stable system turn, append-only history, no side requests); only the display differs.
 //!
-//! Protocol v1: UTF-8, one JSON object per line, every object has `"v":1` and `"type"`.
+//! Protocol v2: UTF-8, one JSON object per line, every object Elisa writes has `"v":2` and `"type"` (`hello.protocol`
+//! says the same number). v2 = v1 plus `send.documents` and the `activity` event; every v1 line still means the same, and the app's lines may
+//! carry any `v`.
 //!
 //! Elisa → app (stdout):
 //! - `hello` {pid, version, commands: [[name, description], …]} — first line
@@ -12,7 +14,8 @@
 //! - `waiting` {} — a model request started (thinking until the first delta)
 //! - `thinking` {text} — the model's reasoning as it streams (not kept in the history; only models that reason)
 //! - `delta` {text} — reply text (the model's `<state>…</state>` card is removed, see `card`)
-//! - `reply_done` {tok_s, ttft_s, ctx_used, max_ctx, reused, output_tokens} — one model reply finished. `tok_s` is
+//! - `reply_done` {tok_s, ttft_s, ctx_used, max_ctx, reused, output_tokens, ctx_estimated} — one model reply finished
+//!   (`ctx_estimated`: `ctx_used` is Elisa's own count, the server reported none). `tok_s` is
 //!   the decode rate, or `null` when the reply had no decode window (a tool-call-only reply, or under 0.2 s of decode:
 //!   show "—", never 0.0); then `ttft_s` is the whole request time. `ctx_used` is the context now (prompt + reply); a
 //!   cancelled reply (Esc) that the server reported no usage for carries Elisa's estimate instead of 0
@@ -81,12 +84,50 @@
 //!   rounds; `summary` = `3 errors` / `exit 2` / `timed out after 60s · …` ("" while running); `line` = the
 //!   transcript line, e.g. `check: cargo clippy ✗ 3 errors → fixing (1/2)`. Shade: running → building / testing,
 //!   fail / timeout → error, stopped → error (no celebration), all pass → the turn ends "build ok" / "tests green".
+//! - `activity` {phase, id, kind, text, …} — what Elisa is doing, in plain words for the person (src/activity.rs),
+//!   never tool names: `phase` "start" (`text` = the live line, `Searching the web for “Apple news”…`), "update" (the
+//!   same `id`, new words; `waiting_ok: true` while an approval for it is open: `Editing app.py (waiting for your OK)`),
+//!   "done" (`text` = `Read apple.com` / `Reading apple.com didn't work` / `Skipped: editing app.py (you said no)`,
+//!   `summary` = `3 results` | `12 pages` | `exit 0` | "", `ms`, `error`), "summary" (once per turn that had steps,
+//!   just before `turn_done`: `text` = `Searched the web · read 2 pages · 3.1 s`, `ms`, `steps`; a pure chat turn has
+//!   none). `kind`: model | web | docs | files | edit | run | code | think | time | security | plugin | other | summary.
+//!   `background: true`: the check of a file just attached in the composer (`prefetch`), outside any turn: it belongs
+//!   to no reply (the file's chip shows the result, `doc_info`).
+//!   Model requests are `kind: "model"` starts (`Waiting for the model…`, later `Thinking about the next step…`)
+//!   with no done; their updates are `Writing the answer…` (first reply text), `Thinking it over…` (reasoning
+//!   streams) and, when the start carried `slow_after_ms` / `slow_text` (a local model that is likely cold: the
+//!   session's first request, or idle for minutes) and no token came by then, `Loading the model (first message)…`.
+//!   A step's first, lazy MCP server start is an update (`Starting the web reader…`). One line at a time: the newest
+//!   start / update is the live line; a display may leave a step under 300 ms off the live line (it still counts in
+//!   the summary). Sent next to the `tool_*` events, which stay as they were.
 //! - `turn_done` {}, `exit` {code}
 //!
 //! app → Elisa (stdin):
-//! - `send` {text, images?: [{media_type, data}]} — a user message or slash command (queued while a turn runs; /water
-//!   /feed /play /poke are care). `images`: base64 PNG / JPEG / GIF / WebP, at most 4, each at most 5 MB of base64;
-//!   only a model with vision (`banner.vision`) gets them
+//! - `send` {text, images?: [{media_type, data}], documents?: [{path}]} — a user message or slash command (queued while
+//!   a turn runs; /water /feed /play /poke are care). `images`: base64 PNG / JPEG / GIF / WebP, at most 4, each at most
+//!   5 MB of base64; only a model with vision (`banner.vision`) gets them. `documents` (protocol v2): absolute paths of
+//!   attached files, at most 8 — the path, never the content. Any model takes them (no vision needed): Elisa copies
+//!   each into `<project>/.elisa/uploads/<session>/` (at most 50 MB a file), extracts its text (PDF, docx,
+//!   xlsx / xls / ods / csv, text and code files) and puts it in the turn whole when it fits the window's document
+//!   budget, else an overview (a vague request) or the pages that answer the question (src/attach.rs). A file that
+//!   cannot be attached comes back as an `error` line (`not attached: report.pdf is too large …`) and the message goes
+//!   on without it; one that is read gets a `doc_info` (below) with the plan used. `images_refused` (integer, optional):
+//!   pictures the app itself refused for this message because the model has no vision (it blocks them at attach time,
+//!   so they never come as `images`); Elisa then knows a picture was meant and answers a question about it herself
+//!   ("I can't see pictures with gemma3:1b …", `context::no_picture_line`) instead of letting the model make one up
+//! - `prefetch` {documents: [{path}]} — files just attached in the composer, before Enter: Elisa runs each one's
+//!   intake in the background (`attach::intake`, cached by content): an `activity` step "Checking report.pdf…", then
+//!   `doc_info`. Nothing reaches the model or the project; a bad list is an `error` line
+//!
+//! `doc_info` {path, name, kind, bytes, pages, unit, sheets: [{name, rows, columns}], words, tokens, lang, text_layer,
+//!   category, category_word, sections: [{title, pages: [from, to]}], tables, outline, parts: [{title, pages: [from,
+//!   to]}], fit: {plan: "whole"|"overview"|"selection", doc_tokens, budget}, warnings: [..], line} — Elisa → app, after
+//!   `prefetch` and again when the message with the file is read. `line` is the chip's one-line check result
+//!   ("38 pages · research paper · 7 sections · fits as overview", "⚠ has macros (not run; text only) · …"). A file
+//!   that cannot be attached: {path, name, refused: true, warnings: [why], line: "⚠ why"}. `parts` are readable parts
+//!   for the person: a click sends e.g. "Summarise part 2 (pages 9–14) of report.pdf", answered from those pages
+//! `reply_retracted` {} — Elisa → app: the reply streamed in this turn said it could not read the attached document;
+//!   it is withdrawn (the app removes that text) and the turn is asked once more with the text, the new reply follows
 //! - `approve` {answer: "yes"|"always"|"rule"|"no"} ("once" = yes, "session" = always), `pick` {index: n | null}
 //! - `plugin` {op: "list"|"add"|"remove"|"enable"|"disable"|"update"|"trust", path?: "…" (add), name?: "…"} — the same
 //!   as sending `/plugin OP ARG` (queued like a message); `trust` with name "project" trusts the project's commands
@@ -109,7 +150,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-pub const VERSION: u64 = 1;
+pub const VERSION: u64 = 2;
 /// Shade is re-evaluated this often (flash queue, sleep timeout); a `shade` line goes out only on a change
 const TICK: Duration = Duration::from_millis(50);
 /// tool output kept in a `tool_done` line
@@ -131,6 +172,8 @@ pub enum Ev {
     Compacted(usize, usize), Progress(Option<Progress>), Recalled(Vec<String>), Card(String, Option<u64>), Watch(WatchUpdate),
     WatchView(Option<WatcherView>), Full(String, String), Check(CheckEvent), Pick(Vec<SessionInfo>, Sender<Option<usize>>),
     Input(Sender<Option<String>>), TurnDone, Exit(i32),
+    /// a step in plain words (`Frontend::activity`)
+    Activity(crate::activity::Activity),
     /// a line from stdin (None = stdin closed)
     Cmd(Option<String>),
 }
@@ -138,13 +181,75 @@ pub enum Ev {
 /// The pictures of the input line being handed to the agent: set just before the line is sent, taken by the agent
 /// right after it reads the line (`Frontend::take_images`). One session per process, so one slot.
 static ATTACHED: Mutex<Vec<Block>> = Mutex::new(Vec::new());
+/// the same for the line's documents (paths; `attach.rs` copies and reads them on the agent's side)
+static ATTACHED_DOCS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// the pictures the app refused for that line (`send.images_refused`: the model has no vision)
+static REFUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn attached() -> std::sync::MutexGuard<'static, Vec<Block>> { ATTACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) }
+fn attached_docs() -> std::sync::MutexGuard<'static, Vec<String>> { ATTACHED_DOCS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) }
 
 /// hands `text` to the waiting agent, its pictures first so they are there when the agent reads the line
-fn hand_over(tx: &Sender<Option<String>>, text: String, imgs: Vec<Block>) {
+#[cfg(test)]
+fn hand_over(tx: &Sender<Option<String>>, text: String, imgs: Vec<Block>) { hand_over_all(tx, text, imgs, Vec::new(), 0) }
+
+/// hands `text` to the waiting agent with its pictures and documents
+fn hand_over_all(tx: &Sender<Option<String>>, text: String, imgs: Vec<Block>, docs: Vec<String>, refused: usize) {
     *attached() = imgs;
+    *attached_docs() = docs;
+    REFUSED.store(refused, Ordering::SeqCst);
     let _ = tx.send(Some(text));
+}
+
+/// Events from background work (a file's intake after `prefetch`), written out by the main loop on its next tick.
+static BG: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
+/// the window and the context used so far (from `banner` / `reply_done`): the intake's fit plan
+static WIN: Mutex<(usize, usize)> = Mutex::new((0, 0));
+
+fn bg_push(kind: &str, v: Value) { BG.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((kind.into(), v)); }
+
+/// The intake of a file just attached in the composer (`attach::intake`, cached by content), on its own thread:
+/// "Checking report.pdf…" in the activity line, then a `doc_info` event with what was found (or why it cannot be
+/// attached). The text is extracted on the way, so the `send` that follows does not wait for it.
+fn intake_in_background(path: String) {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(900_000_000);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let _ = std::thread::Builder::new().name("elisa-intake".into()).spawn(move || {
+        use crate::activity::{Activity, Phase};
+        let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let t0 = Instant::now();
+        let act = |phase: Phase, text: String, summary: String, error: bool| {
+            let mut v = Activity { id, phase, kind: "docs".into(), text, summary, ms: t0.elapsed().as_millis() as u64, error, waiting_ok: false, slow: None, steps: 0 }.json();
+            v["background"] = json!(true);
+            v
+        };
+        bg_push("activity", act(Phase::Start, format!("Checking {name}…"), String::new(), false));
+        let (max_ctx, used) = *WIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let max_ctx = if max_ctx == 0 { 8192 } else { max_ctx };
+        match crate::attach::intake(std::path::Path::new(&path)) {
+            Ok(it) => {
+                let v = crate::attach::info_json(&path, &it, max_ctx, used);
+                let line = v["line"].as_str().unwrap_or("").to_string();
+                bg_push("activity", act(Phase::Done, format!("Checked {name}"), line, false));
+                bg_push("doc_info", v);
+            }
+            Err(e) => {
+                bg_push("activity", act(Phase::Done, format!("Checked {name}"), "can't be attached".into(), true));
+                bg_push("doc_info", crate::attach::refused_json(&path, &e));
+            }
+        }
+    });
+}
+
+/// the documents of a `send`: at most `attach::DOCS_MAX` absolute paths with no line breaks (size and type are
+/// checked when the agent reads them, with a reason per file)
+pub fn check_documents(docs: &[String]) -> Result<(), String> {
+    if docs.len() > crate::attach::DOCS_MAX { return Err(format!("{} documents attached: at most {} per message", docs.len(), crate::attach::DOCS_MAX)); }
+    for d in docs {
+        if d.is_empty() || d.contains(['\n', '\r', '\0']) || !d.starts_with('/') { return Err(format!("document path {d:?}: an absolute file path is needed")); }
+    }
+    Ok(())
 }
 
 /// the pictures of a `send`: known types, valid base64, within the count and size limits
@@ -215,13 +320,18 @@ impl Frontend for JsonlFrontend {
     }
     fn full_answer(&mut self, t: &str, x: &str) { self.send(Ev::Full(t.into(), x.into())) }
     fn pick_session(&mut self, l: &[SessionInfo]) -> Option<usize> { self.ask(|t| Ev::Pick(l.to_vec(), t), None) }
-    fn read_input(&mut self) -> Option<String> { attached().clear(); self.ask(Ev::Input, None) }
+    fn read_input(&mut self) -> Option<String> { attached().clear(); attached_docs().clear(); REFUSED.store(0, Ordering::SeqCst); self.ask(Ev::Input, None) }
+    fn take_refused_images(&mut self) -> usize { REFUSED.swap(0, Ordering::SeqCst) }
     fn take_images(&mut self) -> Vec<Block> { std::mem::take(&mut *attached()) }
+    fn take_documents(&mut self) -> Vec<String> { std::mem::take(&mut *attached_docs()) }
+    fn doc_info(&mut self, fields: &Value) { self.send(Ev::Event("doc_info".into(), fields.clone())) }
+    fn reply_retracted(&mut self) { self.send(Ev::Event("reply_retracted".into(), json!({}))) }
     fn turn_done(&mut self) { self.send(Ev::TurnDone) }
     fn check(&mut self, c: &CheckEvent) { self.send(Ev::Check(c.clone())) }
+    fn activity(&mut self, a: &crate::activity::Activity) { self.send(Ev::Activity(a.clone())) }
 }
 
-/// an event line: `{"v":1,"type":…, …fields}`
+/// an event line: `{"v":2,"type":…, …fields}`
 pub fn event(kind: &str, fields: Value) -> String {
     let mut m = serde_json::Map::new();
     m.insert("v".into(), json!(VERSION));
@@ -250,9 +360,16 @@ pub fn check_json(c: &CheckEvent) -> Value {
 
 /// A command line from the app. None: not a v1 command.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { Send(String), SendImages(String, Vec<Block>), Approve(Approval), Pick(Option<usize>), Interrupt, Care(&'static str), Typing(bool), Theme(bool), Quit,
+pub enum Cmd { Send(String), SendImages(String, Vec<Block>),
+    /// a `send` with documents (`documents: [{path}]`), and any pictures with them
+    SendDocs(String, Vec<Block>, Vec<String>),
+    /// a `send` with `images_refused: n` (the app refused n pictures at attach time: no vision), and any documents
+    SendRefused(String, Vec<String>, usize), Approve(Approval), Pick(Option<usize>), Interrupt, Care(&'static str), Typing(bool), Theme(bool), Quit,
     /// `{"type":"plugin","op":…,"name"|"path":…}`: the same as sending the line `/plugin OP ARG`
     Plugin(String, String),
+    /// `{"type":"prefetch","documents":[{path}]}`: files just attached, before Enter: their text is extracted into
+    /// Elisa's cache in the background (`cache::prefetch_docs`), so the `send` that follows does not wait for it
+    Prefetch(Vec<String>),
     /// `{"type":"sandbox","op":"list"|"pull","name":…}`: the same as sending the line `/sandbox OP NAME`
     Sandbox(String, String) }
 
@@ -264,10 +381,16 @@ pub fn parse_cmd(line: &str) -> Option<Cmd> {
     Some(match j["type"].as_str()? {
         "send" => {
             let text = j["text"].as_str()?.to_string();
-            match j["images"].as_array().filter(|a| !a.is_empty()) {
-                None => Cmd::Send(text),
-                // checked (type, size, count) where it is used, so a bad picture gets a reason, not "unknown command"
-                Some(a) => Cmd::SendImages(text, a.iter().map(|i| Block::image(i["media_type"].as_str().unwrap_or(""), i["data"].as_str().unwrap_or(""))).collect()),
+            // checked (type, size, count) where it is used, so a bad picture gets a reason, not "unknown command"
+            let imgs: Vec<Block> = j["images"].as_array().map(|a| a.iter().map(|i| Block::image(i["media_type"].as_str().unwrap_or(""), i["data"].as_str().unwrap_or(""))).collect()).unwrap_or_default();
+            // documents: [{path}] (a bare string is taken as the path too)
+            let docs: Vec<String> = j["documents"].as_array().map(|a| a.iter().map(|d| d["path"].as_str().or(d.as_str()).unwrap_or("").to_string()).collect()).unwrap_or_default();
+            let refused = j["images_refused"].as_u64().unwrap_or(0) as usize;
+            if refused > 0 && imgs.is_empty() { return Some(Cmd::SendRefused(text, docs, refused)); }
+            match (imgs.is_empty(), docs.is_empty()) {
+                (true, true) => Cmd::Send(text),
+                (false, true) => Cmd::SendImages(text, imgs),
+                _ => Cmd::SendDocs(text, imgs, docs),
             }
         }
         "approve" => Cmd::Approve(match j["answer"].as_str()? { "yes" | "once" => Approval::Yes, "always" | "session" => Approval::Always, "rule" => Approval::Rule, "no" => Approval::No, _ => return None }),
@@ -285,6 +408,7 @@ pub fn parse_cmd(line: &str) -> Option<Cmd> {
             if arg.contains(['\n', '\r']) { return None; }
             Cmd::Sandbox(op.to_string(), arg.to_string())
         }
+        "prefetch" => Cmd::Prefetch(j["documents"].as_array()?.iter().map(|d| d["path"].as_str().or(d.as_str()).unwrap_or("").to_string()).collect()),
         "pick" => Cmd::Pick(j["index"].as_u64().map(|i| i as usize)),
         "interrupt" => Cmd::Interrupt,
         "care" => Cmd::Care(match j["action"].as_str()? { "poke" => "poke", "water" => "water", "food" => "food", "toy" => "toy", _ => return None }),
@@ -301,9 +425,21 @@ pub fn encode_cmd(c: &Cmd) -> String {
         Cmd::Send(t) => ("send", json!({"text": t})),
         Cmd::SendImages(t, imgs) => ("send", json!({"text": t, "images": imgs.iter().filter_map(|b| match b {
             Block::Image { source } => Some(json!({"media_type": source.media_type, "data": source.data})), _ => None }).collect::<Vec<_>>()})),
+        Cmd::SendDocs(t, imgs, docs) => ("send", {
+            let mut f = json!({"text": t, "documents": docs.iter().map(|p| json!({"path": p})).collect::<Vec<_>>()});
+            if !imgs.is_empty() { f["images"] = json!(imgs.iter().filter_map(|b| match b {
+                Block::Image { source } => Some(json!({"media_type": source.media_type, "data": source.data})), _ => None }).collect::<Vec<_>>()); }
+            f
+        }),
+        Cmd::SendRefused(t, docs, n) => ("send", {
+            let mut f = json!({"text": t, "images_refused": n});
+            if !docs.is_empty() { f["documents"] = json!(docs.iter().map(|p| json!({"path": p})).collect::<Vec<_>>()); }
+            f
+        }),
         Cmd::Approve(a) => ("approve", json!({"answer": match a { Approval::Yes => "yes", Approval::Always => "always", Approval::Rule => "rule", Approval::No => "no" }})),
         Cmd::Plugin(op, arg) => ("plugin", if op == "add" { json!({"op": op, "path": arg}) } else if arg.is_empty() { json!({"op": op}) } else { json!({"op": op, "name": arg}) }),
         Cmd::Sandbox(op, arg) => ("sandbox", if arg.is_empty() { json!({"op": op}) } else { json!({"op": op, "name": arg}) }),
+        Cmd::Prefetch(docs) => ("prefetch", json!({"documents": docs.iter().map(|p| json!({"path": p})).collect::<Vec<_>>()})),
         Cmd::Pick(i) => ("pick", json!({"index": i})),
         Cmd::Interrupt => ("interrupt", json!({})),
         Cmd::Care(a) => ("care", json!({"action": a})),
@@ -437,15 +573,16 @@ struct Server<W: Write> {
     shown: Option<(Frame, &'static str)>,
     input: Option<Sender<Option<String>>>,
     /// messages sent while a turn runs, each with the pictures that came with it
-    queue: VecDeque<(String, Vec<Block>)>,
+    queue: VecDeque<(String, Vec<Block>, Vec<String>, usize)>,
     approve: Option<Sender<Approval>>,
     pick: Option<Sender<Option<usize>>>,
-    /// <state>…</state> stripping across deltas (as the TUI)
-    hold: String,
-    in_state: bool,
+    /// state-card stripping across deltas (as the TUI, `context::CardFilter`)
+    cardf: crate::context::CardFilter,
     quitting: bool,
     /// the running tool's name (from its tool_start)
     last_tool: String,
+    /// the model request on the live line: its start, when it came, and whether it got a slow / reasoning update
+    model_act: Option<(crate::activity::Activity, Instant, bool, bool)>,
 }
 
 impl<W: Write> Server<W> {
@@ -455,6 +592,21 @@ impl<W: Write> Server<W> {
         let _ = self.out.flush();
     }
     fn sh(&mut self, e: ShEv) { let now = self.now(); self.shade.on(now, e); }
+
+    /// the model request on the live line, said again in other words: its slow text once no token came in time,
+    /// "Thinking it over…" while the model reasons
+    fn model_tick(&mut self, reasoning: bool) {
+        use crate::activity::{Activity, Phase};
+        let Some((a, t0, slowed, thought)) = &mut self.model_act else { return };
+        let ms = t0.elapsed().as_millis() as u64;
+        let text = if reasoning && !*thought { *thought = true; Some("Thinking it over…".to_string()) }
+            else if !*slowed && !*thought && a.slow.as_ref().is_some_and(|(after, _)| ms >= *after) { *slowed = true; a.slow.as_ref().map(|(_, t)| t.clone()) }
+            else { None };
+        if let Some(text) = text {
+            let u = Activity { phase: Phase::Update, text, slow: None, ..a.clone() };
+            self.emit("activity", u.json());
+        }
+    }
 
     /// a `shade` line when what Shade shows changed
     fn shade_frame(&mut self) {
@@ -471,38 +623,17 @@ impl<W: Write> Server<W> {
         self.shown = Some((f, face));
     }
 
-    /// streamed text minus any <state>…</state> block; a partial tag at the end is held until it resolves
-    fn unstate(&mut self, s: &str) -> String {
-        const OPEN: &str = "<state>";
-        const CLOSE: &str = "</state>";
-        let mut buf = std::mem::take(&mut self.hold) + s;
-        let mut out = String::new();
-        let echo = crate::context::CARD_ECHO;
-        let partial = |buf: &str, t: &str| (1..t.len()).rev().find(|&n| buf.ends_with(&t[..n])).unwrap_or(0);
-        loop {
-            // a copied card instruction line is dropped (held while it may still be one)
-            if !self.in_state { if let Some(i) = buf.find(echo) { buf.replace_range(i..i + echo.len(), ""); continue; } }
-            let tag = if self.in_state { CLOSE } else { OPEN };
-            if let Some(i) = buf.find(tag) {
-                if !self.in_state { out.push_str(&buf[..i]); }
-                buf.drain(..i + tag.len());
-                self.in_state = !self.in_state;
-                continue;
-            }
-            let p = if self.in_state { partial(&buf, tag) } else { partial(&buf, tag).max(partial(&buf, echo)) };
-            let cut = buf.len() - p;
-            if !self.in_state { out.push_str(&buf[..cut]); }
-            self.hold = buf[cut..].to_string();
-            return out;
-        }
-    }
+    /// streamed text minus any state-card text; a partial tag or card line at the end is held until it resolves
+    fn unstate(&mut self, s: &str) -> String { self.cardf.push(s) }
 
-    fn submit(&mut self, text: String, imgs: Vec<Block>) {
+    fn submit(&mut self, text: String, imgs: Vec<Block>) { self.submit_all(text, imgs, Vec::new(), 0) }
+
+    fn submit_all(&mut self, text: String, imgs: Vec<Block>, docs: Vec<String>, refused: usize) {
         let t = text.trim();
-        if imgs.is_empty() { if let Some((_, a)) = CARE.iter().find(|(c, _)| *c == t) { return self.care(a); } }
+        if imgs.is_empty() && docs.is_empty() && refused == 0 { if let Some((_, a)) = CARE.iter().find(|(c, _)| *c == t) { return self.care(a); } }
         match self.input.take() {
-            Some(tx) => { hand_over(&tx, text, imgs); }
-            None => { self.queue.push_back((text, imgs)); let n = self.queue.len(); self.emit("queued", json!({"n": n})); }
+            Some(tx) => { hand_over_all(&tx, text, imgs, docs, refused); }
+            None => { self.queue.push_back((text, imgs, docs, refused)); let n = self.queue.len(); self.emit("queued", json!({"n": n})); }
         }
     }
 
@@ -517,10 +648,22 @@ impl<W: Write> Server<W> {
                 Ok(()) => self.submit(t, imgs),
                 Err(e) => self.emit("error", json!({"text": e})),
             },
+            Cmd::SendDocs(t, imgs, docs) => match check_images(&imgs).and_then(|_| check_documents(&docs)) {
+                Ok(()) => self.submit_all(t, imgs, docs, 0),
+                Err(e) => self.emit("error", json!({"text": e})),
+            },
+            Cmd::SendRefused(t, docs, n) => match check_documents(&docs) {
+                Ok(()) => self.submit_all(t, Vec::new(), docs, n),
+                Err(e) => self.emit("error", json!({"text": e})),
+            },
             Cmd::Approve(a) => if let Some(tx) = self.approve.take() {
                 let now = self.now();
                 self.shade.approved(now, a != Approval::No);
                 let _ = tx.send(a);
+            },
+            Cmd::Prefetch(docs) => match check_documents(&docs) {
+                Ok(()) => for d in docs { if d.starts_with('/') { intake_in_background(d); } },
+                Err(e) => self.emit("error", json!({"text": e})),
             },
             Cmd::Pick(i) => if let Some(tx) = self.pick.take() { let _ = tx.send(i); },
             Cmd::Interrupt => {
@@ -555,14 +698,14 @@ impl<W: Write> Server<W> {
     fn on_ev(&mut self, e: Ev) -> Option<i32> {
         match e {
             Ev::Banner(b) => {
+                WIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0 = b.max_ctx;
                 self.emit("banner", json!({"model": b.model, "base_url": b.base_url, "cwd": b.cwd, "max_ctx": b.max_ctx,
                     "notes": b.notes, "resumed": b.resumed, "vision": b.vision, "theme": if self.light { "light" } else { "dark" }}));
                 self.sh(ShEv::Launch);
             }
             Ev::User(t) => self.emit("user", json!({"text": t})),
             Ev::Waiting => {
-                self.hold.clear();
-                self.in_state = false;
+                self.cardf = Default::default();
                 self.sh(ShEv::Waiting);
                 self.emit("waiting", json!({}));
             }
@@ -571,12 +714,12 @@ impl<W: Write> Server<W> {
                 if !s.is_empty() { self.sh(ShEv::Delta); self.emit("delta", json!({"text": s})); }
             }
             Ev::Done(s) => {
-                // a held `<sta…` that never became a tag is ordinary text
-                let h = std::mem::take(&mut self.hold);
-                if !self.in_state && !h.is_empty() { self.emit("delta", json!({"text": h})); }
-                self.in_state = false;
+                // a held `<sta…` that never became a tag (or a lone `next:` line) is ordinary text
+                let h = self.cardf.finish();
+                if !h.is_empty() { self.emit("delta", json!({"text": h})); }
+                *WIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (s.max_ctx, s.ctx_used);
                 self.emit("reply_done", json!({"tok_s": s.tok_s, "ttft_s": s.ttft_s, "ctx_used": s.ctx_used, "max_ctx": s.max_ctx,
-                    "reused": s.reused, "output_tokens": s.output_tokens}));
+                    "reused": s.reused, "output_tokens": s.output_tokens, "ctx_estimated": s.estimated}));
             }
             Ev::ToolStart(s) => {
                 let (n, t) = s.split_once(' ').unwrap_or((&s, ""));
@@ -656,11 +799,22 @@ impl<W: Write> Server<W> {
                 if self.quitting { let _ = tx.send(None); return None; }
                 self.shade.idle();
                 match self.queue.pop_front() {
-                    Some((q, imgs)) => { let n = self.queue.len(); self.emit("queued", json!({"n": n})); hand_over(&tx, q, imgs); }
+                    Some((q, imgs, docs, refused)) => { let n = self.queue.len(); self.emit("queued", json!({"n": n})); hand_over_all(&tx, q, imgs, docs, refused); }
                     None => { self.input = Some(tx); self.emit("ready", json!({})); }
                 }
             }
-            Ev::TurnDone => { self.sh(ShEv::Finished(false)); self.emit("turn_done", json!({})); }
+            Ev::TurnDone => { self.model_act = None; self.sh(ShEv::Finished(false)); self.emit("turn_done", json!({})); }
+            Ev::Activity(a) => {
+                use crate::activity::Phase;
+                match a.phase {
+                    Phase::Start if a.kind == "model" => self.model_act = Some((a.clone(), Instant::now(), false, false)),
+                    // the answer streams, or a step took the line: the model request is no longer waiting
+                    Phase::Update if a.kind == "model" => self.model_act = None,
+                    Phase::Start => self.model_act = None,
+                    _ => {}
+                }
+                self.emit("activity", a.json());
+            }
             Ev::Exit(c) => return Some(c),
             Ev::Cmd(None) => self.quit(),
             Ev::Cmd(Some(l)) => {
@@ -675,32 +829,14 @@ impl<W: Write> Server<W> {
     }
 }
 
-/// `elisa --serve-jsonl [--demo-states] [--cwd DIR] …`. With `--demo-states` the scripted demo gateway
-/// (`demo_gateway.rs`, no model) answers instead of a real one, in a fresh demo project unless --cwd is given.
-pub fn run(mut args: Args) -> i32 {
+/// `elisa --serve-jsonl [--cwd DIR] …`.
+pub fn run(args: Args) -> i32 {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     // stdout is the protocol: nothing else may print there
     let _ = out.write_all(event("hello", json!({"pid": std::process::id(), "version": env!("CARGO_PKG_VERSION"),
         "protocol": VERSION, "commands": COMMANDS.iter().map(|(c, d)| json!([c, d])).collect::<Vec<_>>()})).as_bytes());
     let _ = out.flush();
-    if args.demo.take().is_some() {
-        match crate::demo_gateway::start() {
-            Ok(url) => {
-                args.base_url = Some(url);
-                args.kind = Some(crate::provider::STREAMDENSE.into());
-                // the scripted gateway ignores the name; the session still needs one to send
-                args.model.get_or_insert_with(|| "demo".into());
-            }
-            Err(e) => { let _ = out.write_all(event("error", json!({"text": format!("demo gateway: {e}")})).as_bytes()); return 2; }
-        }
-        if args.cwd.is_none() {
-            match crate::demo_gateway::project() {
-                Ok(d) => args.cwd = Some(d),
-                Err(e) => { let _ = out.write_all(event("error", json!({"text": format!("demo project: {e}")})).as_bytes()); return 2; }
-            }
-        }
-    }
     // the theme and sleep timeout come from the same config the session loads
     let dir = args.cwd.clone().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
     let cfg = crate::config::Config::load(&dir).unwrap_or_default();
@@ -729,13 +865,16 @@ pub fn run(mut args: Args) -> i32 {
     drop(tx);
     let sleep = (cfg.sleep_after_s > 0).then_some(cfg.sleep_after_s * 1000);
     let mut s = Server { out, t0: Instant::now(), shade: Companion::new(0, sleep), light, shown: None, input: None, queue: VecDeque::new(),
-        approve: None, pick: None, hold: String::new(), in_state: false, quitting: false, last_tool: String::new() };
+        approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None };
     let mut quit_at: Option<Instant> = None;
     let code = loop {
         let r = rx.recv_timeout(TICK);
         // reasoning streamed so far goes out before the event (it comes before the answer's first delta)
         let t = crate::api::take_thinking();
         if !t.is_empty() { s.emit("thinking", json!({"text": t})); }
+        let bg = std::mem::take(&mut *BG.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for (k, v) in bg { s.emit(&k, v); }
+        s.model_tick(!t.is_empty());
         match r {
             Ok(e) => {
                 if let Ev::ToolStart(t) = &e { s.last_tool = t.split(' ').next().unwrap_or("").to_string(); }
@@ -779,6 +918,22 @@ mod tests {
         assert!(bad(vec![Block::image("image/png", "AAAA"); IMAGES_MAX + 1]).contains("at most"));
     }
 
+    /// BUGS #61: the app refuses a picture at attach time (no vision) and says so in the `send`; the agent learns it
+    #[test]
+    fn a_send_says_how_many_pictures_the_app_refused() {
+        let c = Cmd::SendRefused("what colour are its ears?".into(), Vec::new(), 1);
+        assert_eq!(parse_cmd(&encode_cmd(&c)), Some(c));
+        assert_eq!(parse_cmd(r#"{"type":"send","text":"x","images_refused":2,"documents":[{"path":"/a.pdf"}]}"#), Some(Cmd::SendRefused("x".into(), vec!["/a.pdf".into()], 2)));
+        assert_eq!(parse_cmd(r#"{"type":"send","text":"hi","images_refused":0}"#), Some(Cmd::Send("hi".into())));
+        let (tx, rx) = mpsc::channel();
+        hand_over_all(&tx, "look".into(), Vec::new(), Vec::new(), 1);
+        assert_eq!(rx.recv().unwrap().as_deref(), Some("look"));
+        let (etx, _erx) = mpsc::channel();
+        let mut fe = JsonlFrontend(etx);
+        assert_eq!(fe.take_refused_images(), 1);
+        assert_eq!(fe.take_refused_images(), 0, "taken once");
+    }
+
     #[test]
     fn the_pictures_reach_the_agent_with_their_line_even_when_queued() {
         let (tx, rx) = mpsc::channel();
@@ -815,7 +970,7 @@ b"}"#] {
         let l = event("delta", json!({"text": "a\nb \"c\""}));
         assert!(l.ends_with('\n') && l.matches('\n').count() == 1);
         let j: Value = serde_json::from_str(&l).unwrap();
-        assert_eq!(j, json!({"v": 1, "type": "delta", "text": "a\nb \"c\""}));
+        assert_eq!(j, json!({"v": VERSION, "type": "delta", "text": "a\nb \"c\""}));
     }
 
     #[test]
@@ -873,7 +1028,7 @@ b"}"#] {
     #[test]
     fn state_cards_are_stripped_across_deltas() {
         let mut s = Server { out: Vec::new(), t0: Instant::now(), shade: Companion::new(0, None), light: false, shown: None, input: None,
-            queue: VecDeque::new(), approve: None, pick: None, hold: String::new(), in_state: false, quitting: false, last_tool: String::new() };
+            queue: VecDeque::new(), approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None };
         let got: String = ["Done. <st", "ate>goal: x", "</sta", "te> bye"].iter().map(|d| s.unstate(d)).collect();
         assert_eq!(got, "Done.  bye");
     }
@@ -881,7 +1036,7 @@ b"}"#] {
     #[test]
     fn a_copied_card_instruction_is_dropped_across_deltas() {
         let mut s = Server { out: Vec::new(), t0: Instant::now(), shade: Companion::new(0, None), light: false, shown: None, input: None,
-            queue: VecDeque::new(), approve: None, pick: None, hold: String::new(), in_state: false, quitting: false, last_tool: String::new() };
+            queue: VecDeque::new(), approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None };
         let got: String = ["Blue. <=80-tok", "en card of what the next ", "step needs:\n<state>goal: x</state>", " a<b"].iter().map(|d| s.unstate(d)).collect();
         // "<b" starts neither a tag nor the line, so it is not held
         assert_eq!(got, "Blue. \n a<b");

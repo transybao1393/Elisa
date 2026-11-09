@@ -3,6 +3,8 @@ name = "elisa"
 version = "0.1.0"
 edition = "2021"
 description = "Elisa: a small terminal coding agent for local models (Anthropic Messages API)"
+# proprietary (../LICENSE): never published; cargo-deny (deny.toml) treats unpublished crates as private
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -30,6 +32,8 @@ tree-sitter-sequel = { version = "=0.3.11", optional = true }
 # documents MCP server (src/mcp_docs.rs): PDF text and spreadsheets, pure Rust, MIT, pinned; licences in ../THIRD_PARTY_NOTICES.md
 pdf-extract = "=0.12.1"
 calamine = "=0.38.0"
+# attached Word .docx text (src/attach.rs): the zip crate calamine already uses, same version and features (MIT)
+zip = { version = "=9.4.2", default-features = false, features = ["deflate"] }
 # security MCP server (src/mcp_sec.rs): goblin (MIT) reads Mach-O / ELF / PE headers; pinned, minimal features;
 # licence in ../THIRD_PARTY_NOTICES.md
 goblin = { version = "=0.10.7", default-features = false, features = ["std", "elf32", "elf64", "mach32", "mach64", "pe32", "pe64", "te"] }

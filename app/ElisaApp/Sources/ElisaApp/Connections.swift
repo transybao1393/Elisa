@@ -765,8 +765,8 @@ struct ConnectionsView: View {
     }
 
     private var pathLabel: String { (s.path as NSString).abbreviatingWithTildeInPath }
-    /// a real session restarts on the new connection and resumes its history; the demo has its own scripted model
-    private var reconnects: Bool { !m.demo && m.folder != nil }
+    /// a session restarts on the new connection and resumes its history
+    private var reconnects: Bool { m.folder != nil }
 }
 
 @MainActor

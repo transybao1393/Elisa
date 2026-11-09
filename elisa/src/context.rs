@@ -63,6 +63,39 @@ fn local_date() -> String {
     }
 }
 
+/// The local time for the model, from the system clock: `Local time now: 2026-11-09 14:05 Sunday (UTC+07:00,
+/// Asia/Ho_Chi_Minh)`. The zone name comes from `TZ`, else the `/etc/localtime` link; left out when neither names one.
+/// Added to the first message and to every turn routed to the time group (`route.rs`), so "what time is it in Tokyo"
+/// needs no tool.
+pub fn local_now() -> String {
+    const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    let tm = unsafe {
+        let t = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() { return "Local time now: unknown".into(); }
+        tm
+    };
+    let off = tm.tm_gmtoff;
+    let (sign, a) = if off < 0 { ('-', -off) } else { ('+', off) };
+    let zone = std::env::var("TZ").ok().map(|z| z.trim_start_matches(':').to_string()).filter(|z| z.contains('/'))
+        .or_else(|| fs::read_link("/etc/localtime").ok().and_then(|p| p.to_str().and_then(|s| s.split_once("zoneinfo/").map(|(_, z)| z.to_string()))));
+    let day = DAYS.get(tm.tm_wday as usize).copied().unwrap_or("");
+    format!("Local time now: {:04}-{:02}-{:02} {:02}:{:02} {day} (UTC{sign}{:02}:{:02}{})", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+        tm.tm_hour, tm.tm_min, a / 3600, a % 3600 / 60, zone.map(|z| format!(", {z}")).unwrap_or_default())
+}
+
+/// A context window this small (tokens) is tiny (`tiny_window`).
+pub const TINY_CTX: usize = 4096;
+
+/// A window too small for Elisa's usual prompt (BUGS #41, #42: moondream:1.8b's 2,048 tokens were mostly the system
+/// prompt, tool rules and the first message's header, and the model read them back as its answer). Decided by the
+/// window size alone, never by the model's name: such a session gets `TINY_SYSTEM`, no tools, no first-message
+/// header and no per-turn hint lines.
+pub fn tiny_window(max_ctx: usize) -> bool { max_ctx < TINY_CTX }
+
+/// The whole system prompt of a tiny window (`tiny_window`): who Elisa is, how to answer, who "I" is.
+pub const TINY_SYSTEM: &str = "You are Elisa, a friendly assistant. Answer briefly and naturally. \"I\", \"me\" and \"my\" in the user's messages mean the user.\n";
+
 /// System prompt: prompts/system.md (or override file) + env (cwd, OS, date) + ./ELISA.md + notes.
 pub fn system_prompt(cwd: &Path, override_file: Option<&Path>, project: Option<&str>, notes: Option<&str>) -> String {
     let base = override_file.and_then(|p| fs::read_to_string(p).ok()).unwrap_or_else(|| SYSTEM_MD.to_string());
@@ -76,7 +109,7 @@ pub fn system_prompt(cwd: &Path, override_file: Option<&Path>, project: Option<&
         s.push_str(&capped(p, PROJECT_CAP));
     }
     if let Some(n) = notes.map(str::trim).filter(|n| !n.is_empty()) {
-        s.push_str("\n\n## Notes from earlier sessions\n");
+        s.push_str("\n\n## Notes from this conversation\n");
         s.push_str(&capped(n, NOTES_CAP));
     }
     s.push('\n');
@@ -88,8 +121,11 @@ pub fn system_prompt(cwd: &Path, override_file: Option<&Path>, project: Option<&
 pub fn first_message(cwd: &Path, notes: Option<&str>, input: &str) -> String { first_message_with(cwd, notes, None, input) }
 
 /// Heading of the notes block in a first message: says who wrote them (Test 2026-11-01: after a reset the model
-/// treated invented note lines as things the user had said).
-pub const NOTES_HEADING: &str = "## Notes from earlier sessions (written by Elisa, not the user; may be wrong: check files before relying on them)";
+/// treated invented note lines as things the user had said). They are this conversation's own notes (a continued
+/// session's notes are its own: 2026-11-09 the old "from earlier sessions" heading went with notes of another task).
+pub const NOTES_HEADING: &str = "## Notes from this conversation (written by Elisa, not the user; may be wrong: check files before relying on them)";
+/// The heading when the notes are background from before /clear or /reset (`background_notes`)
+pub const NOTES_BG_HEADING: &str = "## Notes from an earlier conversation (written by Elisa, not the user; may be wrong: check files before relying on them)";
 
 /// `first_message` plus the latest state card as `[state]\n…\n[/state]` (after the notes, before the request).
 pub fn first_message_with(cwd: &Path, notes: Option<&str>, state: Option<&str>, input: &str) -> String {
@@ -99,10 +135,21 @@ pub fn first_message_with(cwd: &Path, notes: Option<&str>, state: Option<&str>, 
 /// `first_message_with` plus recalled memories, as their own block before `## Request` (never inside it: the
 /// request section is the user's words only).
 pub fn first_message_full(cwd: &Path, notes: Option<&str>, state: Option<&str>, memory: &[String], input: &str) -> String {
-    let mut s = format!("Working directory: {}\nOS: {}\nDate: {}\n\n", cwd.display(), std::env::consts::OS, local_date());
+    let s = format!("Working directory: {}\nOS: {}\nDate: {}\n{}\n\n", cwd.display(), std::env::consts::OS, local_date(), local_now());
+    s + &first_message_bare(notes, state, memory, input)
+}
+
+/// A first message without the Working directory / OS / Date / clock header: notes, `[state]`, recalled memories and
+/// the request. A tiny window's first message (`tiny_window`; BUGS #42: moondream:1.8b with a 2K window answered
+/// "hi" with "Date: OS: macos xterm …", the header read back).
+pub fn first_message_bare(notes: Option<&str>, state: Option<&str>, memory: &[String], input: &str) -> String {
+    let mut s = String::new();
     let notes = notes.map(str::trim).filter(|n| !n.is_empty());
     let state = state.map(str::trim).filter(|n| !n.is_empty());
-    if let Some(n) = notes { s += &format!("{NOTES_HEADING}\n{}\n\n", capped(n, NOTES_CAP)); }
+    if let Some(n) = notes {
+        let h = if n.starts_with(NOTES_BACKGROUND) { NOTES_BG_HEADING } else { NOTES_HEADING };
+        s += &format!("{h}\n{}\n\n", capped(n, NOTES_CAP));
+    }
     if let Some(c) = state { s += &format!("[state]\n{c}\n[/state]\n\n"); }
     if !memory.is_empty() { s += &with_memory(memory, ""); }
     if notes.is_some() || state.is_some() || !memory.is_empty() { s += "## Request\n"; }
@@ -160,6 +207,18 @@ pub fn recall_passes(lex: f32, support: f32, mid_session: bool, min_score: f32, 
     lex >= l && support >= min_support
 }
 
+/// A remembered exchange that recorded a lookup (the `[read notes.txt]` / `[web_search “…”]` tool line memory keeps
+/// after a reply) is an old copy of what a lookup turn should fetch now: on a turn that carries the file tools
+/// (`code`) a hit with a file lookup is skipped, on one that carries the web tools (`web`) a hit with a web lookup.
+/// App test 2026-11-09: "read notes.txt and tell me the meeting code" recalled an earlier run's "I found the meeting
+/// code in the file: ORCHID-42 … [read notes.txt]" and the model answered from it with no read (the file could have
+/// changed; the user asked for a read and saw none); "search the web: …" the same with an old search answer.
+pub fn stale_lookup(text: &str, code: bool, web: bool) -> bool {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?:^|\s)\[(read|read_symbol|outline|glob|grep|web_search|web_fetch) [^\]\n]+\]").unwrap());
+    re.captures_iter(text).any(|c| if c[1].starts_with("web_") { web } else { code })
+}
+
 /// Cap on a stored state card (the prompt asks for <= 80 tokens).
 const CARD_CAP: usize = 600;
 
@@ -191,7 +250,188 @@ pub fn split_state(text: &str) -> (String, Option<String>, bool) {
     vis.push_str(rest);
     let card = card.and_then(|c| clean_card(&strip_markup(&c))).map(|c| if c.chars().count() > CARD_CAP { format!("{}…", head(&c, CARD_CAP)) } else { c });
     let broken = card.is_none();
-    (vis.replace(CARD_ECHO, "").trim_end().to_string(), card, broken)
+    // what the user sees and the history keeps: the same filter the stream display runs (`CardFilter`), so a
+    // copied `[state]…[/state]` block or bare `done: / now: / keep:` lines never stay in the reply either
+    let mut f = CardFilter::default();
+    let vis = f.push(text) + &f.finish();
+    (vis.trim_end().to_string(), card, broken)
+}
+
+/// the card block's tags: the reply's own `<state>`, and the first message's `[state]` a small model copies
+/// (BUGS #22: "echo first-run [state] goal: … keep: … [/state]" as the reply, 3 turns in a row)
+const CARD_OPEN: [&str; 2] = ["<state>", "[state]"];
+const CARD_CLOSE: [&str; 2] = ["</state>", "[/state]"];
+
+/// `line`'s card key (`goal`, `done`, `now`, `keep`, `next`, `open`) when it is a card line (`done: wrote x`).
+fn card_key(line: &str) -> Option<&'static str> {
+    let t = line.trim().trim_start_matches(['-', '*']).trim_start();
+    let k = t.split_once(':')?.0.trim().to_ascii_lowercase();
+    CARD_KEYS.iter().copied().find(|c| *c == k)
+}
+
+/// A line start that may still become a card line (`do`, `keep`, `- now:`): held back until it is known.
+fn card_prefix(p: &str) -> bool {
+    let t = p.trim_start().trim_start_matches(['-', '*']).trim_start().to_ascii_lowercase();
+    if t.contains(':') { return card_key(&t).is_some(); }
+    CARD_KEYS.iter().any(|k| k.starts_with(t.as_str()))
+}
+
+/// Hides state-card text from a reply, as it streams (tags and lines may be split across deltas) and in the final
+/// text (`split_state`): `<state>…</state>` and `[state]…[/state]` blocks, the copied card instruction line
+/// (`CARD_ECHO`), and a run of bare card lines (3+, or 2 with a `now:` / `keep:` one; BUGS #12: an approved write's
+/// reply was "done: wrote "hello" to deny.txt / now: … / keep: …"). A single `next: …` line stays: it may be prose.
+#[derive(Default)]
+pub struct CardFilter { buf: String, inside: bool, mid: bool, cards: String, n: usize, strong: bool }
+
+impl CardFilter {
+    /// The visible part of `delta` that is safe to show now.
+    pub fn push(&mut self, delta: &str) -> String {
+        self.buf.push_str(delta);
+        let mut out = String::new();
+        loop {
+            if self.inside {
+                match first_tag(&self.buf, &CARD_CLOSE) {
+                    Some((i, n)) => { self.buf.drain(..i + n); self.inside = false; continue; }
+                    None => { let p = tag_partial(&self.buf, &CARD_CLOSE); self.buf.drain(..self.buf.len() - p); return out; }
+                }
+            }
+            if let Some(i) = self.buf.find(CARD_ECHO) { self.buf.replace_range(i..i + CARD_ECHO.len(), ""); continue; }
+            // a stray closing tag with no block open (gemma3:1b: "```tool_code\noutline\n</state>\n```") is dropped
+            if let Some((i, n)) = first_tag(&self.buf, &CARD_CLOSE).filter(|c| first_tag(&self.buf, &CARD_OPEN).is_none_or(|o| c.0 < o.0)) {
+                self.buf.replace_range(i..i + n, "");
+                continue;
+            }
+            let open = first_tag(&self.buf, &CARD_OPEN);
+            let end = open.map_or_else(|| self.buf.len() - tag_partial(&self.buf, &[CARD_OPEN[0], CARD_OPEN[1], CARD_CLOSE[0], CARD_CLOSE[1], CARD_ECHO]), |(i, _)| i);
+            let seg = self.buf[..end].to_string();
+            let used = self.feed(&seg, &mut out, open.is_some());
+            match open {
+                Some((i, n)) => { self.buf.drain(..i + n); self.inside = true; }
+                None => { self.buf.drain(..used); return out; }
+            }
+        }
+    }
+
+    /// End of a reply: what is still held back (nothing inside an unclosed block, no card-line run).
+    pub fn finish(&mut self) -> String {
+        let mut out = String::new();
+        if !self.inside {
+            let mut rest = std::mem::take(&mut self.buf);
+            // a reply that stopped inside the copied instruction line ("…\n\n<=80-token card"): not text for the user
+            let p = tag_partial(&rest, &[CARD_ECHO]);
+            if p >= 6 { rest.truncate(rest.len() - p); }
+            self.feed(&rest, &mut out, true);
+        }
+        self.flush(&mut out);
+        *self = CardFilter::default();
+        out
+    }
+
+    /// `seg` line by line: card lines at a line start are held, other text shown. `last`: nothing more comes before a
+    /// tag (or the end), so a partial line is decided now. Returns the bytes used (the rest is a held line start).
+    fn feed(&mut self, seg: &str, out: &mut String, last: bool) -> usize {
+        let mut i = 0;
+        while i < seg.len() {
+            let rest = &seg[i..];
+            let nl = rest.find('\n');
+            if self.mid {
+                let j = nl.map_or(rest.len(), |j| j + 1);
+                out.push_str(&rest[..j]);
+                i += j;
+                self.mid = nl.is_none();
+                continue;
+            }
+            let line = &rest[..nl.map_or(rest.len(), |j| j + 1)];
+            if nl.is_none() && !last && card_prefix(line) { return i; }
+            match card_key(line) {
+                Some(k) => { self.cards.push_str(line); self.n += 1; self.strong |= k == "now" || k == "keep"; }
+                None => { self.flush(out); out.push_str(line); self.mid = nl.is_none(); }
+            }
+            i += line.len();
+        }
+        i
+    }
+
+    /// The held card lines: dropped when they are a card (3+, or 2 with `now:` / `keep:`), else shown.
+    fn flush(&mut self, out: &mut String) {
+        if !(self.n >= 3 || (self.n >= 2 && self.strong)) { out.push_str(&self.cards); }
+        (self.cards, self.n, self.strong) = (String::new(), 0, false);
+    }
+}
+
+/// The first of `tags` in `s`: (byte index, tag length).
+fn first_tag(s: &str, tags: &[&str]) -> Option<(usize, usize)> {
+    tags.iter().filter_map(|t| s.find(t).map(|i| (i, t.len()))).min()
+}
+
+/// The longest end of `s` that starts one of `tags` (held until it resolves).
+fn tag_partial(s: &str, tags: &[&str]) -> usize {
+    tags.iter().map(|t| (1..t.len()).rev().find(|&n| t.is_char_boundary(n) && s.ends_with(&t[..n])).unwrap_or(0)).max().unwrap_or(0)
+}
+
+/// What memory must not keep as an answer, nor bring back (BUGS #16, #27): a refusal or "I don't know" ("I can't run
+/// scripts directly…", "I don't have access…"), the "Okay, I didn't do that" of a denied tool, a cancelled / denied /
+/// interrupted / unknown tool, an error placeholder (`[cancelled]`, `[no output]`), or leaked card text.
+pub fn unfit_memory(text: &str) -> bool {
+    static REFUSAL: OnceLock<regex::Regex> = OnceLock::new();
+    let re = REFUSAL.get_or_init(|| regex::Regex::new(concat!(
+        r"(?i)^(?:(?:sorry|i'm sorry|i am sorry|unfortunately|okay|ok)[,.!]?\s*(?:but\s*)?)?",
+        r"(?:i\s+(?:can't|cannot|can not|am unable|'m unable|am not able|'m not able|won't be able|didn't do that|did not do that",
+        r"|don't (?:have|know) (?:access|the ability|the tools?|any (?:way|access|information)|your|that)",
+        r"|do not (?:have|know) (?:access|the ability|the tools?|your))|as an ai\b)")).unwrap());
+    let t = text.trim().replace('’', "'");
+    let first = t.lines().next().unwrap_or("");
+    re.is_match(first) || first.starts_with("[cancelled]") || first.starts_with("[no output]") || first.starts_with("[max_tokens]")
+        || t.lines().any(failed_tool_line) || t.contains("[state]") || t.contains("<state>")
+}
+
+/// A turn's tool line (`[bash x → exit 1]`, `[web_fetch u → cancelled by user]`) for a call that did not succeed:
+/// denied, cancelled, interrupted, an unknown tool, an error, or a command with a non-zero exit.
+pub fn failed_tool_line(line: &str) -> bool {
+    let l = line.trim();
+    l.starts_with('[') && l.ends_with(']') && l.contains(" → ") && !l.ends_with(" → exit 0]")
+}
+
+/// Elisa's own answer, with no model call, on a model without vision when no picture is in the conversation (BUGS
+/// #36: gemma3:1b, the image refused at attach, then "what colour are the insides of its ears?" got "Pink!"; a note
+/// in the request did not stop it, 0/3): when the message came with the refused picture (`refused_now`), names a
+/// picture ("the photo", "this image"), or follows this same answer (`after_line`) and says "it" / "this" / "they".
+pub fn no_picture_line(input: &str, model: &str, vi: bool, refused_now: bool, after_line: bool) -> Option<String> {
+    (refused_now || picture_words(input, after_line)).then(|| no_picture_text(model, vi))
+}
+
+/// The word check of `no_picture_line` (used when the hosted intent router gives no answer; its `refused_picture`
+/// decides otherwise, `repl.rs`).
+pub fn picture_words(input: &str, after_line: bool) -> bool {
+    static PIC: OnceLock<regex::Regex> = OnceLock::new();
+    static PRON: OnceLock<regex::Regex> = OnceLock::new();
+    let pic = PIC.get_or_init(|| regex::Regex::new(r"(?i)\b(?:the|this|that|my|your|its|in|attached)\s+(?:picture|pic|image|photo|photograph|screenshot|drawing|selfie)s?\b|\b(?:ảnh|hình)\s+(?:này|đó|kia)\b").unwrap());
+    let pron = PRON.get_or_init(|| regex::Regex::new(r"(?i)\b(?:it|its|it's|this|that|they|them|their|these|those|he|she|his|her|nó)\b").unwrap());
+    pic.is_match(input) || (after_line && pron.is_match(&input.replace('’', "'")))
+}
+
+/// Elisa's no-picture answer for `model`, English or Vietnamese.
+pub fn no_picture_text(model: &str, vi: bool) -> String {
+    if vi { format!("Mình không xem được ảnh với {model}, nên không có ảnh nào đến được mình và mình không biết ảnh có gì. Hãy chọn một mô hình có vision để hỏi về ảnh.") }
+    else { format!("I can't see pictures with {model}, so no picture reached me and I can't tell what it shows. Pick a model with vision to ask about images.") }
+}
+
+/// Whether a remembered answer records a tool that ran (`[read notes.txt]`, `[bash ls → exit 0]`): memory keeps an
+/// answer only from such a turn (`repl` `turn`); an older store's plain-chat answers ("I'll check how many lines
+/// fizz.py prints") are not recalled either.
+pub fn has_tool_line(text: &str) -> bool {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?m)^\[[a-z_]+ [^\n]*\]$").unwrap());
+    re.is_match(text)
+}
+
+/// Whether a remembered text clearly matches the question (BUGS #34: unrelated old prompts came back): it shares at
+/// least 2 of the question's content words and half of them, or the question's only content word ("what's my name?"
+/// finds "My name is Linh").
+pub fn strong_recall(query: &str, hit: &str) -> bool {
+    let q = crate::topics::words(query);
+    let shared = q.intersection(&crate::topics::words(hit)).count();
+    (shared >= 2 && 2 * shared >= q.len()) || (q.len() == 1 && shared == 1)
 }
 
 /// The fields of the system prompt's card template.
@@ -240,6 +480,12 @@ fn norm_words(s: &str) -> String {
 /// "Finished steps and decisions, with their reasons." and "Also known as: name = other words; …"). Drops lines that
 /// repeat (part of) prompts/compact.md, placeholder values, template items of the `Also known as:` line, and
 /// headings left with nothing under them.
+/// A transcript's tool line: `[tool NAME …]`, `[result: …]`, `[result …]`, `[error: …]` of a tool.
+fn raw_tool_line(body: &str) -> bool {
+    let b = body.trim_start_matches(['-', '*', ' ']).to_ascii_lowercase();
+    b.starts_with("[tool ") || b.starts_with("[tool:") || b.starts_with("[result:") || b.starts_with("[result ") || b.starts_with("[tool_result")
+}
+
 pub fn clean_notes(notes: &str) -> String {
     let instr = norm_words(COMPACT_MD);
     // whole instruction sentences / clauses: a line quoting one is an echo even with real words around it
@@ -264,6 +510,9 @@ pub fn clean_notes(notes: &str) -> String {
             continue;
         }
         if is_placeholder(body) || is_placeholder(body.trim_matches(['[', ']', '(', ')'])) || body.trim_matches(['[', ']', '(', ')']).eq_ignore_ascii_case("none") || echo(t) { continue; }
+        // a raw tool call or result copied from a transcript is no note (2026-11-09: "[tool glob …]" and "[result: no
+        // files found]" sat under "## Files touched" and were carried forward)
+        if raw_tool_line(body) { continue; }
         lines.push(l.trim_end().to_string());
     }
     // headings with nothing under them go; blank runs become one blank line
@@ -308,13 +557,14 @@ pub fn cap_notes(notes: &str, max_tokens: usize) -> String {
     s
 }
 
-/// The line in front of notes a NEW session carries from an earlier one (not `--continue` / `/resume`, and after
-/// `/clear` or `/reset`): they are background, not the task (uitest 2026-11-08: an old goal carried into a new
+/// The line in front of the notes after `/clear` or `/reset` (a new session carries no earlier notes at all): they
+/// are background, not the task (uitest 2026-11-08: an old goal carried into a new
 /// session sent a 2B model on 30 web steps the user never asked for).
 pub const NOTES_BACKGROUND: &str = "(Background from an earlier session; the user has not asked to continue it. Do not pursue its goal or next step unless the request asks.)";
 
-/// Notes as a new session's first message carries them: the background line first, and without the old
-/// `## Session goal` section (that goal belongs to the earlier session; this one sets its own).
+/// Notes as the first message carries them after `/clear` or `/reset` (a new session carries none: repl starts it
+/// with no notes): the background line first, and without the `## Session goal` section, so the next request sets
+/// the goal from what the user asks.
 pub fn background_notes(notes: &str) -> String {
     let notes = notes.trim();
     let rest = match notes.find(GOAL_NOTES) {
@@ -330,6 +580,150 @@ pub fn background_notes(notes: &str) -> String {
 
 fn is_user_text(m: &Message) -> bool {
     m.role == Role::User && m.content.iter().any(|b| matches!(b, Block::Text { .. }))
+}
+
+/// a user message that is a request (the user's words, not tool results or Elisa's own correction note)
+fn is_request_msg(m: &Message) -> bool {
+    m.role == Role::User && m.content.iter().any(|b| matches!(b, Block::Text { text } if !text.starts_with(NUDGE_PREFIX)))
+}
+
+/// `msgs[..end]` with every attached document's text cut to its reference line (`[Attached: report.pdf, 12 pages ·
+/// …]`): the first room-maker when a request is over the window (BUGS #41). A later question about the document
+/// gets its parts again (`attach::follow_up`). None when there is nothing to cut.
+pub fn drop_doc_text(msgs: &[Message], end: usize) -> Option<Vec<Message>> {
+    let mut out = msgs.to_vec();
+    let mut changed = false;
+    for m in out[..end.min(msgs.len())].iter_mut().filter(|m| m.role == Role::User) {
+        for b in &mut m.content {
+            if let Block::Text { text } = b {
+                if crate::attach::is_block(text) && text.trim_end().contains('\n') {
+                    *text = crate::attach::first_line(text).to_string();
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed.then_some(out)
+}
+
+/// `msgs` without its oldest whole turns (a turn: a request and everything up to the next one), dropped until at
+/// least `free` tokens are gone, never the turn at `end` (the current request) or after it: the second room-maker
+/// (BUGS #41: a 2K window stopped with "say continue" instead). The first message's notes / `[state]` / recalled
+/// lines (the part before `## Request`) move to the new first message, so the notes stay in the request. None when
+/// nothing can go.
+pub fn drop_old_turns(msgs: &[Message], end: usize, free: usize) -> Option<Vec<Message>> {
+    let end = end.min(msgs.len());
+    let starts: Vec<usize> = (0..end).filter(|&i| is_request_msg(&msgs[i])).chain([end]).collect();
+    let mut cut = 0;
+    for &s in starts.iter().skip(1) {
+        cut = s;
+        if estimate_messages(&msgs[..cut]) >= free { break; }
+    }
+    if cut == 0 { return None; }
+    let head = msgs.first().and_then(|m| m.content.iter().find_map(|b| match b { Block::Text { text } => text.rsplit_once("## Request\n").map(|(h, _)| h.to_string()), _ => None }));
+    let mut out = msgs[cut..].to_vec();
+    if let (Some(h), Some(Block::Text { text })) = (head, out.first_mut().and_then(|m| m.content.first_mut())) {
+        if !text.contains("## Request\n") { *text = format!("{h}## Request\n{text}"); }
+    }
+    Some(out)
+}
+
+/// the start of a picture's text block in a user message: what the model saw when asked about the picture alone
+/// (`picture_request`); the turn itself then runs as text, and the picture is never sent again with the history
+pub const PICTURE_MARK: &str = "[picture: ";
+/// the question asked of a picture sent with no words
+pub const PICTURE_QUESTION: &str = "Describe this picture.";
+pub const PICTURES_QUESTION: &str = "Describe these pictures.";
+
+/// the picture text when no answer told anything about the picture (`picture_non_answer`, asked twice)
+pub const PICTURE_UNSEEN: &str = "the model could not make out the picture";
+
+/// A picture's text block for the turn's user message: `[picture: ANSWER]`.
+pub fn picture_block(answer: &str) -> String { format!("{PICTURE_MARK}{}]", answer.trim()) }
+
+/// a user message block that is a picture's text (`picture_block`), not the user's words
+pub fn is_picture_block(text: &str) -> bool { text.starts_with(PICTURE_MARK) }
+
+/// A picture answer that tells nothing about the picture (BUGS #57, #58): a refusal (`unfit_memory`: "I'm sorry, but
+/// I can't assist with that." from granite3.2-vision:2b asked "Use your read tool on …" with the picture) or a
+/// non-answer ("I'm sorry, I'm not sure what you're asking", "I didn't understand your question"). Carried into the
+/// turn, the main model took it as the answer and repeated it on later turns.
+pub fn picture_non_answer(answer: &str) -> bool {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?i)not sure what you(?:'re| are) asking|(?:didn't|did not|don't|do not) understand (?:your|the) question|\bunanswerable\b").unwrap());
+    let t = answer.trim().replace('’', "'");
+    // a refusal anywhere, not only first (qwen3-vl:2b-instruct asked the read ask with the picture: "That image
+    // appears to be a digital illustration… I can't extract a secret word from the image you shared.")
+    t.is_empty() || re.is_match(&t) || t.split_inclusive(['.', '!', '?', '\n']).any(|s| unfit_memory(s.trim()))
+}
+
+/// A reply without any `[picture: …]` text a model copied from the turn's message (BUGS #57: moondream:1.8b began
+/// replies with "[picture: The image shows a black cat face…"): each such span removed through its `]` (an unclosed
+/// one through the end of its line). Picture text is Elisa's request-only context, never reply text.
+pub fn strip_picture_echo(reply: &str) -> String {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?im)\[picture:[^\]\n]*(?:\]|$)").unwrap());
+    if !re.is_match(reply) { return reply.to_string(); }
+    let out = re.replace_all(reply, "");
+    let lines: Vec<&str> = out.lines().map(str::trim_end).collect();
+    let mut s = lines.join("\n");
+    while s.contains("\n\n\n") { s = s.replace("\n\n\n", "\n\n"); }
+    s.trim().to_string()
+}
+
+/// The history without the picture text of earlier turns (BUGS #57): a picture's text belongs to the turn that looked
+/// at it (`picture_request`); later turns have the reply that answered it. Run before a new turn's message is added,
+/// never within a turn (the prefix rule). Whether anything was removed.
+pub fn drop_picture_blocks(history: &mut [Message]) -> bool {
+    let mut any = false;
+    for m in history.iter_mut().filter(|m| m.role == Role::User) {
+        // never the first block: that is the user's own words, even when they look like picture text
+        let n = m.content.len();
+        let mut i = 0;
+        m.content.retain(|b| { i += 1; i == 1 || !matches!(b, Block::Text { text } if is_picture_block(text)) });
+        any |= m.content.len() != n;
+    }
+    any
+}
+
+/// what an image part becomes in a request to a model without vision (`without_images`)
+pub const IMAGE_STUB: &str = "[a picture was shared here; this model can't see pictures]";
+
+/// The messages with every image part replaced by `IMAGE_STUB`, for a model without vision (BUGS #62: a session saved
+/// before pictures went in their own request still held image parts, and after a switch to granite4.2:3b / gemma3:1b
+/// every turn failed with "image input is not supported" / "Multimodal data provided"). None when there is none. The
+/// same messages always give the same request, so the prefix stays stable.
+pub fn without_images(msgs: &[Message]) -> Option<Vec<Message>> {
+    if !msgs.iter().any(|m| m.content.iter().any(|b| matches!(b, Block::Image { .. }))) { return None; }
+    Some(msgs.iter().map(|m| {
+        let mut m = m.clone();
+        for b in m.content.iter_mut() {
+            if matches!(b, Block::Image { .. }) { *b = Block::Text { text: IMAGE_STUB.into() }; }
+        }
+        m
+    }).collect())
+}
+
+/// The line after a resumed conversation's restored turns (BUGS #65: after a model switch, the capabilities and
+/// "resumed N messages" were drawn above the history, so only the model chip showed the change): which model now
+/// answers and what it can do, e.g. "Now on granite4.2:3b · no vision · tools · thinking".
+pub fn now_on(model: &str, vision: bool, native_tools: bool, thinking: bool) -> String {
+    let mut s = format!("Now on {model} · {}", if vision { "vision" } else { "no vision" });
+    s.push_str(if native_tools { " · tools" } else { " · tools via the prompt" });
+    if thinking { s.push_str(" · thinking"); }
+    s
+}
+
+/// The isolated picture request (BUGS #37, #17): no system prompt, no history, the pictures alone in one message and
+/// then the question (the user's words, or `PICTURE_QUESTION` when there are none). Measured on Ollama 2026-11-09:
+/// granite3.2-vision:2b answered "unanswerable" or "I can't … corrupted image" with any system prompt, with earlier
+/// history, and even with the question in the pictures' own message, and read the picture with this shape;
+/// qwen3-vl:2b-instruct and moondream:1.8b read it the same way. The question ends with a line break: moondream:1.8b
+/// ended its answer at once (empty reply) on a question ending in "?" without one.
+pub fn picture_request(question: &str, pics: &[Block]) -> Vec<Message> {
+    let q = question.trim();
+    let q = if !q.is_empty() { q } else if pics.len() > 1 { PICTURES_QUESTION } else { PICTURE_QUESTION };
+    vec![Message::new(Role::User, pics.to_vec()), Message::user_text(format!("{q}\n"))]
 }
 
 fn trim_result(content: &str) -> String {
@@ -521,7 +915,9 @@ pub fn next_goal(current: Option<&str>, input: &str) -> Option<String> {
             // goal); a greeting in front of a request is not part of it
             let req = without_greeting(input).trim();
             let question = req.ends_with('?') && crate::mcp_reason::wanted(req) == Some(false);
-            if req.is_empty() || is_small_talk(req) || question { None } else { Some(one_line(req, 240)) }
+            // telling facts about themself ("My name is Linh, I live in Hanoi") is no goal: the facts go to the notes'
+            // facts in the third person (`user_facts`)
+            if req.is_empty() || small_talk_goal(req) || question || only_user_facts(req) { None } else { Some(one_line(req, 240)) }
         }
     }
 }
@@ -587,8 +983,196 @@ pub fn with_session_goal(notes: &str, goal: &str) -> String {
         }
         None => notes.to_string(),
     };
-    let sec = format!("{GOAL_NOTES}\n{}", one_line(goal, 240));
+    // a small-talk goal is no goal: the section goes (2026-11-09: "hey" was stored and carried forward)
+    if small_talk_goal(goal) { return rest; }
+    let sec = format!("{GOAL_NOTES}\n{}", users_words(&one_line(goal, 240)));
     if rest.is_empty() { sec } else { format!("{sec}\n\n{rest}") }
+}
+
+/// The clauses of the user's own words (a statement sentence's parts split at `,` `;` and before "and my / and I"),
+/// questions left out.
+fn user_clauses(text: &str) -> Vec<String> {
+    static AND: OnceLock<regex::Regex> = OnceLock::new();
+    let and = AND.get_or_init(|| regex::Regex::new(r"(?i)\s+(?:and|but|also)\s+((?:my|i|i'm|i am)\b)").unwrap());
+    let body = request_body(text).trim();
+    if body.starts_with('/') || body.starts_with(NUDGE_PREFIX.trim_end()) { return Vec::new(); }
+    let Some(own) = own_words(body) else { return Vec::new() };
+    let own = without_greeting(own).replace(['’', '‘'], "'");
+    // sentences end at . ! ? before a space / the end, or at a line break (not inside "v1.2" or "example.com")
+    let mut sentences: Vec<(String, bool)> = Vec::new();
+    let mut cur = String::new();
+    let cs: Vec<char> = own.chars().collect();
+    for (i, &c) in cs.iter().enumerate() {
+        let end = c == '\n' || (matches!(c, '.' | '!' | '?') && cs.get(i + 1).is_none_or(|n| n.is_whitespace()));
+        if !end { cur.push(c); continue; }
+        sentences.push((std::mem::take(&mut cur), c == '?'));
+    }
+    sentences.push((cur, false));
+    sentences.into_iter().filter(|(s, q)| !q && !s.trim().is_empty())
+        .flat_map(|(s, _)| and.replace_all(&s, ", $1").split([',', ';']).map(|c| c.trim().to_string()).collect::<Vec<_>>())
+        .filter(|c| !c.is_empty()).collect()
+}
+
+/// A fact the user stated about themself in one clause, said in the third person ("my name is Linh" → "The user's
+/// name is Linh"). 2026-11-09 (qwen3-vl:2b): after /compact the notes held "My name is Linh, …" as the session goal,
+/// written by Elisa, and "What's my name?" got "My name is Elisa": the user's facts must never read as Elisa's.
+fn user_fact(clause: &str) -> Option<String> { user_fact_kv(clause).map(|(f, _)| f) }
+
+/// `user_fact` and the fact's value ("Linh", "Hanoi", "ORCHID-42").
+fn user_fact_kv(clause: &str) -> Option<(String, String)> {
+    static RES: OnceLock<Vec<(regex::Regex, &'static str)>> = OnceLock::new();
+    let res = RES.get_or_init(|| [
+        (r"^my name(?:'s|\s+is)\s+(?P<v>.+)$", "The user's name is $v"),
+        (r"^(?:i'm|i\s+am)\s+called\s+(?P<v>.+)$", "The user's name is $v"),
+        // "I'm Linh": one capitalised word (checked below), never "I'm tired"
+        (r"^(?:i'm|i\s+am)\s+(?P<n>[\p{L}][\p{L}'-]*)$", "The user's name is $n"),
+        (r"^(?:please\s+)?call\s+me\s+(?P<v>.+)$", "The user wants to be called $v"),
+        (r"^i\s+(?:live|stay)\s+in\s+(?P<v>.+)$", "The user lives in $v"),
+        (r"^(?:i'm|i\s+am)\s+from\s+(?P<v>.+)$", "The user is from $v"),
+        (r"^i\s+work\s+(?P<p>as|at|for|in)\s+(?P<v>.+)$", "The user works $p $v"),
+        (r"^(?:i'm|i\s+am)\s+(?P<v>\d{1,3})\s+years?\s+old$", "The user is $v years old"),
+        // any other "my X is Y" (X up to 4 words): "my favourite colour is green", "my meeting code's ORCHID-42"
+        (r"^my\s+(?P<k>[a-z][a-z'-]*(?:\s+[a-z][a-z'-]*){0,3}?)(?:'s|\s+(?P<b>is|are))\s+(?P<v>.+)$", ""),
+    ].into_iter().map(|(r, t)| (regex::Regex::new(&format!("(?i){r}")).unwrap(), t)).collect());
+    let c = clause.trim().trim_end_matches(['.', '!', ';']).trim();
+    for (re, tmpl) in res {
+        let Some(m) = re.captures(c) else { continue };
+        if let Some(n) = m.name("n") {
+            if !n.as_str().starts_with(char::is_uppercase) { continue; }
+            return Some((format!("The user's name is {}", n.as_str()), n.as_str().to_string()));
+        }
+        let v = m.name("v").map_or("", |v| v.as_str()).trim().trim_matches(['"', '\'', '`']).trim();
+        let words = v.split_whitespace().count();
+        if words == 0 || words > 6 || v.contains('?') { return None; }
+        let out = match m.name("k") {
+            Some(k) => format!("The user's {} {} {v}", k.as_str(), m.name("b").map_or("is", |b| b.as_str())),
+            // the value without its quotes: expanded from the trimmed text
+            None => { let mut o = String::new(); m.expand(tmpl, &mut o); o.replacen(m.name("v").map_or("", |x| x.as_str()), v, 1) }
+        };
+        return Some((out.split_whitespace().collect::<Vec<_>>().join(" "), v.to_string()));
+    }
+    None
+}
+
+/// The values of the facts the user stated about themself in `text` ("Linh", "Hanoi", "ORCHID-42"; `user_facts`).
+pub fn user_fact_values(text: &str) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for (_, x) in user_clauses(text).iter().filter_map(|c| user_fact_kv(c)) { if !v.contains(&x) { v.push(x); } }
+    v
+}
+
+/// The user's fact values (`user_fact_values`) a reply says as Elisa's own (bug #69: "I'm Elisa, and I live in
+/// Hanoi. My meeting code is ORCHID-42."; "I'm from Hanoi too"): a clause of the reply with a first-person word and,
+/// after it, a value, and no "you" / "your" (that clause speaks to the user: "I'm glad you're from Hanoi"). Only
+/// the session's own fact values are looked for, never fixed words of a reply. Empty when none is claimed.
+// a few first- and second-person words, English and Vietnamese, kept short on purpose (user 2026-11-09: "can be
+// hardcoded but not too much"); never grow it per failure case
+pub fn claimed_user_facts(reply: &str, values: &[String]) -> Vec<String> {
+    static FIRST: OnceLock<regex::Regex> = OnceLock::new();
+    static YOU: OnceLock<regex::Regex> = OnceLock::new();
+    let first = FIRST.get_or_init(|| regex::Regex::new(r"(?i)\b(?:i|me|my|mine|myself|i'm|i've|i'd|i'll|tôi|mình|tớ|em)\b").unwrap());
+    let you = YOU.get_or_init(|| regex::Regex::new(r"(?i)\b(?:you|your|yours|you're|you've|you'll|you'd|yourself|bạn|cậu|anh|chị)\b").unwrap());
+    let (text, _, _) = split_state(reply);
+    let text = text.replace(['’', '‘'], "'");
+    let mut out: Vec<String> = Vec::new();
+    for clause in text.split(['.', ',', ';', '!', '?', '\n', ':', '—']) {
+        if you.is_match(clause) { continue; }
+        let Some(at) = first.find(clause).map(|m| m.end()) else { continue };
+        let after = clause[at..].to_lowercase();
+        for v in values {
+            let lv = v.to_lowercase();
+            let hit = after.match_indices(&lv).any(|(i, _)| {
+                let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+                edge(after[..i].chars().next_back()) && edge(after[i + lv.len()..].chars().next())
+            });
+            if !lv.is_empty() && hit && !out.contains(v) { out.push(v.clone()); }
+        }
+    }
+    out
+}
+
+/// The facts the user stated about themself in `text` (their own words: `request_body`, `own_words`), in the third
+/// person (`user_fact`), for the notes' `Facts to remember`: a summary may drop them or write them so they read as
+/// Elisa's ("Name: Linh", a quoted "My name is Linh").
+pub fn user_facts(text: &str) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for f in user_clauses(text).iter().filter_map(|c| user_fact(c)) { if !v.contains(&f) { v.push(f); } }
+    v
+}
+
+/// A fact in the third person (`user_fact`'s "The user's name is Linh") as said to the user ("your name is Linh"),
+/// None for any other line. Only Elisa's own templates are read, never the user's or a model's wording.
+pub fn fact_to_you(fact: &str) -> Option<String> {
+    let f = fact.trim();
+    let rest = f.strip_prefix("The user")?;
+    let you = if let Some(r) = rest.strip_prefix("'s ") { format!("your {r}") }
+        else if let Some(r) = rest.strip_prefix(" is ") { format!("you are {r}") }
+        else if let Some(r) = rest.strip_prefix(" wants ") { format!("you want {r}") }
+        else if let Some(r) = rest.strip_prefix(" lives ") { format!("you live {r}") }
+        else if let Some(r) = rest.strip_prefix(" works ") { format!("you work {r}") }
+        else { return None };
+    Some(you)
+}
+
+/// Whether a request only tells facts about the user ("My name is Linh, I live in Hanoi"): no session goal.
+pub fn only_user_facts(text: &str) -> bool {
+    let cl = user_clauses(text);
+    !cl.is_empty() && cl.iter().all(|c| user_fact(c).is_some())
+}
+
+/// `notes` with `facts` (`user_facts`) in `## Facts to remember` (merged, duplicates dropped).
+pub fn with_user_facts(notes: &str, facts: &[String]) -> String {
+    if facts.is_empty() { return notes.to_string(); }
+    let add = format!("## Facts to remember\n{}", facts.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n"));
+    merge_notes(Some(notes), &add)
+}
+
+/// The user's words as Elisa shows them in notes or `[state]`: a stated fact in the third person (`user_facts`),
+/// first-person words quoted as the user's (`the user said: "fix my build"`), anything else as it is. "I", "me" and
+/// "my" outside the user's own messages would read as Elisa's (2026-11-09: "My name is Elisa").
+pub fn users_words(text: &str) -> String {
+    let t = text.trim();
+    if only_user_facts(t) { return user_facts(t).join("; "); }
+    static FIRST: OnceLock<regex::Regex> = OnceLock::new();
+    let first = FIRST.get_or_init(|| regex::Regex::new(r"(?i)\b(?:i|me|my|mine|myself|i'm|i've|i'd|i'll)\b").unwrap());
+    if first.is_match(&t.replace('’', "'")) && !t.starts_with("the user said:") { format!("the user said: \"{}\"", t.trim_matches('"')) } else { t.to_string() }
+}
+
+/// what an old assistant answer keeps in a request when the history is long (`shorten_old_replies`), in tokens
+pub const SHORT_REPLY_TOKENS: usize = 120;
+/// the marker after a shortened answer
+pub const SHORTENED: &str = " …[shortened]";
+/// the history share of the window (percent) above which old answers are shortened in requests
+pub const SHORTEN_AT_PCT: usize = 35;
+
+/// The history as a request sends it when it is long (over SHORTEN_AT_PCT of `max_ctx`): every assistant answer
+/// before `end` (the current turn's request) except the last 2 keeps only its first SHORT_REPLY_TOKENS tokens plus
+/// SHORTENED. For requests only, never the saved history; None when nothing changes. 2026-11-09: a resumed PDF chat
+/// carried ~7K tokens of a 2B model's long padded answers, which squeezed each question's document budget to its 2K
+/// floor (1-2 pages), and answers came out partly made up.
+pub fn shorten_old_replies(msgs: &[Message], end: usize, max_ctx: usize) -> Option<Vec<Message>> {
+    if estimate_messages(msgs) * 100 <= max_ctx * SHORTEN_AT_PCT { return None; }
+    let answers: Vec<usize> = msgs[..end.min(msgs.len())].iter().enumerate()
+        .filter(|(_, m)| m.role == Role::Assistant && m.content.iter().any(|b| matches!(b, Block::Text { text } if !text.trim().is_empty())))
+        .map(|(i, _)| i).collect();
+    let old = &answers[..answers.len().saturating_sub(2)];
+    let max_chars = SHORT_REPLY_TOKENS * 33 / 10;
+    let mut out: Option<Vec<Message>> = None;
+    for &i in old {
+        let m = &msgs[i];
+        if !m.content.iter().any(|b| matches!(b, Block::Text { text } if text.chars().count() > max_chars + SHORTENED.len())) { continue; }
+        let v = out.get_or_insert_with(|| msgs.to_vec());
+        for b in v[i].content.iter_mut() {
+            if let Block::Text { text } = b {
+                if text.chars().count() <= max_chars + SHORTENED.len() { continue; }
+                let cut: String = text.chars().take(max_chars).collect();
+                // at a word boundary when there is one near the end
+                let cut = match cut.rfind(char::is_whitespace) { Some(j) if j > max_chars * 3 / 4 => cut[..j].to_string(), _ => cut };
+                *text = format!("{}{SHORTENED}", cut.trim_end());
+            }
+        }
+    }
+    out
 }
 
 /// Shrink old turns in place (oldest first, never the last `keep_recent` user turns) until the
@@ -720,6 +1304,8 @@ fn transcript(msgs: &[Message]) -> String {
                     // the user's own words only: the first message's header (cwd, old notes, [state]) and recalled
                     // [memory] were written by Elisa; shown as "User:" they became facts about the user in the notes
                     let t = if m.role == Role::User { request_body(text).trim() } else { text.trim() };
+                    // an attached document (`attach.rs`): its name line only, never its text, reaches the notes
+                    let t = if m.role == Role::User && crate::attach::is_block(t) { crate::attach::first_line(t) } else { t };
                     if t.is_empty() { continue; }
                     if m.role == Role::User && t.starts_with(NUDGE_PREFIX.trim_end()) { continue; }
                     out.push_str(if m.role == Role::User { "User: " } else { "Elisa: " });
@@ -795,7 +1381,7 @@ fn unix_now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UN
 
 /// Per-session id so every save of one session goes to the same session file (set at the first use; /clear starts
 /// a new one with `new_session`).
-fn run_id() -> u64 {
+pub fn run_id() -> u64 {
     use std::sync::atomic::Ordering;
     let id = RUN_ID.load(Ordering::SeqCst);
     if id != 0 { return id; }
@@ -820,7 +1406,11 @@ pub struct Store { pub dir: PathBuf }
 impl Store {
     pub fn new(cwd: &Path) -> Store { Store { dir: cwd.join(".elisa") } }
 
-    fn notes_path(&self) -> PathBuf { self.dir.join("notes.md") }
+    /// This session's notes: `.elisa/notes/<session id>.md`, one file per session, so a new session never overwrites
+    /// or loses an earlier one's (2026-11-09: one shared `notes.md` was carried into every new session and a 2B model
+    /// answered "hey" with the earlier session's task).
+    fn notes_path(&self) -> PathBuf { self.notes_path_of(run_id()) }
+    fn notes_path_of(&self, id: u64) -> PathBuf { self.dir.join("notes").join(format!("{id}.md")) }
     fn allow_path(&self) -> PathBuf { self.dir.join("allow") }
 
     /// Tools the user chose "always allow" for in this project (`.elisa/allow`, one name per line).
@@ -842,11 +1432,22 @@ impl Store {
         fs::read_to_string(root.join("ELISA.md")).ok().and_then(non_empty)
     }
 
+    /// This session's own notes (None for a new session: it starts clean).
     pub fn load_notes(&self) -> Option<String> { fs::read_to_string(self.notes_path()).ok().and_then(non_empty) }
 
+    /// The notes of saved session `id` (for `--continue` / `/resume`): only that session's own
+    /// `.elisa/notes/<id>.md`. The shared `.elisa/notes.md` of Elisa before per-session notes is never read
+    /// (2026-11-09: it came back with `--continue`, and an old Python-async task's facts and a "hey" session goal were
+    /// merged forward into a PDF conversation's notes by every fold).
+    pub fn session_notes(&self, id: u64) -> Option<String> {
+        fs::read_to_string(self.notes_path_of(id)).ok().and_then(non_empty)
+    }
+
+    /// Saves this session's notes (`.elisa/notes/<session id>.md`); earlier sessions' notes are not touched.
     pub fn save_notes(&self, notes: &str) -> Result<(), String> {
-        fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let p = self.notes_path();
+        let dir = p.parent().unwrap_or(&self.dir);
+        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         // on disk: never a secret, whatever the `redact` setting
         let (notes, _) = crate::secrets::redact(notes.trim());
         fs::write(&p, format!("{notes}\n")).map_err(|e| format!("{}: {e}", p.display()))
@@ -865,7 +1466,12 @@ impl Store {
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let p = dir.join(format!("{}.json", run_id()));
         // the title below comes from the redacted copy too (QA N2: a password typed in the prompt reached the .meta)
-        let msgs = &redact_messages(msgs)[..];
+        let mut msgs = redact_messages(msgs);
+        // a turn's situation line / follow-up hint is that request's only: the saved user words go without it
+        for m in msgs.iter_mut().filter(|m| m.role == Role::User) {
+            for b in m.content.iter_mut() { if let Block::Text { text } = b { if let Some(t) = strip_turn_lines(text) { *text = t; } } }
+        }
+        let msgs = &msgs[..];
         let json = serde_json::to_string(msgs).map_err(|e| e.to_string())?;
         let tmp = p.with_extension("json.tmp");
         fs::write(&tmp, json).and_then(|_| fs::rename(&tmp, &p)).map_err(|e| format!("{}: {e}", p.display()))?;
@@ -879,18 +1485,49 @@ impl Store {
         Ok(p)
     }
 
-    /// Newest saved session from an earlier run (this run's own file is skipped).
-    pub fn load_last_session(&self) -> Option<Vec<Message>> {
+    /// The newest earlier session with real content (`real_content`), up to 20 back; a file over 2 MB counts as
+    /// real without being read. A terminal `--continue` and the explicit "continue the last one" use it, so a dead
+    /// session ("continue the last one" → the generic intro) never shadows the real one under it. `/resume` lists
+    /// everything.
+    pub fn newest_real_session(&self) -> Option<(u64, PathBuf)> {
         let own = run_id();
-        let newest = fs::read_dir(self.sessions_dir()).ok()?
-            .filter_map(|e| {
-                let p = e.ok()?.path();
-                if p.extension()? != "json" { return None; }
-                let ts: u64 = p.file_stem()?.to_str()?.parse().ok()?;
-                (ts != own).then_some((ts, p))
-            })
-            .max_by_key(|(ts, _)| *ts)?;
-        serde_json::from_str(&fs::read_to_string(newest.1).ok()?).ok()
+        let mut v: Vec<(u64, PathBuf)> = fs::read_dir(self.sessions_dir()).ok()?.filter_map(|e| {
+            let p = e.ok()?.path();
+            if p.extension()? != "json" { return None; }
+            let ts: u64 = p.file_stem()?.to_str()?.parse().ok()?;
+            (ts != own).then_some((ts, p))
+        }).collect();
+        v.sort_by_key(|a| std::cmp::Reverse(a.0));
+        v.into_iter().take(20).find(|(_, p)| {
+            if fs::metadata(p).is_ok_and(|m| m.len() > 2_000_000) { return true; }
+            self.load_session(p).is_some_and(|h| real_content(&h))
+        })
+    }
+
+    /// Newest saved session from an earlier run (this run's own file is skipped).
+    pub fn load_last_session(&self) -> Option<Vec<Message>> { self.load_last_session_with_notes().map(|(h, _)| h) }
+
+    /// Newest saved session from an earlier run with its own notes (`--continue`).
+    pub fn load_last_session_with_notes(&self) -> Option<(Vec<Message>, Option<String>)> {
+        let (id, p) = self.newest_real_session()?;
+        let h = serde_json::from_str(&fs::read_to_string(p).ok()?).ok()?;
+        Some((h, self.session_notes(id)))
+    }
+
+    /// The newest earlier session with any message, up to 20 back: the conversation that was open last, whatever was
+    /// said in it. `--continue-open` takes it: the app's restart of the open conversation (a model switch, a
+    /// reconnect, a dev reload) (BUGS #63: a one-turn "hi" chat was skipped as not
+    /// `real_content`, and the switch said "no saved session to continue", 6 of 10 quick switches).
+    pub fn newest_session(&self) -> Option<(u64, PathBuf)> {
+        let own = run_id();
+        let mut v: Vec<(u64, PathBuf)> = fs::read_dir(self.sessions_dir()).ok()?.filter_map(|e| {
+            let p = e.ok()?.path();
+            if p.extension()? != "json" { return None; }
+            let ts: u64 = p.file_stem()?.to_str()?.parse().ok()?;
+            (ts != own).then_some((ts, p))
+        }).collect();
+        v.sort_by_key(|a| std::cmp::Reverse(a.0));
+        v.into_iter().take(20).find(|(_, p)| fs::metadata(p).is_ok_and(|m| m.len() > 2_000_000) || self.load_session(p).is_some_and(|h| !h.is_empty()))
     }
 
     /// Saved sessions from earlier runs, newest first, at most LIST_MAX (this run's own file is skipped). Built from file
@@ -923,6 +1560,11 @@ impl Store {
         serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
     }
 
+    /// The notes of the saved session at `path` (`/resume`).
+    pub fn load_session_notes(&self, path: &Path) -> Option<String> {
+        self.session_notes(path.file_stem()?.to_str()?.parse().ok()?)
+    }
+
     fn card_reset_path(&self) -> PathBuf { self.dir.join("card-reset") }
 
     /// /reset and /forget dropped the state card: cards up to `id` (elisa-mem ids) are not carried into a new session.
@@ -933,6 +1575,52 @@ impl Store {
 
     /// The newest card id a /reset or /forget dropped (None = never).
     pub fn card_reset(&self) -> Option<u64> { fs::read_to_string(self.card_reset_path()).ok()?.trim().parse().ok() }
+
+    fn forgot_path(&self) -> PathBuf { self.dir.join("memory-forgotten") }
+
+    /// /forget: this project's memories (elisa-mem ids) below `next` are never recalled again (the store is
+    /// append-only; the saved conversation files are kept).
+    pub fn save_forgot(&self, next: u64) -> Result<(), String> {
+        fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        fs::write(self.forgot_path(), format!("{next}\n")).map_err(|e| format!("{}: {e}", self.forgot_path().display()))
+    }
+
+    /// The memory id the last /forget stopped at: this project's memories below it are forgotten (None = never).
+    pub fn forgot(&self) -> Option<u64> { fs::read_to_string(self.forgot_path()).ok()?.trim().parse().ok() }
+
+    fn cards_path_of(&self, id: u64) -> PathBuf { self.dir.join("session-meta").join(format!("{id}.cards.json")) }
+
+    /// This session's state cards with their topics (`topics.rs`), beside its `.meta`: what `--continue` / `/resume`
+    /// load (nothing is sent until a message picks one). None written while there is none.
+    pub fn save_cards(&self, cards: &[crate::topics::Card]) {
+        if cards.is_empty() { return; }
+        let p = self.cards_path_of(run_id());
+        let redacted: Vec<crate::topics::Card> = cards.iter().map(|c| crate::topics::Card { text: crate::secrets::redact(&c.text).0, ..c.clone() }).collect();
+        if let (Some(dir), Ok(json)) = (p.parent(), serde_json::to_string(&redacted)) {
+            if fs::create_dir_all(dir).is_ok() { let _ = fs::write(&p, json); }
+        }
+    }
+
+    /// The state cards saved with session `id` (`save_cards`); None for an older session without them.
+    pub fn load_cards(&self, id: u64) -> Option<Vec<crate::topics::Card>> {
+        serde_json::from_str(&fs::read_to_string(self.cards_path_of(id)).ok()?).ok()
+    }
+}
+
+/// `text` (a first message) without the state card lines in its `[state]` block, the block gone when nothing else is
+/// left in it (the session goal and pinned facts stay). None when there is no card in it. An older Elisa put the
+/// latest card there; a resumed session sends a card only when the turn's topic picks it (`topics.rs`).
+pub fn strip_state_card(text: &str) -> Option<String> {
+    let i = text.find("[state]\n")?;
+    let body_at = i + "[state]\n".len();
+    let j = body_at + text[body_at..].find("[/state]")?;
+    let body = &text[body_at..j];
+    let is_card = |l: &str| l.split_once(':').is_some_and(|(k, _)| CARD_KEYS.contains(&k.trim().to_ascii_lowercase().as_str()));
+    if !body.lines().any(is_card) { return None; }
+    let keep: Vec<&str> = body.lines().filter(|l| !is_card(l)).filter(|l| !l.trim().is_empty()).collect();
+    let end = j + "[/state]".len();
+    let after = text[end..].strip_prefix("\n\n").or_else(|| text[end..].strip_prefix('\n')).unwrap_or(&text[end..]);
+    Some(if keep.is_empty() { format!("{}{after}", &text[..i]) } else { format!("{}[state]\n{}\n[/state]\n\n{after}", &text[..i], keep.join("\n")) })
 }
 
 /// Heading of the notes section a state-card fold writes (no model call): what the folded turns' cards said.
@@ -1008,12 +1696,228 @@ fn head_title(path: &Path) -> String {
 
 /// The user's own words of a user message: without the `first_message` header and a leading recalled `[memory]` block.
 pub fn request_body(text: &str) -> &str {
+    // "OS: …": a routed chat first turn's header, without the working directory (`repl.rs` `route_cwd`);
+    // "Local time now: …": the clock lines in front of a routed time turn (`repl.rs`): both may lead, in either order
+    let header = |t: &str| t.starts_with("Working directory: ") || t.starts_with("Local time now: ") || (t.starts_with("OS: ") && t.contains("\nDate: "));
     let body = match text.rsplit_once("## Request\n") {
         Some((_, r)) => r,
-        None if text.starts_with("Working directory: ") => text.split_once("\n\n").map_or(text, |(_, r)| r),
-        None => text,
+        None => {
+            let mut t = text;
+            for _ in 0..2 { if header(t) { t = t.split_once("\n\n").map_or(t, |(_, r)| r); } }
+            t
+        }
     };
-    strip_memory(body)
+    // a small-talk turn's situation line, or a short follow-up's hint, sits right before the user's words
+    // (`situation.rs`, `followup.rs`)
+    crate::followup::strip(crate::situation::strip(strip_memory(crate::route::strip_ask(crate::reply_lang::strip_hint(body)))))
+}
+
+/// turns of a resumed conversation shown again (`earlier_turns`)
+pub const EARLIER_TURNS: usize = 40;
+
+/// A resumed conversation's earlier turns as the user saw them, for the display (the app's `history` event, the
+/// TUI): the user's own words (no Working directory / OS / Date / clock header, notes, `[state]`, recalled memories,
+/// situation or follow-up hints; an attached document as its reference line only) and the replies as written, a
+/// tool call as one line ("used read on README.md"), tool results left out. The last `max_turns` user turns.
+pub fn earlier_turns(history: &[Message], cwd: &Path, max_turns: usize) -> Vec<crate::frontend::Earlier> {
+    use crate::frontend::Earlier;
+    let mut out: Vec<Earlier> = Vec::new();
+    for m in history {
+        match m.role {
+            Role::User => {
+                let mut words = String::new();
+                let mut refs: Vec<String> = Vec::new();
+                for b in &m.content {
+                    let Block::Text { text } = b else { continue };
+                    if text.starts_with(NUDGE_PREFIX) || is_picture_block(text) { continue; }
+                    if crate::attach::is_block(text) {
+                        if text.starts_with(crate::attach::MARK) { refs.push(crate::attach::first_line(text).to_string()); }
+                        continue;
+                    }
+                    let t = request_body(text);
+                    let t = strip_turn_lines(t).unwrap_or_else(|| t.to_string());
+                    if !t.trim().is_empty() { if !words.is_empty() { words.push('\n'); } words += t.trim(); }
+                }
+                for r in refs { if !words.is_empty() { words.push('\n'); } words += &r; }
+                if !words.is_empty() { out.push(Earlier { role: "user".into(), text: words }); }
+            }
+            Role::Assistant => {
+                let mut t = String::new();
+                for b in &m.content {
+                    let line = match b {
+                        Block::Text { text } => split_state(text).0.trim().to_string(),
+                        Block::ToolUse { name, input, .. } => match crate::tui::act_target(name, input, cwd).filter(|x| !x.is_empty()) {
+                            Some(x) => format!("used {name} on {}", one_line(&x, 80)),
+                            None => format!("used {name}"),
+                        },
+                        _ => String::new(),
+                    };
+                    if line.is_empty() { continue; }
+                    if !t.is_empty() { t.push_str(if matches!(b, Block::ToolUse { .. }) { "\n" } else { "\n\n" }); }
+                    t += &line;
+                }
+                if t.is_empty() { continue; }
+                // the steps of one turn (tool calls, then the answer) are one reply
+                match out.last_mut() {
+                    Some(l) if l.role == "assistant" => { l.text.push_str("\n\n"); l.text += &t; }
+                    _ => out.push(Earlier { role: "assistant".into(), text: t }),
+                }
+            }
+        }
+    }
+    let users: Vec<usize> = out.iter().enumerate().filter(|(_, e)| e.role == "user").map(|(i, _)| i).collect();
+    if users.len() > max_turns { out.drain(..users[users.len() - max_turns]); }
+    out
+}
+
+/// `text` without its situation line / follow-up hint paragraph (`situation.rs`, `followup.rs`), None when it has
+/// neither.
+pub fn strip_turn_lines(text: &str) -> Option<String> {
+    let line = |p: &str| (p.starts_with(crate::situation::PREFIX) || p.starts_with(crate::followup::PREFIX)) && p.ends_with(')') && !p.contains('\n');
+    if !text.split("\n\n").any(line) { return None; }
+    Some(text.split("\n\n").filter(|p| !line(p)).collect::<Vec<_>>().join("\n\n"))
+}
+
+/// A reply that is only a greeting or Elisa's generic intro ("Hello! How can I help you today?", "I'm Elisa, a
+/// personal assistant on your Mac…"), or Elisa's own "no earlier conversation" line: nothing to follow up on or
+/// continue.
+pub fn is_intro(text: &str) -> bool {
+    let l = text.trim().to_lowercase();
+    if l.is_empty() { return true; }
+    let intro = ["i'm elisa", "i am elisa", "a personal assistant on your mac", "your personal assistant on mac", "your personal assistant on your mac", "there's no earlier conversation", "chưa có cuộc trò chuyện nào trước đó", "tôi là elisa"];
+    let hello = ["how can i help", "what can i help", "how can i assist", "what would you like to do next", "giúp gì", "bạn muốn làm gì tiếp theo"];
+    intro.iter().any(|p| l.contains(p)) || (l.chars().count() <= 60 && hello.iter().any(|p| l.contains(p)))
+}
+
+/// A saved session worth continuing: some user turn that is more than a greeting, small talk, a short follow-up or
+/// a continue ask (or carries an attached document), and some reply that is more than a greeting / the intro.
+pub fn real_content(h: &[Message]) -> bool {
+    let user = h.iter().filter(|m| m.role == Role::User).any(|m| {
+        let t: Vec<&str> = m.content.iter().filter_map(|b| match b { Block::Text { text } => Some(text.as_str()), _ => None }).collect();
+        t.len() > 1 || t.first().is_some_and(|t| {
+            let w = request_body(t).trim();
+            !w.is_empty() && !crate::route::small_talk(w) && !crate::route::ack(w) && !crate::route::is_follow_up(w) && crate::route::resume_intent(w).is_none() && crate::followup::kind(w).is_none()
+        })
+    });
+    let reply = h.iter().filter(|m| m.role == Role::Assistant).any(|m| m.content.iter().any(|b| match b {
+        Block::ToolUse { .. } => true,
+        Block::Text { text } => !text.trim_start().starts_with('[') && !is_intro(text),
+        _ => false,
+    }));
+    user && reply
+}
+
+/// The request's messages with a repeated reply dropped: when the last two answered turns got the same reply (the
+/// 2B model then copies it a third time: measured, the intro 3 times running), the older turn (its user message and
+/// reply) goes from the request, until the last two differ. None when nothing repeats. The history is unchanged.
+pub fn drop_repeated_replies(msgs: &[Message]) -> Option<Vec<Message>> {
+    let user_text = |m: &Message| m.role == Role::User && m.content.iter().all(|b| matches!(b, Block::Text { .. }));
+    let reply = |m: &Message| (m.role == Role::Assistant && m.content.iter().all(|b| matches!(b, Block::Text { .. })))
+        .then(|| m.content.iter().filter_map(|b| match b { Block::Text { text } => Some(text.trim()), _ => None }).collect::<Vec<_>>().join("\n"));
+    let mut v = msgs.to_vec();
+    let mut changed = false;
+    loop {
+        // answered turns: (index of the user message, its reply text)
+        let pairs: Vec<(usize, String)> = (0..v.len().saturating_sub(1)).filter(|&i| user_text(&v[i])).filter_map(|i| reply(&v[i + 1]).map(|r| (i, r))).collect();
+        let n = pairs.len();
+        if n < 2 { break; }
+        let ((i1, r1), (i2, r2)) = (&pairs[n - 2], &pairs[n - 1]);
+        // adjacent turns with the same non-empty reply; never the first message (it carries the session's header)
+        if *i1 == 0 || i1 + 2 != *i2 || r1.is_empty() || r1 != r2 { break; }
+        v.drain(*i1..i1 + 2);
+        changed = true;
+    }
+    changed.then_some(v)
+}
+
+/// A loaded session: an assistant message with no recorded model gets "" (unknown: saved before models were
+/// recorded), so stamping on the next save (`stamp_model`) never claims it for this run's model.
+pub fn loaded(mut h: Vec<Message>) -> Vec<Message> {
+    for m in h.iter_mut().filter(|m| m.role == Role::Assistant && m.model.is_none()) { m.model = Some(String::new()); }
+    h
+}
+
+/// The assistant messages written in this run (no model recorded yet) get `model` (bug #66).
+pub fn stamp_model(h: &mut [Message], model: &str) {
+    for m in h.iter_mut().filter(|m| m.role == Role::Assistant && m.model.is_none()) { m.model = Some(model.to_string()); }
+}
+
+/// how the block of another model's turns starts in a request (`other_model_view`)
+pub const EARLIER_OPEN: &str = "[earlier in this chat";
+/// an earlier ask in that block, at most this many chars
+pub const EARLIER_ASK_CHARS: usize = 200;
+
+/// The request's messages when the history holds turns another model answered (bug #66: after a model switch,
+/// small models took the old model's replies in the assistant role as their own and copied them, the old model's
+/// name included: granite, gemma and granite3.2-vision each said "I'm Qwen3-VL"). Each such turn leaves the
+/// assistant role and its reply leaves the request: the user's words (as Elisa writes them, `users_words`: a fact in
+/// the third person, other first-person words quoted) become one line in an `[earlier in this chat …]` block at the
+/// front of the next turn this model answers (the first message's header stays first). Measured: the old replies
+/// kept in that block, labelled "Elisa on granite4.2:3b: …", were continued as a transcript by gemma3:1b ("Elisa on
+/// granite4.2:3b: No, I cannot see pictures."); with the replies left out every model answered as itself. A turn
+/// whose ask the user repeats later is left out too. `now` is the current model's facts (`situation::model_now`).
+/// A tiny window gets the user's lines only. Decided from the recorded models alone, never from reply wording; for
+/// requests only (the history is unchanged). None when no turn was answered by another model.
+pub fn other_model_view(msgs: &[Message], model: &str, now: &str, tiny: bool) -> Option<Vec<Message>> {
+    let other = |m: &Message| m.role == Role::Assistant && m.model.as_deref().is_some_and(|x| !x.is_empty() && x != model);
+    if !msgs.iter().any(other) { return None; }
+    let starts: Vec<usize> = (0..msgs.len()).filter(|&i| is_request_msg(&msgs[i])).collect();
+    if starts.first() != Some(&0) { return None; }
+    // the user's own words of a request message (no header, hints, memory; a document as its reference line)
+    let words = |m: &Message| -> String {
+        let mut v: Vec<String> = Vec::new();
+        for b in &m.content {
+            let Block::Text { text } = b else { continue };
+            if text.starts_with(NUDGE_PREFIX) || is_picture_block(text) { continue; }
+            if crate::attach::is_block(text) { v.push(crate::attach::first_line(text).to_string()); continue; }
+            let t = request_body(text);
+            v.push(strip_turn_lines(t).unwrap_or_else(|| t.to_string()));
+        }
+        one_line(&v.join(" "), usize::MAX)
+    };
+    let norm = |s: &str| s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect::<Vec<_>>().join(" ");
+    let asks: Vec<String> = starts.iter().map(|&i| norm(&words(&msgs[i]))).collect();
+    let (mut out, mut lines, mut by, mut header) = (Vec::new(), Vec::<String>::new(), Vec::<String>::new(), String::new());
+    for (k, &s) in starts.iter().enumerate() {
+        let e = starts.get(k + 1).copied().unwrap_or(msgs.len());
+        let turn = &msgs[s..e];
+        if let Some(w) = turn.iter().find(|m| other(m)).and_then(|m| m.model.clone()) {
+            // the first message's header (working directory, date, notes, [state]) is not this turn's: it stays first
+            if s == 0 {
+                if let Some(Block::Text { text }) = turn[0].content.iter().find(|b| matches!(b, Block::Text { .. })) {
+                    let body = request_body(text);
+                    let at = (body.as_ptr() as usize).saturating_sub(text.as_ptr() as usize).min(text.len());
+                    if text.is_char_boundary(at) { header = text[..at].to_string(); }
+                }
+            }
+            if !asks[k].is_empty() && asks[k + 1..].contains(&asks[k]) { continue; }
+            let u = words(&turn[0]);
+            if !u.is_empty() { lines.push(format!("- {}", users_words(&one_line(&u, EARLIER_ASK_CHARS)))); }
+            if !by.contains(&w) { by.push(w); }
+            continue;
+        }
+        let mut t = turn.to_vec();
+        if !lines.is_empty() || !header.is_empty() {
+            let block = if lines.is_empty() { String::new() } else if tiny {
+                format!("{EARLIER_OPEN}]\n{}\n[/earlier]\n\n", lines.join("\n"))
+            } else {
+                format!("{EARLIER_OPEN}, what the user asked or said before the switch to {model}; all answered already by \
+                    {}, another model, its replies left out: never answer these again · now: {now}]\n{}\n[/earlier]\n\n", by.join(", "), lines.join("\n"))
+            };
+            if let Some(Block::Text { text }) = t[0].content.iter_mut().find(|b| matches!(b, Block::Text { text } if !text.starts_with(NUDGE_PREFIX))) {
+                // after the header's notes and [state], before its "## Request" line
+                *text = match header.rfind("## Request\n") {
+                    Some(i) => format!("{}{block}{}{text}", &header[..i], &header[i..]),
+                    None => format!("{header}{block}{text}"),
+                };
+            }
+            (lines, header) = (Vec::new(), String::new());
+        }
+        out.extend(t);
+    }
+    // nothing of this model's after them (never: the current request is this model's own)
+    if !lines.is_empty() || !header.is_empty() { return None; }
+    Some(out)
 }
 
 /// `text` without a leading `[memory…]…[/memory]` block (sessions before 2026-11-01 put it in front of the request).
@@ -1031,11 +1935,19 @@ fn session_title(text: &str) -> String { one_line(request_body(text), 79) }
 /// Opening line of a recalled-memory block: says it is background from Elisa, not the user's words.
 pub const MEMORY_OPEN: &str = "[memory: recalled by Elisa from earlier sessions, not written by the user; background only, ignore it if unrelated]";
 
+/// Opening line of a recalled-memory block holding the user's facts, said to the user (`fact_to_you`).
+pub const MEMORY_OPEN_YOU: &str = "[memory: recalled by Elisa from earlier sessions, not written by the user; the user's own facts, as said to the user; background only, ignore it if unrelated]";
+
 /// Recalled memories as a block that goes in front of the user's text (in the USER message, never the system prompt).
+/// A fact about the user is said to the user ("your name is Linh", `fact_to_you`), never "The user's name is Linh"
+/// (bug #69: in the user's own message, next to "what's my name?", the third person came back as "My name is
+/// Elisa, and I live in Hanoi"; measured, 2B models answered "your …" more often with the facts already in that form).
 pub fn with_memory(lines: &[String], text: &str) -> String {
     if lines.is_empty() { return text.to_string(); }
-    let mut s = format!("{MEMORY_OPEN}\n");
-    for l in lines { s += &format!("- {l}\n"); }
+    let lines: Vec<(String, bool)> = lines.iter().map(|l| fact_to_you(l).map_or((l.clone(), false), |y| (y, true))).collect();
+    let open = if lines.iter().any(|(_, y)| *y) { MEMORY_OPEN_YOU } else { MEMORY_OPEN };
+    let mut s = format!("{open}\n");
+    for (l, _) in &lines { s += &format!("- {l}\n"); }
     s + "[/memory]\n\n" + text
 }
 
@@ -1258,6 +2170,8 @@ pub fn verify_claims(notes: &str, ledger: &Ledger, now: &dyn Fn(&str) -> Option<
         if t.is_empty() { out.push(String::new()); continue; }
         if heading.starts_with("files touched") {
             let n = norm_words(t);
+            // an attached document (`ground_notes`): read, not changed, and not a claim
+            if n.starts_with("attached ") { out.push(l.to_string()); continue; }
             if n.starts_with("no files") || n.starts_with("none") || n.starts_with("nothing") || n.contains("no files were") { continue; }
             let (paths, _) = claim_tokens(t);
             // Elisa's own section lists what changed: a line it does not back is noise next to it (dropped); with no
@@ -1289,6 +2203,74 @@ pub fn verify_claims(notes: &str, ledger: &Ledger, now: &dyn Fn(&str) -> Option<
                 None if ledger.is_empty() => kept.push(format!("{sent} {UNVERIFIED}")),
                 _ => kept.push(sent),
             }
+        }
+        let line = kept.join(" ");
+        if !line.trim().trim_start_matches(['-', '*']).trim().is_empty() { out.push(line); }
+    }
+    clean_notes(&out.join("\n"))
+}
+
+/// Words of a claim that the assistant gave code ("provided code examples", "wrote a script").
+const CODE_CLAIM: &[&str] = &["code example", "code examples", "example code", "sample code", "code sample", "code samples", "code snippet",
+    "code snippets", "python script", "a script", "scripts", "python code", "the code"];
+const GAVE: &[&str] = &["provided", "generated", "wrote", "written", "shared", "gave", "given", "included", "includes", "including", "created", "showed", "shown", "offered"];
+
+/// New notes checked against what the conversation actually holds (2026-11-09, a 2B fold of a PDF chat: "Elisa has
+/// also provided … code examples" with no code in any reply; "Files touched: /Users/…/2412.20138v7.pdf – analyzed"
+/// for a PDF the user attached; "[tool glob …]" under Files touched). `said`: every assistant text of the
+/// conversation; `docs`: the attached documents (file names); `ledger`: Elisa's edit records.
+/// - a sentence claiming code was given goes when no reply holds code (a ``` fence or an indented block);
+/// - a `## Done` sentence claiming a file was made or changed goes when no reply names that file and no edit
+///   touched it;
+/// - a `## Files touched` line naming only files no reply names and no edit touched goes;
+/// - a `## Files touched` line naming an attached document (by name, or an `.elisa/uploads/…` path) becomes
+///   `- attached: <name>`; an upload path anywhere else becomes `attached: <name>`;
+/// - raw tool lines go (`clean_notes`).
+pub fn ground_notes(notes: &str, said: &str, docs: &[String], ledger: &Ledger) -> String {
+    let has_code = said.contains("```") || said.lines().filter(|l| l.starts_with("    ") && !l.trim().is_empty()).count() >= 3;
+    let said_l = said.to_lowercase();
+    let base = |p: &str| p.trim_end_matches('/').rsplit('/').next().unwrap_or(p).to_string();
+    let upload_name = |tok: &str| -> Option<String> {
+        let t = tok.trim_matches(|c: char| "\"'`,;:()[]{}!?*".contains(c)).trim_end_matches('.');
+        if t.contains(".elisa/uploads/") { return Some(base(t)); }
+        let b = base(t);
+        docs.iter().find(|d| !d.is_empty() && **d == b && (t.contains('/') || t == d.as_str())).cloned()
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut heading = String::new();
+    for l in notes.lines() {
+        let t = l.trim();
+        if t.starts_with('#') { heading = norm_words(t); out.push(l.to_string()); continue; }
+        if t.is_empty() { out.push(String::new()); continue; }
+        // Elisa's own reference lines of attached documents stay exactly as they are
+        if heading.starts_with("attached documents") || t.contains(crate::attach::MARK) { out.push(l.to_string()); continue; }
+        if heading.starts_with("files touched") {
+            if let Some(name) = t.split_whitespace().find_map(upload_name) { out.push(format!("- attached: {name}")); continue; }
+            // a file no reply names and no edit touched (a 2B fold listed "TradingAgents_code_example.py (likely
+            // modified or created)" in a chat with no files)
+            let (paths, _) = claim_tokens(t);
+            if !paths.is_empty() && paths.iter().all(|p| !said_l.contains(&base(p).to_lowercase()) && ledger.matching(p).is_empty()) { continue; }
+            out.push(l.to_string());
+            continue;
+        }
+        // upload paths read as what they are
+        let line: String = l.split(' ').map(|w| match w.contains(".elisa/uploads/").then(|| upload_name(w)).flatten() {
+            Some(n) => format!("attached: {n}"),
+            None => w.to_string(),
+        }).collect::<Vec<_>>().join(" ");
+        let done = heading.starts_with("done");
+        let mut kept: Vec<String> = Vec::new();
+        for sent in sentences(line.trim_end()) {
+            let low = sent.to_lowercase();
+            let words: Vec<&str> = low.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+            let gave = words.iter().any(|w| GAVE.contains(w));
+            if !has_code && gave && CODE_CLAIM.iter().any(|c| low.contains(c)) { continue; }
+            if done && is_claim(&sent, true) {
+                let (paths, _) = claim_tokens(&sent);
+                let real: Vec<&String> = paths.iter().filter(|p| upload_name(p).is_none() && !p.contains("attached:")).collect();
+                if !real.is_empty() && real.iter().all(|p| !said_l.contains(&base(p).to_lowercase()) && ledger.matching(p).is_empty()) { continue; }
+            }
+            kept.push(sent);
         }
         let line = kept.join(" ");
         if !line.trim().trim_start_matches(['-', '*']).trim().is_empty() { out.push(line); }
@@ -1387,6 +2369,10 @@ pub fn tidy_notes(notes: &str) -> String {
         aliases.extend(take_aliases(&mut s.1));
         s.1 = dedupe(&s.1);
     }
+    // a session goal that is only small talk is no goal (2026-11-09: "## Session goal\nhey" was carried forward)
+    for s in &mut secs {
+        if heading_key(&s.0).starts_with("session goal") { s.1.retain(|l| !small_talk_goal(l)); }
+    }
     secs.retain(|s| s.1.iter().any(|l| !l.trim().is_empty()));
     secs.sort_by_key(|s| if s.0.is_empty() { 254 } else { rank(&heading_key(&s.0)) });
     let mut out: Vec<String> = Vec::new();
@@ -1402,16 +2388,87 @@ pub fn tidy_notes(notes: &str) -> String {
     clean_notes(&out.join("\n"))
 }
 
+/// Words too common in notes to say what a fact is about ("The user asked Elisa to …").
+const FACT_COMMON: &[&str] = &["user", "elisa", "asked", "asking", "ask", "using", "use", "used", "provide", "provided", "providing"];
+
+/// Whether a notes fact (or session goal) is something `talk` (the user's and the assistant's words of the
+/// conversation being summarised) is about: at least 2 of its content words, and at least half of them, are in the
+/// talk (a fact with one content word: that word). A fact with no content words never is.
+pub fn fact_in_talk(fact: &str, talk: &str) -> bool {
+    let cw: Vec<String> = content_words(fact).into_iter().filter(|w| !FACT_COMMON.contains(&w.as_str())).collect();
+    if cw.is_empty() { return false; }
+    let said = content_words(talk);
+    let found = cw.iter().filter(|w| said.contains(*w)).count();
+    found >= cw.len().min(2) && found * 2 >= cw.len()
+}
+
+/// The `Facts to remember`, `Session goal` and `Done` lines of `notes`, as keys (`fact_key`).
+pub fn fact_keys(notes: &str) -> Vec<String> {
+    sections(notes).into_iter().filter(|(h, _)| { let k = heading_key(h); k.starts_with("facts") || k.starts_with("session goal") || k.starts_with("done") })
+        .flat_map(|(_, b)| b.into_iter().map(|l| fact_key(&l)).filter(|k| !k.is_empty()).collect::<Vec<_>>()).collect()
+}
+
+/// A notes line's words, for telling the same fact again (bullets and case ignored).
+pub fn fact_key(line: &str) -> String { bullet_key(line) }
+
+/// Whether a notes fact says what a pinned fact says (all the pinned fact's words in it, or the fact's words half
+/// in the pinned fact).
+pub fn fact_pinned(fact: &str, pinned: &[String]) -> bool {
+    let f = format!(" {} ", norm_words(fact));
+    pinned.iter().any(|p| { let k = norm_words(p); (!k.is_empty() && f.contains(&format!(" {k} "))) || fact_in_talk(fact, p) })
+}
+
+/// A session goal that is only small talk ("hey", "hi", "thanks", "ok"): never stored as the goal.
+pub fn small_talk_goal(goal: &str) -> bool {
+    let g = goal.trim();
+    let rest = without_greeting(g).trim();
+    // a thanks / acknowledgement in a few words ("thanks a lot", "ok got it"); not "great, now summarise the paper"
+    let short = g.split_whitespace().count() <= 3;
+    rest.is_empty() || is_small_talk(g) || is_small_talk(rest) || (short && (crate::route::closing(g) || crate::route::ack(g) || crate::route::small_talk(g)))
+}
+
 /// `new` notes merged into `old` ones, no model call: a section that describes "now" (goal, current state, the state
 /// card section) is replaced by its newer version; every other section keeps the old lines and adds the new ones
 /// (duplicates dropped); Elisa's own file records merge by path (the newer line for a path wins). Sections only the
 /// old notes have stay. soak: /clear replaced the notes with a summary of one turn, and the codename, the owner and
 /// the `<=` fix were gone.
-pub fn merge_notes(old: Option<&str>, new: &str) -> String {
+pub fn merge_notes(old: Option<&str>, new: &str) -> String { merge_notes_kept(old, new, &|_| true) }
+
+/// `merge_notes`, where an old `Facts to remember`, `Session goal` or `Done` line stays only when `keep` says so (a
+/// line of the new notes always does). The fold and /clear keep an old fact only when the conversation being summarised talks
+/// about it, or it was pinned (`fact_in_talk`): 2026-11-09 an old Python-async task's facts and a "hey" goal, read
+/// from a stale notes file, were carried forward by every fold of a PDF conversation that never mentioned them.
+pub fn merge_notes_kept(old: Option<&str>, new: &str, keep: &dyn Fn(&str) -> bool) -> String {
     let old = old.map(str::trim).unwrap_or("");
     if old.is_empty() { return tidy_notes(new); }
     let mut secs = sections(old);
-    for (h, body) in sections(new) {
+    let filtered = |key: &str| key.starts_with("facts") || key.starts_with("session goal") || key.starts_with("done");
+    let mut dropped: Vec<String> = Vec::new();
+    for (h, body) in secs.iter_mut() {
+        if !filtered(&heading_key(h)) { continue; }
+        body.retain(|l| {
+            let t = l.trim();
+            let k = t.is_empty() || t.to_ascii_lowercase().trim_start_matches(['-', '*', '`', ' ']).starts_with("also known as:") || keep(t);
+            if !k { dropped.push(t.to_string()); }
+            k
+        });
+    }
+    // a new summary restating a dropped line (it read the old notes in the conversation's first message): that
+    // sentence goes too, unless the conversation is about it
+    let mut new_secs = sections(new);
+    if !dropped.is_empty() {
+        let gone = dropped.join("\n");
+        for (h, body) in new_secs.iter_mut() {
+            if !filtered(&heading_key(h)) { continue; }
+            for l in body.iter_mut() {
+                if l.trim().is_empty() { continue; }
+                let kept: Vec<String> = sentences(l).into_iter().filter(|x| !(fact_in_talk(x, &gone) && !keep(x))).collect();
+                *l = kept.join(" ");
+            }
+            body.retain(|l| !l.trim().trim_start_matches(['-', '*']).trim().is_empty());
+        }
+    }
+    for (h, body) in new_secs {
         let key = heading_key(&h);
         let Some(i) = secs.iter().position(|s| heading_key(&s.0) == key && (key.is_empty() == s.0.is_empty())) else { secs.push((h, body)); continue };
         if replaces(&key) { secs[i] = (h, body); continue; }
@@ -1693,7 +2750,7 @@ const SMALL_TALK: &[&str] = &[
     "hi", "hello", "hey", "heya", "hiya", "yo", "howdy", "greetings", "good", "morning", "afternoon", "evening", "day",
     "night", "how", "are", "is", "it", "going", "you", "doing", "today", "elisa", "there", "again", "thanks", "thank",
     "cheers", "ok", "okay", "great", "nice", "cool", "awesome", "bye", "goodbye", "see", "later", "what's", "whats", "up",
-    "sup", "all", "fine", "well", "and", "u", "job", "welcome", "please", "lol", "haha", "yes", "no", "sure", "i'm", "im",
+    "sup", "all", "fine", "well", "and", "u", "job", "welcome", "please", "lol", "haha", "yes", "no", "sure", "i'm", "im", "so", "much", "very", "lot",
 ];
 /// leading greeting words a request may start with ("Hi! Can you …", "hello again :) tell me …")
 const GREETING: &[&str] = &["hi", "hello", "hey", "heya", "hiya", "yo", "howdy", "greetings", "good", "morning", "afternoon", "evening", "elisa", "there", "again"];

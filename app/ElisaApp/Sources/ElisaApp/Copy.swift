@@ -33,7 +33,7 @@ extension AppModel {
     /// the whole session, with what a bug report needs at the top
     func debugTranscript() -> String {
         var head = ["Elisa transcript · \(Date().formatted(date: .abbreviated, time: .standard))"]
-        head.append("model: \(demo ? "demo gateway (scripted, no model)" : model)")
+        head.append("model: \(model)")
         head.append("server: \(baseURL.isEmpty ? "?" : baseURL)")
         head.append("folder: \(cwd)")
         head.append("phase: \(phase)")

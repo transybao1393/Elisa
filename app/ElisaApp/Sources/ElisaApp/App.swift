@@ -1,16 +1,15 @@
 // Elisa: the native window for the Elisa agent. Spawns `elisa --serve-jsonl` in the chosen project folder.
 //
-//   ElisaApp [--demo] [--cwd DIR] [--theme dark|light] [--base-url URL [--type T]] [--model M] [--shots DIR]
+//   ElisaApp [--cwd DIR] [--theme dark|light] [--base-url URL [--type T]] [--model M]
 //            [--script FILE [--seed N] [--script-delay S] [--script-cap S]] [--frame X,Y,W,H] [--continue] [--script-from-final]
 //            [--frames DIR [--frames-every S]]
 //
-// --demo: no model; Elisa uses its scripted demo gateway (`--demo-states`) in a fresh demo project.
 // --base-url / --type / --model are passed to Elisa (default: its config, http://127.0.0.1:8898 = streamdense gateway).
 // --base-url alone keeps the active connection's kind and model (its key only for the same host); --type
 // streamdense|anthropic|openai says what kind of server is there instead.
-// --shots DIR (debug): plays the demo and writes PNGs of the window (offscreen render, no screen-recording permission).
 // --script FILE: scripted playback of a person typing in this window (Playback.swift); any key or click stops it.
-// --frames DIR (debug): the window as DIR/frame-NNNNN.png every S seconds (default 0.25), for a GIF or video of a run.
+// --frames DIR (debug): the window as DIR/frame-NNNNN.png every S seconds (default 0.25), for a GIF or video of a run
+// (offscreen render, no screen-recording permission).
 // --frames-window TITLE (debug): those frames of another window ("Model Scorecard", "Model Connections").
 // --scorecard: open the Model Scorecard window at launch. --eval-test MODEL (debug): press Test on that installed
 // Ollama model as the local model list does (confirm, then run); --eval-cancel-after S: then press Cancel.
@@ -19,6 +18,7 @@
 // --send TEXT (debug, repeatable): each time the session is ready, send the next TEXT as if typed (a slash command or a
 // prompt); approvals are left for the person (unlike --script). --plugin-setup-answer yes|no (debug): the Plugin
 // Setup window's Install / Trust or Not now is pressed 3 s after its question arrives.
+// --inject FILE (debug): once the session is ready, apply the Elisa event lines (JSONL) in FILE as if Elisa sent them.
 // --plugin-commands-open (debug): the Plugin Setup window shows every command's full text (collapsed by default).
 // --pace-front (debug, for CPU measurements): the Shades pace as in the key window in front, whatever the window's
 // real state (a debug launch never activates, so its window is never key).
@@ -26,7 +26,7 @@
 // Focus (Front): a normal launch activates the app; a window the person opens (menu, button, typed /model) comes to the
 // front; a window an event opens (Plugin Setup on a plugin_preview / project_trust) is ordered in without taking focus
 // (no key, no activation) and, with the app in the background, bounces the Dock icon once and badges it. A debug or test
-// launch (--frames, --frame, --send, --script, --shots, --selftest, --eval-test, --plugins-add, …) never
+// launch (--frames, --frame, --send, --script, --selftest, --eval-test, --plugins-add, …) never
 // activates the app.
 import AppKit
 import SwiftUI
@@ -42,9 +42,11 @@ enum Boot {
 enum Front {
     /// a debug / test launch: the app never activates itself
     nonisolated static let quiet: Bool = {
+        // dev mode (dev.sh): the window is for the person to test, so it comes to the front like a normal launch
+        if ProcessInfo.processInfo.environment["ELISA_DEV"] == "1" { return false }
         let a = CommandLine.arguments
-        return ["--frames", "--frame", "--frames-window", "--send", "--script", "--shots", "--selftest", "--eval-test",
-                "--plugins-add", "--connections-shot", "--plugin-setup-answer"].contains { a.contains($0) }
+        return ["--frames", "--frame", "--frames-window", "--send", "--script", "--selftest", "--eval-test",
+                "--plugins-add", "--connections-shot", "--plugin-setup-answer", "--closetest"].contains { a.contains($0) }
     }()
 
     /// a window the person opened (menu, button, typed command): to the front and the app active (not in a quiet launch)
@@ -120,10 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // --connections: open the Model Connections window at launch
         if args.contains("--connections") { DispatchQueue.main.async { ConnectionsWindow.shared.show(m, select: opt("--connections-select")) } }
-        let shots = opt("--shots")
-        m.demo = args.contains("--demo") || shots != nil
         m.folder = opt("--cwd")
-        if let dir = shots { Shots.shared.run(into: dir, model: m) }
         if let dir = opt("--selftest") { SelfTest.shared.run(into: dir, images: optAll("--selftest-image"), quit: args.contains("--selftest-quit"), model: m) }
         if let dir = opt("--frames") {
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -133,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated {
                     let name = String(format: "frame-%05d", n)
 
-                    if let t = other { DebugFrame.snap(title: t, to: (dir as NSString).appendingPathComponent(name + ".png")) } else { Shots.shared.capture(name, into: dir) }
+                    if let t = other { DebugFrame.snap(title: t, to: (dir as NSString).appendingPathComponent(name + ".png")) } else { DebugFrame.capture(name, into: dir) }
                     n += 1
                 }
             }
@@ -153,7 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         // debug runs: when SwiftUI did not open the scene's window (it sometimes does not at launch), host the main view
-        // in a window of its own, as --shots does
+        // in a window of its own
         if opt("--frames") != nil || DebugFrame.rect != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 guard !NSApp.windows.contains(where: { $0.title == "Elisa" }) else { return }
@@ -173,6 +172,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var pending: [() -> Void] = []
         if let path = opt("--plugins-add") { pending.append { PluginStore.shared.add(path: path, m) } }
         for t in optAll("--send") { pending.append { m.send(t) } }
+        // --inject FILE (debug): once the session is ready, Elisa event lines (JSONL) from FILE are applied as if Elisa
+        // sent them: a reply, check row or edit to look at without a model
+        if let f = opt("--inject") {
+            pending.append {
+                let text = (try? String(contentsOfFile: f, encoding: .utf8)) ?? ""
+                for l in text.split(separator: "\n") {
+                    if let e = (try? JSONSerialization.jsonObject(with: Data(l.utf8))) as? [String: Any] { m.inject(e) }
+                }
+            }
+        }
         if !pending.isEmpty {
             let prev = m.onEventHook
             m.onEventHook = { e in
@@ -196,7 +205,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        if m.demo || m.folder != nil {
+        watchMainClose()
+        if let f = opt("--closetest") { CloseTest.run(report: f, model: m) }
+        if m.folder != nil {
             m.start()
             if let f = opt("--script") {
                 Playback.shared.run(file: f, seed: UInt64(opt("--seed") ?? "") ?? 1, delay: Double(opt("--script-delay") ?? "") ?? 3,
@@ -208,10 +219,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// set while a closed chat window comes back as the welcome page, so the app does not quit in between
+    static var toWelcome = false
+    /// opens the SwiftUI "main" window again (set by ElisaMain from its openWindow action)
+    static var openMain: (() -> Void)?
+
+    /// closing the chat window ends the session and brings the window back on the welcome page;
+    /// closing the welcome page itself quits as before
+    func watchMainClose() {
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { n in
+            guard let w = n.object as? NSWindow, w.title == "Elisa" else { return }
+            MainActor.assumeIsolated {
+                let m = Boot.model
+                guard !m.welcome else { return }
+                AppDelegate.toWelcome = true
+                m.stop()
+                m.welcome = true
+                DispatchQueue.main.async {
+                    // the scene's window when SwiftUI can open it; else this window again (debug frames keep it)
+                    if let open = AppDelegate.openMain { open() } else { w.makeKeyAndOrderFront(nil) }
+                    if !Front.quiet { NSApp.activate(ignoringOtherApps: true) }
+                    AppDelegate.toWelcome = false
+                }
+            }
+        }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !AppDelegate.toWelcome }
 
     func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated { Boot.model.stop(); EvalStore.shared.stopNow() }
+        MainActor.assumeIsolated { CloseTest.terminating(); Boot.model.stop(); EvalStore.shared.stopNow() }
     }
 }
 
@@ -229,7 +266,7 @@ func openFolderPanel(_ m: AppModel) {
     if p.runModal() == .OK, let u = p.url {
         m.open(folder: u.path)
     } else if !m.welcome && m.phase == .starting && m.cwd.isEmpty {
-        m.blocks = [Block(kind: .info("[no folder chosen · File > Open Folder… (⌘O), or File > Demo Session]", .plain))]
+        m.blocks = [Block(kind: .info("[no folder chosen · File > Open Folder… (⌘O)]", .plain))]
         m.phase = .exited
     }
 }
@@ -238,6 +275,7 @@ func openFolderPanel(_ m: AppModel) {
 struct ElisaMain: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @ObservedObject private var m = Boot.model
+    @AppStorage(Speak.key) private var speak = false
 
     var body: some Scene {
         Window("Elisa", id: "main") {
@@ -246,18 +284,18 @@ struct ElisaMain: App {
                 // the Shades pause while this window is occluded and slow down while it is not key (ShadePace)
                 .background(ShadePaceProbe())
                 .frame(minWidth: 640, minHeight: 560)
+                .background(OpenMainProbe())
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Folder…") { openFolderPanel(m) }.keyboardShortcut("o")
-                Button("Demo Session (no model)") { m.demo = true; m.folder = nil; m.start() }
             }
             CommandGroup(after: .pasteboard) {
                 Divider()
                 Button("Copy Transcript for Debugging") { m.copyTranscript() }.keyboardShortcut("c", modifiers: [.command, .option])
-                Button("Attach Images…") { m.pickImages() }.keyboardShortcut("a", modifiers: [.command, .shift]).disabled(m.attachBlocked != nil)
+                Button("Attach Files…") { m.pickFiles() }.keyboardShortcut("a", modifiers: [.command, .shift]).disabled(m.attachBlocked != nil)
             }
             CommandMenu("Elisa") {
                 Button("Model Connections…") { ConnectionsWindow.shared.show(m) }.keyboardShortcut(",")
@@ -269,6 +307,8 @@ struct ElisaMain: App {
                 Button("Previous Edit") { m.editPrev() }.keyboardShortcut("[", modifiers: .command)
                 Button("Next Edit") { m.editNext() }.keyboardShortcut("]", modifiers: .command)
                 Button("Toggle Theme") { m.toggleTheme() }.keyboardShortcut("l", modifiers: [.command, .shift])
+                // Speak.swift: the final reply aloud with a system voice (off by default); off stops speaking now
+                Toggle("Speak Replies", isOn: Binding(get: { speak }, set: { speak = $0; if !$0 { Speak.shared.stop() } }))
                 Divider()
                 Button("Interrupt") { m.interrupt() }.keyboardShortcut(".", modifiers: .command)
                 Button("Stop Playback") { m.playbackStop?() }.keyboardShortcut(".", modifiers: .control).disabled(m.playbackLine == nil)
@@ -281,5 +321,13 @@ struct ElisaMain: App {
                 Button("Give a Toy") { m.care("toy") }
             }
         }
+    }
+}
+
+/// hands the scene's openWindow action to AppDelegate, so a closed chat window can come back as the welcome page
+private struct OpenMainProbe: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Color.clear.onAppear { AppDelegate.openMain = { openWindow(id: "main") } }
     }
 }

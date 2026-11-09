@@ -76,14 +76,18 @@ const SPIN_MS: u128 = 90;
 fn st(c: Color) -> Style { Style::new().fg(c) }
 
 // ---------- channel frontend ----------
+/// turns of a resumed conversation the terminal shows again (the app shows more)
+const TUI_EARLIER: usize = 3;
+
 enum Ev {
+    History(Vec<crate::frontend::Earlier>),
     Banner(Banner), User(String), Waiting, Delta(String), Done(Status), ToolStart(String), ToolDone(String, bool),
     Approve(String, String, Sender<Approval>), Info(String), Error(String), Notes(String), Compacted(usize, usize),
     Pick(Vec<SessionInfo>, Sender<Option<usize>>), Input(Sender<Option<String>>), TurnDone, Exit(i32), Detail(Detail),
     Act(String, Option<String>, Info), Progress(Option<Progress>), Recalled(Vec<String>), Card(String),
     Watch(WatchUpdate), WatchView(Option<WatcherView>), Full(String, String), Check(CheckEvent),
-    /// demo mode: a key as if typed; the scene for a state starts
-    Key(KeyEvent), DemoAt(crate::shade::St),
+    /// what Elisa is doing, in plain words (src/activity.rs): the status line's live text
+    Activity(crate::activity::Activity),
 }
 
 struct ChannelFrontend(Sender<Ev>);
@@ -129,11 +133,13 @@ impl Frontend for ChannelFrontend {
     fn compacted(&mut self, a: usize, b: usize) { self.send(Ev::Compacted(a, b)) }
     fn progress(&mut self, p: Option<&Progress>) { self.send(Ev::Progress(p.cloned())) }
     fn recalled(&mut self, hits: &[String]) { self.send(Ev::Recalled(hits.to_vec())) }
+    fn history(&mut self, items: &[crate::frontend::Earlier]) { if !items.is_empty() { self.send(Ev::History(items.to_vec())) } }
     fn state_card(&mut self, c: &str) { self.send(Ev::Card(c.into())) }
     fn pick_session(&mut self, l: &[SessionInfo]) -> Option<usize> { self.ask(|t| Ev::Pick(l.to_vec(), t), None) }
     fn read_input(&mut self) -> Option<String> { self.ask(Ev::Input, None) }
     fn turn_done(&mut self) { self.send(Ev::TurnDone) }
     fn check(&mut self, c: &CheckEvent) { self.send(Ev::Check(c.clone())) }
+    fn activity(&mut self, a: &crate::activity::Activity) { self.send(Ev::Activity(a.clone())) }
     fn watcher_update(&mut self, u: &WatchUpdate) { self.send(Ev::Watch(u.clone())) }
     fn watcher(&mut self, w: Option<&WatcherView>) { self.send(Ev::WatchView(w.cloned())) }
     fn full_answer(&mut self, t: &str, x: &str) { self.send(Ev::Full(t.into(), x.into())) }
@@ -213,7 +219,7 @@ struct App {
     // self-check: own resident size, refreshed at most once per second
     rss: u64, rss_at: Option<Instant>,
     // state cards: the stream filter hides <state>…</state> (`hold` = a possible partial tag at the end of the stream)
-    hold: String, in_state: bool, cards: usize,
+    cardf: crate::context::CardFilter, cards: usize,
     // the gateway's domain watcher (None = no view yet, or an older gateway): one line under the status bar
     watch: Option<WatcherView>,
     /// the latest audit result, shown on its own line under the input box (not in the transcript)
@@ -227,6 +233,10 @@ struct App {
     face: Option<Rect>,
     /// the companion window link (--companion / config `companion`; None = off): Shade mirrored to app/ElisaCompanion
     link: Option<crate::shade::link::Link>,
+    /// the status line's live text (src/activity.rs): the shown step and when it (or its words) came; a new tool step
+    /// waits in `act_next` until it has run `activity::QUICK_MS` (a quicker one never takes the line)
+    act: Option<(crate::activity::Activity, Instant)>,
+    act_next: Option<(crate::activity::Activity, Instant)>,
 }
 
 type ArtKey = (St, u64, usize, usize, i32, bool);
@@ -241,8 +251,9 @@ impl App {
             views: vec![], sel: None, last_read: None, last_cmd: None, awaiting: Await::No, pscroll: 0, panel_h: 10,
             split: SPLIT, panel_pref: None, term_w: 0, main_r: Rect::default(),
             jobs: vec![], memory: false, rss: 0, rss_at: None,
-            hold: String::new(), in_state: false, cards: 0, watch: None, audit: None,
+            cardf: Default::default(), cards: 0, watch: None, audit: None,
             shade: None, clock: Instant::now(), dock: None, art: None, view: None, tray: vec![], face: None, link: None,
+            act: None, act_next: None,
         }
     }
     fn now(&self) -> u64 { self.clock.elapsed().as_millis() as u64 }
@@ -262,31 +273,8 @@ impl App {
     fn last_act(&mut self) -> Option<&mut Act> {
         self.entries.iter_mut().rev().find_map(|it| match &mut it.e { Entry::Tool(a) => { it.w = 0; Some(&mut **a) } _ => None })
     }
-    /// streamed text minus any <state>…</state> block; a partial tag at the end is held until it resolves
-    fn unstate(&mut self, s: &str) -> String {
-        const OPEN: &str = "<state>";
-        const CLOSE: &str = "</state>";
-        let mut buf = std::mem::take(&mut self.hold) + s;
-        let mut out = String::new();
-        let echo = crate::context::CARD_ECHO;
-        let partial = |buf: &str, t: &str| (1..t.len()).rev().find(|&n| buf.ends_with(&t[..n])).unwrap_or(0);
-        loop {
-            // a copied card instruction line is dropped (held while it may still be one)
-            if !self.in_state { if let Some(i) = buf.find(echo) { buf.replace_range(i..i + echo.len(), ""); continue; } }
-            let tag = if self.in_state { CLOSE } else { OPEN };
-            if let Some(i) = buf.find(tag) {
-                if !self.in_state { out.push_str(&buf[..i]); }
-                buf.drain(..i + tag.len());
-                self.in_state = !self.in_state;
-                continue;
-            }
-            let p = if self.in_state { partial(&buf, tag) } else { partial(&buf, tag).max(partial(&buf, echo)) };
-            let cut = buf.len() - p;
-            if !self.in_state { out.push_str(&buf[..cut]); }
-            self.hold = buf[cut..].to_string();
-            return out;
-        }
-    }
+    /// streamed text minus any state-card text; a partial tag or card line at the end is held until it resolves
+    fn unstate(&mut self, s: &str) -> String { self.cardf.push(s) }
     /// expand / collapse a state card
     fn toggle_card(&mut self, i: usize) {
         if let Some(Item { e: Entry::Card(_, x), w, .. }) = self.entries.get_mut(i) { *x = !*x; *w = 0; }
@@ -319,7 +307,7 @@ impl App {
                 self.sh(ShEv::Waiting);
                 self.phase = Phase::Thinking; self.since = Instant::now(); self.new_text = true;
                 self.first_delta = None; self.dchars = 0;
-                self.hold.clear(); self.in_state = false;
+                self.cardf = Default::default();
             }
             Ev::Delta(s) => {
                 self.phase = Phase::Streaming;
@@ -337,14 +325,13 @@ impl App {
             }
             Ev::Done(s) => {
                 // a held `<sta…` that never became a tag is ordinary text
-                let h = std::mem::take(&mut self.hold);
-                if !self.in_state && !h.is_empty() {
+                let h = self.cardf.finish();
+                if !h.is_empty() {
                     match self.entries.last_mut() {
                         Some(Item { e: Entry::Text(t), w, .. }) if !self.new_text => { t.push_str(&h); *w = 0; }
                         _ => self.entries.push(Item::new(Entry::Text(h))),
                     }
                 }
-                self.in_state = false;
                 self.max_ctx = s.max_ctx;
                 self.status = Some(s);
                 self.new_text = true;
@@ -455,7 +442,8 @@ impl App {
                 if let Some(c) = &mut self.shade { c.idle(); }
                 if let Some(q) = self.queue.pop_front() { self.send(q); }
             }
-            Ev::TurnDone => { self.phase = Phase::Idle; self.sh(ShEv::Finished(false)); }
+            Ev::TurnDone => { self.phase = Phase::Idle; self.act = None; self.act_next = None; self.sh(ShEv::Finished(false)); }
+            Ev::Activity(a) => self.on_activity(a),
             Ev::Progress(p) => {
                 self.memory = true;
                 match p {
@@ -471,6 +459,17 @@ impl App {
                     None => self.jobs.retain(|j| j.p.done.is_some()),
                 }
                 if self.summarizing() { self.sh(ShEv::Summarizing); } else if let Some(c) = &mut self.shade { c.summary_done(); }
+            }
+            Ev::History(items) => {
+                // a resumed conversation: its last few turns again, between two divider lines (/history-like; the
+                // app shows up to `context::EARLIER_TURNS`)
+                let users: Vec<usize> = items.iter().enumerate().filter(|(_, e)| e.role == "user").map(|(i, _)| i).collect();
+                let from = users.len().checked_sub(TUI_EARLIER).map_or(0, |k| users[k]);
+                self.push(Entry::Info("— earlier in this conversation —".into()));
+                for e in items.into_iter().skip(from) {
+                    self.push(if e.role == "user" { Entry::User(e.text) } else { Entry::Text(e.text) });
+                }
+                self.push(Entry::Info("— continued —".into()));
             }
             Ev::Recalled(h) => {
                 self.memory = true;
@@ -502,8 +501,6 @@ impl App {
                 None => self.push(Entry::Info("watcher: not available on this gateway".into())),
             },
             Ev::Exit(c) => self.code = Some(c),
-            Ev::Key(k) => self.on_key(k),
-            Ev::DemoAt(st) => self.flash(&format!("demo · {}", st.name())),
         }
     }
 
@@ -530,7 +527,6 @@ impl App {
 
     fn quit(&mut self) {
         if self.quit_at.is_none() { self.quit_at = Some(Instant::now()); }
-        demo::QUIT.store(true, Ordering::SeqCst);
         crate::repl::CANCEL.store(true, Ordering::SeqCst);
         match self.pending.take() {
             Some(Pending::Input(tx)) => { let _ = tx.send(None); }
@@ -1134,6 +1130,42 @@ impl App {
         (lines, (pos.0, pos.1 - skip))
     }
 
+    /// a step in plain words: the live line follows the newest step (a tool step only once it ran `QUICK_MS`)
+    fn on_activity(&mut self, a: crate::activity::Activity) {
+        use crate::activity::Phase;
+        let now = Instant::now();
+        let same = |x: &Option<(crate::activity::Activity, Instant)>| x.as_ref().is_some_and(|(b, _)| b.id == a.id);
+        match a.phase {
+            Phase::Start if a.kind != "model" => {
+                if let Some(n) = self.act_next.take().filter(|(_, t)| t.elapsed().as_millis() as u64 >= crate::activity::QUICK_MS) { self.act = Some(n); }
+                self.act_next = Some((a, now));
+            }
+            Phase::Start => { self.act_next = None; self.act = Some((a, now)); }
+            Phase::Update if same(&self.act_next) && !a.waiting_ok => if let Some((b, _)) = &mut self.act_next { b.text = a.text; },
+            Phase::Update => {
+                // an approval (or a model update) shows at once
+                let since = if same(&self.act) && a.kind != "model" { self.act.as_ref().map_or(now, |(_, t)| *t) } else { now };
+                self.act_next = None;
+                self.act = Some((crate::activity::Activity { slow: None, ..a }, since));
+            }
+            Phase::Done => {
+                if same(&self.act) { self.act = None; }
+                if same(&self.act_next) { self.act_next = None; }
+            }
+            Phase::Summary => {}
+        }
+    }
+
+    /// the live line's words and how long that step has run
+    fn live_text(&self) -> Option<(String, u128)> {
+        let cur = match &self.act_next {
+            Some(n) if n.1.elapsed().as_millis() as u64 >= crate::activity::QUICK_MS => Some(n),
+            _ => self.act.as_ref(),
+        }?;
+        let ms = cur.1.elapsed().as_millis();
+        Some((cur.0.live_text(ms as u64).to_string(), ms))
+    }
+
     fn status_line(&self, w: usize) -> Line<'static> {
         let sep = || Span::styled(" · ", st(DIM));
         let mut v = vec![];
@@ -1146,8 +1178,14 @@ impl App {
         }
         if self.pending.is_none() {
             let ms = self.since.elapsed().as_millis();
+            let live = self.live_text();
             let what = match self.phase {
                 _ if self.quit_at.is_some() => "quitting…".to_string(),
+                // the step in plain words; a wait longer than a few seconds shows its time
+                _ if live.is_some() => {
+                    let (t, ms) = live.unwrap_or_default();
+                    if ms >= 3000 && !t.starts_with("Writing") { format!("{t} {}", crate::ui::dur((ms / 1000) as f64, 0)) } else { t }
+                }
                 Phase::Streaming => "streaming…".to_string(),
                 Phase::Tool => "running tool…".to_string(),
                 _ => format!("thinking… {}", crate::ui::dur((ms / 1000) as f64, 0)),
@@ -1179,11 +1217,12 @@ impl App {
     /// the context bar, right-aligned under the input box
     fn ctx_line(&self) -> Line<'static> {
         let (used, max) = self.status.map_or((0, self.max_ctx), |s| (s.ctx_used, s.max_ctx));
+        let est = if self.status.is_some_and(|s| s.estimated) { "~" } else { "" };
         let pct = (used * 100).checked_div(max).unwrap_or(0);
         let col = if pct > 85 { RED } else if pct > 70 { YELLOW } else { GREEN };
         let fill = (pct.min(100) + 5) / 10;
         Line::from(vec![
-            Span::styled(format!("ctx {}/{} ", k(used), k(max)), st(FG)),
+            Span::styled(format!("ctx {est}{}/{} ", k(used), k(max)), st(FG)),
             Span::styled("▓".repeat(fill), st(col)), Span::styled("░".repeat(10 - fill), st(DIM)),
             Span::styled(format!(" {pct}% "), st(col)),
         ]).right_aligned()
@@ -1467,7 +1506,7 @@ fn banner(b: &Banner, w: usize, out: &mut Vec<Line<'static>>) {
     }
     let mut body = vec![];
     for c in rows { wrap(c, w.max(12) - 4, 9, &mut body); }
-    labeled_box("ELISA", "local coding assistant", body, w, out);
+    labeled_box("ELISA", "local assistant", body, w, out);
     out.push(Line::styled("  / commands · esc interrupts · ctrl-o edits · /resume past sessions · ctrl-c quits", st(DIM)));
     out.push(Line::styled("  wheel, ↑↓ (empty input), PgUp/PgDn scroll · ctrl-p/n history · ctrl-s state card · /copy copies the last reply", st(DIM)));
     out.push(Line::styled("  click Elisa or ctrl-g to poke · /water /feed /play or F2 F3 F4 · idle, and it dozes off", st(DIM)));
@@ -2100,171 +2139,6 @@ fn pl_line(p: &PL, nw: usize, w: usize) -> Line<'static> {
     group(fit(c, w, Style::new()))
 }
 
-// ---------- demo: every companion state, scripted (no model, no server) ----------
-/// `elisa --demo-states [STATE]`: plays a scripted session through the real TUI (events + keys over the same channel
-/// the agent uses). With a STATE it stops at that state's scene and holds it (for screenshots).
-mod demo {
-    use super::*;
-    use crate::shade::St;
-    pub static QUIT: AtomicBool = AtomicBool::new(false);
-    /// Shade sleeps after 4 s idle in the demo (45 s by default)
-    pub const SLEEP_MS: u64 = 4000;
-
-    pub struct Script<'a> { tx: &'a Sender<Ev>, target: Option<St>, input: Option<mpsc::Receiver<Option<String>>>, ask: Option<mpsc::Receiver<Approval>> }
-    impl Script<'_> {
-        fn send(&self, e: Ev) { let _ = self.tx.send(e); }
-        fn wait(&self, ms: u64) -> bool {
-            let end = Instant::now() + Duration::from_millis(ms);
-            while Instant::now() < end { if QUIT.load(Ordering::SeqCst) { return false; } std::thread::sleep(Duration::from_millis(20)); }
-            !QUIT.load(Ordering::SeqCst)
-        }
-        /// a scene starts; with this scene as the target: hold here until quit (returns false)
-        fn at(&self, st: St, ms: u64) -> bool {
-            self.send(Ev::DemoAt(st));
-            if self.target == Some(st) { while self.wait(1000) {} return false; }
-            self.wait(ms)
-        }
-        fn key(&self, k: KeyCode) { self.send(Ev::Key(KeyEvent::new(k, KeyModifiers::NONE))); }
-        fn prompt(&mut self) { let (t, r) = mpsc::channel(); self.send(Ev::Input(t)); self.input = Some(r); }
-        fn typed(&mut self, text: &str) -> bool {
-            for ch in text.chars() { self.key(KeyCode::Char(ch)); if !self.wait(35) { return false; } }
-            true
-        }
-        /// Enter, then the agent echoes the line
-        fn submit(&mut self) {
-            self.key(KeyCode::Enter);
-            let line = self.input.take().and_then(|r| r.recv_timeout(Duration::from_secs(2)).ok().flatten()).unwrap_or_default();
-            self.send(Ev::User(line));
-        }
-        fn tool(&self, summary: &str, input: serde_json::Value) {
-            let (n, _) = summary.split_once(' ').unwrap_or((summary, ""));
-            self.send(Ev::ToolStart(summary.into()));
-            let cwd = std::path::Path::new("/demo");
-            self.send(Ev::Act(n.into(), act_target(n, &input, cwd), act_info(n, &input, cwd)));
-        }
-        fn ask(&mut self, tool: &str, summary: &str) { let (t, r) = mpsc::channel(); self.send(Ev::Approve(tool.into(), summary.into(), t)); self.ask = Some(r); }
-        fn stream(&self, text: &str) -> bool {
-            for w in text.split_inclusive(' ') { self.send(Ev::Delta(w.into())); if !self.wait(45) { return false; } }
-            true
-        }
-        fn done(&self, out: usize) { self.send(Ev::Done(Status { tok_s: Some(21.8), ttft_s: 0.5, ctx_used: 2900 + out, max_ctx: 8192, reused: 2600, output_tokens: out })); }
-    }
-
-    pub fn play(tx: &Sender<Ev>, target: Option<St>) {
-        let mut s = Script { tx, target, input: None, ask: None };
-        s.send(Ev::Banner(Banner { model: "demo · no model loaded".into(), base_url: "demo://scripted".into(), cwd: "~/code/ferrous".into(), max_ctx: 8192, notes: None, resumed: None, vision: false }));
-        if !s.at(St::Greeting, 2400) { return; }
-        loop { if !scenes(&mut s) { return; } }
-    }
-
-    fn view() -> View {
-        let o = ["    for (i, b) in input.bytes().enumerate() {", "        if is_boundary(b as char) {"];
-        let n = ["    for (i, c) in input.char_indices() {", "        if is_boundary(c) {"];
-        View { path: "crates/core/src/split.rs".into(), kind: "edit", status: None, body: vec![
-            PL::Ctx(41, "    let mut out = Vec::new();".into()), PL::Ctx(42, "    let mut start = 0;".into()),
-            PL::Del(43, o[0].into()), PL::Del(44, o[1].into()), PL::Add(43, n[0].into()), PL::Add(44, n[1].into()),
-            PL::Ctx(45, "            if start < i {".into()), PL::Ctx(46, "                out.push(&input[start..i]);".into()),
-        ] }
-    }
-
-    /// one pass over the states; false = quit
-    fn scenes(s: &mut Script) -> bool {
-        use serde_json::json;
-        s.prompt();
-        if !s.typed("the split test fails on multi-byte input, fix it") || !s.at(St::Listening, 1000) { return false; }
-        s.submit();
-        s.send(Ev::Waiting);
-        if !s.at(St::Thinking, 2400) { return false; }
-        s.tool("read crates/core/src/split.rs", json!({"path": "crates/core/src/split.rs"}));
-        if !s.at(St::Reading, 2400) { return false; }
-        s.send(Ev::ToolDone("1\tpub fn split_words\n[lines 1-60 of 60]".into(), false));
-        s.tool("grep split_words", json!({"pattern": "split_words"}));
-        if !s.at(St::Searching, 2000) { return false; }
-        s.send(Ev::ToolDone("crates/core/src/split.rs:41: pub fn split_words(input: &str)\ncrates/core/tests/split.rs:3: use ferrous_core::split_words;".into(), false));
-        s.send(Ev::Waiting);
-        if !s.wait(500) || !s.stream("`split_words` walks bytes, so a multi-byte char splits in the middle. Switching to ") { return false; }
-        if !s.at(St::Streaming, 1200) || !s.stream("`char_indices()`.") { return false; }
-        s.done(64);
-        s.tool("edit crates/core/src/split.rs", json!({"path": "crates/core/src/split.rs", "old": "a\nb", "new": "c\nd"}));
-        s.send(Ev::Detail(Detail::View(view())));
-        if !s.at(St::Editing, 1600) { return false; }
-        s.send(Ev::ToolDone("edited crates/core/src/split.rs (1 replacement)".into(), false));
-        s.send(Ev::Waiting);
-        s.done(30);
-        s.tool("bash cargo build", json!({"command": "cargo build"}));
-        s.send(Ev::Detail(Detail::Cmd("$ cargo build".into())));
-        if !s.at(St::Building, 1800) { return false; }
-        s.send(Ev::ToolDone("Compiling ferrous-core v0.4.1\nFinished `dev` profile in 2.1s\n[exit 0]".into(), false));
-        s.send(Ev::Waiting);
-        s.done(20);
-        s.tool("bash cargo test", json!({"command": "cargo test"}));
-        s.send(Ev::Detail(Detail::Cmd("$ cargo test".into())));
-        s.ask("bash", "bash cargo test");
-        if !s.at(St::Permission, 2600) { return false; }
-        s.key(KeyCode::Char('1'));
-        let _ = s.ask.take().map(|r| r.recv_timeout(Duration::from_secs(2)));
-        if !s.at(St::Testing, 2000) { return false; }
-        s.send(Ev::ToolDone("running 51 tests\ntest result: ok. 51 passed; 0 failed\n[exit 0]".into(), false));
-        s.send(Ev::Waiting);
-        if !s.wait(400) || !s.stream("Fixed: `split_words` now walks `char_indices()`; all 51 tests pass.") { return false; }
-        s.done(41);
-        s.send(Ev::TurnDone);
-        s.prompt();
-        if !s.at(St::Celebrating, 1900) { return false; }
-        if !s.typed("why char_indices and not chars?") { return false; }
-        s.submit();
-        s.send(Ev::Recalled(vec!["ferrous: MSRV 1.74, no new dependencies".into()]));
-        s.send(Ev::Waiting);
-        if !s.at(St::Memory, 2400) || !s.stream("`chars()` drops the byte offsets; slicing `&input[start..i]` needs them.") { return false; }
-        s.done(25);
-        s.send(Ev::TurnDone);
-        s.prompt();
-        if !s.at(St::Success, 1700) { return false; }
-        if !s.typed("/frob") { return false; }
-        s.submit();
-        s.send(Ev::Error("unknown command /frob (try /help)".into()));
-        s.send(Ev::TurnDone);
-        s.prompt();
-        if !s.at(St::Confused, 2400) { return false; }
-        if !s.typed("run the cli") { return false; }
-        s.submit();
-        s.send(Ev::Waiting);
-        if !s.wait(700) { return false; }
-        s.done(18);
-        s.tool("bash ls target/debug", json!({"command": "ls target/debug"}));
-        if !s.at(St::Running, 1600) { return false; }
-        s.send(Ev::ToolDone("build\ndeps\nferrous\n[exit 0]".into(), false));
-        s.tool("bash cargo run --bin frob", json!({"command": "cargo run --bin frob"}));
-        if !s.wait(600) { return false; }
-        s.send(Ev::ToolDone("error: no bin target named `frob`\n[exit 101]".into(), true));
-        if !s.at(St::Error, 2000) { return false; }
-        s.send(Ev::Waiting);
-        if !s.wait(300) || !s.stream("There is no `frob` binary; the CLI target is ") { return false; }
-        s.key(KeyCode::Esc);
-        s.send(Ev::Info("[cancelled]".into()));
-        s.done(12);
-        s.send(Ev::TurnDone);
-        s.prompt();
-        if !s.at(St::Interrupted, 1400) { return false; }
-        // care (kit v2): ctrl-g pokes, /water and /play are typed, F3 gives food
-        s.send(Ev::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)));
-        if !s.at(St::Poked, 1400) || !s.typed("/water") { return false; }
-        s.key(KeyCode::Enter);
-        if !s.at(St::Drinking, 4800) { return false; }
-        s.key(KeyCode::F(3));
-        if !s.at(St::Eating, 4800) || !s.typed("/play") { return false; }
-        s.key(KeyCode::Enter);
-        if !s.at(St::Playing, 6000) { return false; }
-        if !s.at(St::Idle, SLEEP_MS) || !s.at(St::Sleeping, 3000) { return false; }
-        s.key(KeyCode::Char(' '));
-        s.key(KeyCode::Backspace);
-        if !s.at(St::Waking, 2400) { return false; }
-        // the pending prompt: the next pass types into it
-        s.input.take();
-        s.wait(2000)
-    }
-}
-
 // ---------- entry point ----------
 // ---- offscreen screen dump (screenshots without screen-recording permission) ----------------------------------------
 
@@ -2352,7 +2226,6 @@ pub fn run(args: Args) -> i32 {
     let cfg = crate::config::Config::load(&args.cwd.clone().or_else(|| std::env::current_dir().ok()).unwrap_or_default()).unwrap_or_default();
     crate::brand::set_theme(args.theme.as_deref().unwrap_or(&cfg.theme) == "light");
     crate::brand::set_truecolor(crate::brand::detect_truecolor());
-    let demo = args.demo.clone().map(|s| crate::shade::St::parse(&s));
     let character = cfg.character && !args.no_character;
     let args_companion = args.companion || cfg.companion;
     if let Err(e) = setup() { restore(); eprintln!("elisa: terminal setup failed: {e}"); return 1; }
@@ -2364,17 +2237,12 @@ pub fn run(args: Args) -> i32 {
     };
     let (tx, rx) = mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let c = match demo {
-            Some(target) => { demo::play(&tx, target); 0 }
-            None => {
-                let mut fe = ChannelFrontend(tx.clone());
-                crate::repl::run_session(args, &mut fe)
-            }
-        };
+        let mut fe = ChannelFrontend(tx.clone());
+        let c = crate::repl::run_session(args, &mut fe);
         let _ = tx.send(Ev::Exit(c));
     });
     let mut app = App::new(yolo);
-    if character { app = app.with_shade(if demo.is_some() { demo::SLEEP_MS } else { cfg.sleep_after_s * 1000 }); }
+    if character { app = app.with_shade(cfg.sleep_after_s * 1000); }
     if args_companion { app.link = Some(crate::shade::link::Link::new(crate::shade::link::socket_path())); }
     let mut dump = ScreenDump::from_env();
     let code = loop {
@@ -2446,7 +2314,7 @@ mod watch_tests {
         }
     }
 
-    fn st0() -> Status { Status { tok_s: Some(20.0), ttft_s: 0.5, ctx_used: 900, max_ctx: 4096, reused: 0, output_tokens: 40 } }
+    fn st0() -> Status { Status { tok_s: Some(20.0), ttft_s: 0.5, ctx_used: 900, max_ctx: 4096, reused: 0, output_tokens: 40, estimated: false } }
     /// a reply drawn on an 80x24 screen; the agent waits for input on the returned channel
     fn replied() -> (App, mpsc::Receiver<Option<String>>) {
         let mut a = App::new(false);
@@ -2848,59 +2716,6 @@ mod watch_tests {
         let all: Vec<Color> = buf.content.iter().flat_map(|c| [c.fg, c.bg]).collect();
         assert!(all.contains(&ACCENT) && !all.contains(&Color::Rgb(215, 119, 87)));
         assert!(buf.content.iter().all(|c| c.bg != Color::Reset), "the brand background is painted everywhere");
-    }
-
-    /// `ELISA_SHOTS=dir cargo test --lib demo_shots -- --ignored --nocapture`: plays the `--demo-states` script through
-    /// the real App into a 120x36 test terminal and writes `<state>.html` (the screen-dump HTML) for each state, plus
-    /// light-theme and 256-colour variants of `editing`
-    #[test]
-    #[ignore]
-    fn demo_shots() {
-        let Some(dir) = std::env::var_os("ELISA_SHOTS").map(std::path::PathBuf::from) else { return };
-        std::fs::create_dir_all(&dir).unwrap();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || demo::play(&tx, None));
-        let mut a = App::new(false).with_shade(demo::SLEEP_MS);
-        // 120 x 40: the 10 x 5 status-bar face; `<state>-short` is a 120 x 26 terminal (one-line text status, small dock)
-        let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
-        let mut short = Terminal::new(ratatui::backend::TestBackend::new(120, 26)).unwrap();
-        let mut at: Option<(St, Instant)> = None;
-        let mut done = std::collections::HashSet::new();
-        let t0 = Instant::now();
-        while done.len() < St::ALL.len() && t0.elapsed() < Duration::from_secs(150) {
-            while let Ok(e) = rx.try_recv() {
-                if let Ev::DemoAt(st) = &e { at = Some((*st, Instant::now())); }
-                a.on_ev(e);
-            }
-            t.draw(|f| { a.draw(f); crate::brand::finish(f.buffer_mut(), &a.keep()); }).unwrap();
-            if let Some((st, since)) = at {
-                let hold = (st.dur_ms() as f32 * if st == St::Celebrating { 0.3 } else { 0.45 }) as u128;
-                if since.elapsed().as_millis() >= hold.min(900) && done.insert(st) {
-                    std::fs::write(dir.join(format!("{}.html", st.name())), buffer_html(t.backend().buffer())).unwrap();
-                    if matches!(st, St::Idle | St::Thinking) {
-                        a.art = None;
-                        short.draw(|f| { a.draw(f); crate::brand::finish(f.buffer_mut(), &a.keep()); }).unwrap();
-                        std::fs::write(dir.join(format!("{}-short.html", st.name())), buffer_html(short.backend().buffer())).unwrap();
-                        a.art = None;
-                    }
-                    if st == St::Editing {
-                        for (name, light, tc) in [("editing-light", true, true), ("editing-256", false, false)] {
-                            crate::brand::set_theme(light);
-                            crate::brand::set_truecolor(tc);
-                            a.art = None;
-                            t.draw(|f| { a.draw(f); crate::brand::finish(f.buffer_mut(), &a.keep()); }).unwrap();
-                            std::fs::write(dir.join(format!("{name}.html")), buffer_html(t.backend().buffer())).unwrap();
-                        }
-                        crate::brand::set_theme(false);
-                        crate::brand::set_truecolor(true);
-                        a.art = None;
-                    }
-                    eprintln!("shot {}", st.name());
-                }
-            }
-            std::thread::sleep(Duration::from_millis(30));
-        }
-        demo::QUIT.store(true, Ordering::SeqCst);
     }
 }
 

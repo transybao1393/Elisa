@@ -1,6 +1,9 @@
 //! MCP servers that plug into Elisa: each configured server (config `[mcp.NAME]`, plus Elisa's built-in `web`
-//! server, `mcp_web.rs`) is started once per session, its tools are listed and offered to the model next to Elisa's
-//! own, and a call the model makes is sent to the server it came from (`tools/call`). This is the base the plugin
+//! server, `mcp_web.rs`) has its tools offered to the model next to Elisa's own, and a call the model makes is sent to
+//! the server it came from (`tools/call`). A session starts no server up front (`Host::open`): a built-in server's
+//! tools are known from the code, another server's from its last `tools/list` (`pins::LISTS_FILE`); a server starts
+//! on the first call to one of its tools and then runs for the rest of the session. Only a server whose tools are not
+//! known yet (its first use ever) is started when the session opens, to list them. This is the base the plugin
 //! system will build on. Every MCP tool asks the user first (approval key `mcp:NAME`, `tools::mcp_key`, so "always" covers
 //! a whole server and never one of Elisa's own tools), and with no one to ask (`-p` without `--yes`) it is denied.
 use crate::mcp::{self, Conn};
@@ -93,7 +96,9 @@ pub fn builtin_web(engine: &str, searxng_url: &str, brave_key: &str) -> ServerCf
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "elisa".into());
     let mut command = vec![exe, "--mcp-serve".into(), "web".into(), "--engine".into(), engine.into()];
     if !searxng_url.is_empty() { command.extend(["--searxng-url".into(), searxng_url.into()]); }
-    let env = if engine == crate::web::BRAVE && !brave_key.is_empty() { vec![(crate::web::BRAVE_KEY_ENV.into(), brave_key.into())] } else { Vec::new() };
+    let mut env = if engine == crate::web::BRAVE && !brave_key.is_empty() { vec![(crate::web::BRAVE_KEY_ENV.into(), brave_key.into())] } else { Vec::new() };
+    // the session's result cache (`cache.rs`), shared with this server: nothing when it is off
+    env.extend(crate::cache::child_env());
     // its environment is clean (`mcp::inherited`): only the proxy settings and the test override of the Brave URL
     let env_pass = PROXY_ENV.iter().chain([&crate::web::BRAVE_URL_ENV]).map(|k| k.to_string()).collect();
     ServerCfg { name: "web".into(), command, env, env_pass, builtin: true, ..ServerCfg::default() }
@@ -116,7 +121,7 @@ pub fn builtin_run(timeout_s: u64, fetch_timeout_s: u64, root: &std::path::Path)
 pub fn builtin_docs(root: &std::path::Path, max_chars: usize) -> ServerCfg {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "elisa".into());
     let command = vec![exe, "--mcp-serve".into(), "docs".into(), "--root".into(), root.display().to_string(), "--max-chars".into(), max_chars.to_string()];
-    ServerCfg { name: "docs".into(), command, builtin: true, ..ServerCfg::default() }
+    ServerCfg { name: "docs".into(), command, env: crate::cache::child_env(), builtin: true, ..ServerCfg::default() }
 }
 
 /// Elisa's security server (`elisa --mcp-serve sec --root DIR --max-chars N`, `mcp_sec.rs`), on unless config
@@ -141,6 +146,28 @@ pub fn is_builtin_reason(c: &ServerCfg) -> bool {
     c.name == crate::mcp_reason::NAME && c.url.is_empty() && c.command.get(1..3).is_some_and(|a| a == ["--mcp-serve", "reason"])
 }
 
+/// A built-in server's tool list, from the code (the same list its `tools/list` answers), so it need not start to
+/// offer its tools. None: not one of Elisa's own servers.
+pub fn builtin_list(c: &ServerCfg) -> Option<Vec<Value>> {
+    if !c.builtin || !c.url.is_empty() || c.command.get(1).map(String::as_str) != Some("--mcp-serve") { return None; }
+    let v = match c.command.get(2)?.as_str() {
+        "web" => crate::mcp_web::tools(),
+        "docs" => crate::mcp_docs::tools(),
+        "sec" => crate::mcp_sec::tools(),
+        "run" => crate::mcp_run::tools(),
+        "reason" => crate::mcp_reason::tools(),
+        _ => return None,
+    };
+    v.as_array().cloned()
+}
+
+/// the tool list a session offers for this server without starting it: a built-in's from the code, another's from
+/// the cache (`lists`, `pins::load_lists`)
+fn known_list(c: &ServerCfg, lists: &serde_json::Map<String, Value>) -> Option<Vec<Value>> {
+    if c.builtin { return builtin_list(c); }
+    lists.get(&crate::pins::key(&c.name, &c.command, &c.url)).and_then(|v| v.as_array().cloned())
+}
+
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// how long a session's server may take to start (`initialize` and `tools/list` together); servers start in parallel
 pub const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -156,8 +183,13 @@ struct Tool { exposed: String, remote: String, def: ToolDef, live: bool }
 
 struct Server {
     cfg: ServerCfg,
-    /// None: the server stopped; the next call tries to restart it once
+    /// None: not started yet (`started` false: the first call starts it), or stopped (the next call tries to restart
+    /// it once)
     conn: Option<Conn>,
+    /// it ran in this session (false: its tools were offered from a known list and no call has needed it yet)
+    started: bool,
+    /// where its tool list is cached each time it is listed (None: not cached)
+    cache: Option<PathBuf>,
     tools: Vec<Tool>,
     /// why the restart failed: no more tries this session
     failed: Option<String>,
@@ -188,10 +220,16 @@ pub struct Host {
     /// the image the last call's built-in server named as missing, and the present version it could run on instead
     /// (`take_missing_image`)
     missing_image: Option<(String, Option<String>)>,
+    /// servers start when first needed (`open`), their tool lists cached here (None: no cache)
+    lazy: bool,
+    cache: Option<PathBuf>,
+    /// the last call's server could not start because a listed image is missing (`take_image_start_failed`)
+    image_start_failed: bool,
 }
 
 impl Default for Host {
-    fn default() -> Self { Host { servers: Vec::new(), setup: SETUP_TIMEOUT, pins: None, down: Vec::new(), filter_notes: Vec::new(), audit: None, missing_image: None } }
+    fn default() -> Self { Host { servers: Vec::new(), setup: SETUP_TIMEOUT, pins: None, down: Vec::new(), filter_notes: Vec::new(), audit: None,
+        missing_image: None, lazy: false, cache: None, image_start_failed: false } }
 }
 
 /// Stops every server, in parallel (each may take up to `mcp::STOP_GRACE` + 0.5 s to stop by itself), and logs it.
@@ -285,6 +323,16 @@ const REPORT_WIDTH: usize = 78;
 /// a tool description in `/mcp NAME`: its first line, at most this many characters
 const DESC_CHARS: usize = 100;
 
+fn new_server(cfg: &ServerCfg, conn: Option<Conn>, tools: Vec<Tool>, list: Vec<Value>, cache: Option<PathBuf>) -> Server {
+    Server { cfg: cfg.clone(), started: conn.is_some(), conn, cache, tools, failed: None, cancelled: false, list,
+        pinned: None, untrusted: false, note: None, audit: crate::audit::Log::default() }
+}
+
+/// caches a server's tool list (not a built-in's: those are in the code); best effort
+fn cache(path: Option<&Path>, c: &ServerCfg, list: &[Value]) {
+    if let (Some(p), false) = (path, c.builtin) { let _ = crate::pins::cache_list(p, &crate::pins::key(&c.name, &c.command, &c.url), list); }
+}
+
 impl Server {
     /// A new process / session for a stopped server, its tools listed again. The names stay; a tool it no longer
     /// has is not routed any more. Gives the reason it could not start.
@@ -296,9 +344,17 @@ impl Server {
         }
         self.audit.note("server_stop", &[("server", &self.cfg.name), ("outcome", "restart")]);
         self.cancelled = false;
+        self.connect(setup)
+    }
+
+    /// Starts the server (first start or restart) and lists its tools: the names stay, a tool it no longer has is not
+    /// routed any more, and a list other than its pin makes it untrusted (see `restart`). Gives why it could not start.
+    fn connect(&mut self, setup: Duration) -> Result<(), String> {
         let r = Conn::connect_within(&self.cfg.command, &self.cfg.url, &env_of(&self.cfg), setup);
         self.audit.note("server_start", &[("server", &self.cfg.name), ("outcome", if r.is_ok() { "ok" } else { "error" })]);
         let (conn, list) = r?;
+        self.started = true;
+        cache(self.cache.as_deref(), &self.cfg, &list);
         let have = remote_names(&list);
         for t in &mut self.tools { t.live = have.contains(&t.remote); }
         // a pinned server that came back with other tools: it asks on every call from now on (`/trust` accepts); a
@@ -314,13 +370,38 @@ impl Server {
     }
 
     fn restart_failed(&self, e: &str) -> String {
+        if !self.started { return format!("MCP server {} could not start: {e}; restart the session to try again", self.cfg.name); }
         format!("MCP server {} stopped and could not be restarted: {e}; restart the session to try again", self.cfg.name)
     }
 
-    /// Ready for a call: restarted if it stopped (once), or if a cancelled call still holds it (it does not answer a
-    /// ping). Err: the message for the model.
+    /// The first start of a server whose tools were offered from a known list. Err: the message for the model (no
+    /// more tries this session).
+    fn first_start(&mut self, setup: Duration) -> Result<(), String> {
+        if let Some(e) = &self.failed { return Err(self.restart_failed(e)); }
+        if let Err(e) = self.connect(setup) {
+            let msg = self.restart_failed(&e);
+            self.failed = Some(e);
+            return Err(msg);
+        }
+        Ok(())
+    }
+
+    /// Ready for a call: started on its first call, restarted if it stopped (once), or if a cancelled call still holds
+    /// it (it does not answer a ping). Err: the message for the model.
     fn ready(&mut self, setup: Duration, cancel: &AtomicBool) -> Result<(), String> {
         if let Some(e) = &self.failed { return Err(self.restart_failed(e)); }
+        if !self.started {
+            let was = self.untrusted;
+            self.first_start(setup)?;
+            // (a session starts it before the approval, `Host::ensure`, so a changed list asks; this is the fallback)
+            // its live tools are not the pinned ones its offered tools came from: this call was approved under the old
+            // list, so it is not sent; from now on every call asks (`untrusted`) until /trust
+            if self.untrusted && !was {
+                return Err(format!("MCP server {} started, but its tool list changed since it was pinned, so this call was not sent; \
+                    its tools now ask the user on every call (/trust {} accepts the new list)", self.cfg.name, self.cfg.name));
+            }
+            return Ok(());
+        }
         if self.conn.is_some() && self.cancelled && self.cfg.url.is_empty() {
             let conn = self.conn.as_mut().ok_or("no connection")?;
             match conn.request("ping", json!({}), cancel, PING_TIMEOUT) {
@@ -351,28 +432,51 @@ impl Host {
 
     /// `start` with another setup time limit per server (also used when a server is restarted).
     pub fn start_with_timeout(cfgs: &[ServerCfg], taken: &dyn Fn(&str) -> bool, setup: Duration) -> (Host, Vec<String>) {
+        Self::start_inner(cfgs, taken, setup, &|_| None, None)
+    }
+
+    /// A session's servers, none started (user intent decides: a plain chat turn runs no server): each server's tools
+    /// are offered from a known list (a built-in's from the code, another's from its last `tools/list` cached in
+    /// `cache`, `pins::LISTS_FILE`) and the server starts on the first call to one of them. A server with no known
+    /// list yet (its first use ever) is started now, in parallel as `start`, to list its tools (then cached).
+    pub fn open(cfgs: &[ServerCfg], taken: &dyn Fn(&str) -> bool, cache: Option<PathBuf>) -> (Host, Vec<String>) {
+        let lists = cache.as_deref().map(crate::pins::load_lists).unwrap_or_default();
+        let (mut host, notes) = Self::start_inner(cfgs, taken, SETUP_TIMEOUT, &|c| known_list(c, &lists), cache.clone());
+        host.lazy = true;
+        host.cache = cache;
+        (host, notes)
+    }
+
+    /// The servers: those `known` gives a tool list for are set up without starting; the rest start now, each on its
+    /// own thread, each given `setup` (one that fails is left out with a note). Started lists are cached in `cache`.
+    fn start_inner(cfgs: &[ServerCfg], taken: &dyn Fn(&str) -> bool, setup: Duration, known: &dyn Fn(&ServerCfg) -> Option<Vec<Value>>,
+        cache_at: Option<PathBuf>) -> (Host, Vec<String>) {
+        let lists: Vec<Option<Vec<Value>>> = cfgs.iter().map(known).collect();
         // each server starts on its own thread; one that is too slow is given up (its thread's own deadline kills its
         // process, and a result that comes later is dropped, which does too)
-        let pending: Vec<_> = cfgs.iter().map(|c| {
+        let pending: Vec<_> = cfgs.iter().zip(&lists).map(|(c, k)| {
+            if k.is_some() { return None; }
             let (tx, rx) = channel();
             let c = c.clone();
             let spawned = std::thread::Builder::new().name("elisa-mcp-start".into())
                 .spawn(move || { let _ = tx.send(Conn::connect_within(&c.command, &c.url, &env_of(&c), setup)); });
-            (rx, spawned.err())
+            Some((rx, spawned.err()))
         }).collect();
         let deadline = Instant::now() + setup + GRACE;
         let mut host = Host::default();
         host.setup = setup;
         let mut notes = Vec::new();
         let mut used = HashSet::new();
-        for (c, (rx, spawn_err)) in cfgs.iter().zip(pending) {
-            let r = match spawn_err {
-                Some(e) => Err(format!("cannot start a thread: {e}")),
-                None => match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                    Ok(r) => r,
+        for ((c, k), p) in cfgs.iter().zip(lists).zip(pending) {
+            let r = match (k, p) {
+                (Some(list), _) => Ok((None, list)),
+                (None, Some((_, Some(e)))) => Err(format!("cannot start a thread: {e}")),
+                (None, Some((rx, None))) => match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(r) => r.map(|(conn, list)| (Some(conn), list)),
                     Err(RecvTimeoutError::Timeout) => Err(format!("the MCP server did not start in {}", mcp::secs(setup))),
                     Err(RecvTimeoutError::Disconnected) => Err("its start failed".into()),
                 },
+                (None, None) => Err("its start failed".into()),
             };
             match r {
                 Err(e) => {
@@ -380,6 +484,7 @@ impl Host {
                     host.down.push((c.clone(), e));
                 }
                 Ok((conn, list)) => {
+                    if conn.is_some() { cache(cache_at.as_deref(), c, &list); }
                     let tools = tools_of(&c.name, &list, taken, &mut used, is_builtin_reason(c), &c.filter);
                     let remotes: Vec<&str> = list.iter().filter_map(|t| t["name"].as_str()).collect();
                     let unknown = c.filter.unknown(&c.name, &remotes);
@@ -387,21 +492,31 @@ impl Host {
                         host.filter_notes.push(format!("mcp {}: the server has no tool {} (named in its tools / exclude list; /mcp {} lists its tools)",
                             c.name, unknown.join(", "), c.name));
                     }
-                    host.servers.push(Server { cfg: c.clone(), conn: Some(conn), tools, failed: None, cancelled: false, list,
-                        pinned: None, untrusted: false, note: None, audit: crate::audit::Log::default() });
+                    host.servers.push(new_server(c, conn, tools, list, cache_at.clone()));
                 }
             }
         }
         (host, notes)
     }
 
+    /// Caches the tool list of every server that ran (a plugin's probe: its first session then starts none).
+    pub fn cache_lists(&self, path: &Path) {
+        for s in self.servers.iter().filter(|s| s.started) { cache(Some(path), &s.cfg, &s.list); }
+    }
+
     /// More servers for a running session (a plugin added or switched on): started like `start`, their tool names
     /// clear of Elisa's own (`taken`) and of every name already given out; logged and pinned as the others are.
     /// Notes: (warning, text).
     pub fn extend(&mut self, cfgs: &[ServerCfg], taken: &dyn Fn(&str) -> bool) -> Vec<(bool, String)> {
-        let cfgs: Vec<ServerCfg> = cfgs.iter().filter(|c| !self.running(&c.name)).cloned().collect();
+        // a server that never started (its first call failed: a missing image, say) is set up again
+        let retry = |s: &Server| !s.started && s.failed.is_some();
+        let cfgs: Vec<ServerCfg> = cfgs.iter().filter(|c| !self.servers.iter().any(|s| s.cfg.name == c.name && !retry(s))).cloned().collect();
+        self.servers.retain(|s| !(retry(s) && cfgs.iter().any(|c| c.name == s.cfg.name)));
         let used: HashSet<String> = self.servers.iter().flat_map(|s| s.tools.iter().map(|t| t.exposed.clone())).collect();
-        let (mut more, notes) = Self::start_with_timeout(&cfgs, &|n| taken(n) || used.contains(n), self.setup);
+        let lists = if self.lazy { self.cache.as_deref().map(crate::pins::load_lists).unwrap_or_default() } else { Default::default() };
+        let lazy = self.lazy;
+        let (mut more, notes) = Self::start_inner(&cfgs, &|n| taken(n) || used.contains(n), self.setup,
+            &|c| if lazy { known_list(c, &lists) } else { None }, self.cache.clone());
         let mut out: Vec<(bool, String)> = notes.into_iter().map(|n| (true, n)).collect();
         if let Some(p) = self.pins.clone() { out.extend(more.check_pins(&p)); }
         if let Some(a) = self.audit.clone() { more.audit_to(&a); }
@@ -441,7 +556,7 @@ impl Host {
         self.audit = Some(audit.clone());
         for s in &mut self.servers {
             s.audit = audit.clone();
-            audit.note("server_start", &[("server", &s.cfg.name), ("outcome", "ok")]);
+            if s.conn.is_some() { audit.note("server_start", &[("server", &s.cfg.name), ("outcome", "ok")]); }
         }
     }
 
@@ -521,7 +636,9 @@ impl Host {
     /// ~1.0K tokens · pinned`. `off_turn`: a built-in server's tools are left out of this turn (the relevance gate).
     fn head(&self, s: &Server, off_turn: bool) -> String {
         let state = match (&s.conn, &s.failed) {
+            (_, Some(e)) if !s.started => format!("failed to start: {e}"),
             (_, Some(e)) => format!("stopped, restart failed: {e}"),
+            (None, None) if !s.started => "not started (starts when needed)".into(),
             (None, None) => "stopped (restarts on its next call)".into(),
             _ if off_turn => "gated off this turn".into(),
             _ => "running".into(),
@@ -544,8 +661,11 @@ impl Host {
     pub fn report(&self, off: &[Off], off_turn: &dyn Fn(&str) -> bool) -> String {
         let mut out = String::new();
         let running = self.servers.iter().filter(|s| s.conn.is_some() && s.failed.is_none()).count();
+        let waiting = self.servers.iter().filter(|s| !s.started && s.failed.is_none()).count();
+        let failed = self.down.len() + self.servers.iter().filter(|s| !s.started && s.failed.is_some()).count();
         let mut counts = vec![format!("{running} running")];
-        if !self.down.is_empty() { counts.push(format!("{} failed", self.down.len())); }
+        if waiting > 0 { counts.push(format!("{waiting} not started")); }
+        if failed > 0 { counts.push(format!("{failed} failed")); }
         if !off.is_empty() { counts.push(format!("{} off", off.len())); }
         out.push_str(&format!("MCP servers: {}\n", counts.join(" · ")));
         for s in &self.servers {
@@ -627,6 +747,21 @@ impl Host {
         }
     }
 
+    /// The server of this tool started, if it has not run yet this session (its first call; the session calls this
+    /// before asking approval, so a tool list that differs from its pin is known first and asks as usual). A server
+    /// that ran already is left as it is (`call` restarts a stopped one). Err: why it could not start, for the model;
+    /// `take_image_start_failed` then says whether a missing image was why.
+    pub fn ensure(&mut self, name: &str) -> Result<(), String> {
+        self.image_start_failed = false;
+        let setup = self.setup;
+        let Some(s) = self.servers.iter_mut().find(|s| s.tools.iter().any(|t| t.exposed == name)) else { return Err(format!("no MCP tool {name}")) };
+        if s.started { return Ok(()); }
+        let fresh = s.failed.is_none();
+        let r = s.first_start(setup);
+        self.image_start_failed = fresh && r.is_err() && s.failed.as_deref().is_some_and(|f| crate::images::marked(f).is_some());
+        r
+    }
+
     /// The model's call, sent to its server: the text parts of the result, at most `max_chars`. A server that stopped
     /// is restarted on the next call (once per session).
     pub fn call(&mut self, name: &str, input: &Value, cancel: &AtomicBool, max_chars: usize) -> crate::tools::ToolOutput {
@@ -674,8 +809,15 @@ impl Host {
     /// servers that did not start because a listed image is not on this machine (`images::MARKER` in their last
     /// stderr line): (their config, the image)
     pub fn down_for_image(&self) -> Vec<(ServerCfg, &'static crate::images::Img)> {
-        self.down.iter().filter_map(|(c, e)| crate::images::marked(e).map(|i| (c.clone(), i))).collect()
+        let lazy = self.servers.iter().filter(|s| !s.started).filter_map(|s| s.failed.as_ref().map(|e| (&s.cfg, e)));
+        self.down.iter().map(|(c, e)| (c, e)).chain(lazy).filter_map(|(c, e)| crate::images::marked(e).map(|i| (c.clone(), i))).collect()
     }
+
+    /// the last call's server, started for it, could not start because a listed image is missing (once)
+    pub fn take_image_start_failed(&mut self) -> bool { std::mem::take(&mut self.image_start_failed) }
+
+    /// the server has a running process now
+    pub fn started(&self, server: &str) -> bool { self.servers.iter().any(|s| s.cfg.name == server && s.conn.is_some()) }
 }
 
 fn changed_note(server: &str, what: &str) -> String {

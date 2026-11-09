@@ -11,7 +11,7 @@ Only write what the conversation shows:
 Use exactly these headings:
 
 ## Goal
-The user's latest real request, quoted word for word in "…", then at most one line on what it covers. Nothing else.
+The user's latest real request, quoted word for word after `The user asked:`, then at most one line on what it covers. Nothing else.
 
 ## Done
 Finished steps and decisions, with their reasons.
@@ -23,7 +23,7 @@ One line per file: path, then what changed.
 What works, what fails (exact error text if short), and the next concrete action.
 
 ## Facts to remember
-Commands that build or test the project, paths, names, and preferences the user stated in their own words.
+Commands that build or test the project, paths, names, and preferences the user stated in their own words. Facts about the user in the third person ("The user's name is …"), never "my" or a bare "Name:": you are Elisa, not the user.
 
 Last line: `Also known as:` followed by 3–8 real names from the conversation, each as `name = other words`, separated by `;`.
 Never copy these instructions or the heading descriptions into the notes; leave out a heading with nothing real under it.

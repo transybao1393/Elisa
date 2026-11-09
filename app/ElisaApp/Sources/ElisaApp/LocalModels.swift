@@ -116,6 +116,23 @@ struct LocalModelPicker: View {
     @Environment(\.pal) var p
     @State private var all = false
     @ObservedObject private var evals = EvalStore.shared
+    /// what Ollama says about its installed models (size, parameters, vision): the same `--provider-models` answer
+    /// Model Connections lists them from
+    @StateObject private var srv = ConnectionStore()
+
+    /// the Ollama connection the server facts are asked through: the saved one, else the preset
+    private var ollama: Connection? {
+        conns.first { $0.type == "openai" && $0.baseURL.contains(":11434") }
+            ?? Connection.localPresets.first { $0.name == "ollama" }.map(Connection.init)
+    }
+    private var facts: [String: ConnectionStore.ServerModels.Item] {
+        guard let c = ollama, let items = srv.models[c.baseURL]?.items else { return [:] }
+        return Dictionary(items.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+    private func fact(_ name: String) -> ConnectionStore.ServerModels.Item? {
+        let f = facts
+        return f[name] ?? (name.contains(":") ? nil : f[name + ":latest"])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -144,6 +161,7 @@ struct LocalModelPicker: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(p.bg))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.sep, lineWidth: 1))
         .onAppear { hub.refresh(); evals.loadOnce() }
+        .onChange(of: hub.installed) { _, now in if !now.isEmpty, let c = ollama { srv.listModels(c) } }
     }
 
     private var offline: some View {
@@ -167,7 +185,14 @@ struct LocalModelPicker: View {
 
     private var list: some View {
         let extra = hub.installed.filter { n in !LocalModel.catalog.contains { $0.name == n } && !n.contains("embed") }
-            .map { LocalModel(name: $0, gb: 0, note: "Installed on this Mac.") }
+            .map { n -> LocalModel in
+                // size, parameters and vision from Ollama itself (a model outside the catalog has no entry of its own)
+                let f = fact(n)
+                let params = f.map(\.params).flatMap { $0.isEmpty ? nil : $0 }
+                return LocalModel(name: n, gb: Double(f?.bytes ?? 0) / 1e9,
+                                  note: "Installed on this Mac." + (params.map { " \($0) parameters." } ?? ""),
+                                  tags: f?.vision == true ? ["vision"] : [])
+            }
         // installed first, then by size, smallest first (the user chooses; nothing is picked for them)
         let cat = LocalModel.catalog.sorted { a, b in
             let k = { (x: LocalModel) in hub.has(x.name) ? 0 : 1 }
@@ -197,7 +222,8 @@ struct LocalModelPicker: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(mdl.name).font(Fonts.mono(12.5, .semibold)).foregroundStyle(p.fg)
-                        ForEach(mdl.tags, id: \.self) { badge($0, p.code) }
+                        // a catalog model Ollama says sees images gets the badge too
+                        ForEach(mdl.tags + (fact(mdl.name)?.vision == true && !mdl.tags.contains("vision") ? ["vision"] : []), id: \.self) { badge($0, p.code) }
                         if mdl.gb > 0 && !mdl.fits { badge("needs more memory", p.warn) }
                     }
                     Text(mdl.note).font(Fonts.mono(11)).foregroundStyle(p.fg2)

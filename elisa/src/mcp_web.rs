@@ -9,8 +9,9 @@ use std::io::{BufRead, Write};
 /// the tools this server lists (MCP `tools/list`)
 pub fn tools() -> Value {
     json!([
-        {"name": "web_search", "description": "Search the web; returns the top results (title, url, snippet). For current facts or anything not in the project.",
-         "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+        {"name": "web_search", "description": "Search the web; returns the top results (title, url, snippet). For news, current facts or anything not in the project. Answer with what the results say (for news: what happened), not a list of the sites.",
+         "inputSchema": {"type": "object", "properties": {"query": {"type": "string"},
+             "recent": {"type": "boolean", "description": "true when the user wants news, the latest or what's new (only pages from the past week); false for lasting facts"}}, "required": ["query", "recent"]}},
         {"name": "web_fetch", "description": "Read a public web page as plain text (http/https), e.g. a url from web_search.",
          "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
     ])
@@ -21,13 +22,18 @@ pub fn call(name: &str, args: &Value, cfg: &crate::web::WebCfg) -> (String, bool
     let arg = |k: &str| args[k].as_str().map(str::trim).filter(|s| !s.is_empty());
     let r = match name {
         "web_search" => match arg("query") {
-            Some(q) => crate::web::search(q, cfg).map(|t| format!("{t}\n(web_fetch a url to read the page)")),
+            Some(q) => crate::web::search(q, recent(&args["recent"]), cfg).map(|t| format!("{t}\n(web_fetch a url to read the page)")),
             None => Err("missing query".into()),
         },
         "web_fetch" => match arg("url") { Some(u) => crate::web::fetch(u), None => Err("missing url".into()) },
         n => Err(format!("unknown tool {n}")),
     };
     match r { Ok(t) => (t, false), Err(e) => (e, true) }
+}
+
+/// `recent` as a small model may send it: true, "true" or "yes"
+fn recent(v: &Value) -> bool {
+    v.as_bool().unwrap_or_else(|| v.as_str().is_some_and(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1")))
 }
 
 /// the answer to one JSON-RPC message; None for a notification
@@ -55,6 +61,8 @@ pub fn serve(args: &[String]) -> i32 {
         searxng: opt("--searxng-url").unwrap_or_default(),
         brave_key: std::env::var(crate::web::BRAVE_KEY_ENV).unwrap_or_default().trim().to_string(),
     };
+    // the session's result cache, when it handed one over (`cache::child_env`)
+    crate::cache::from_env();
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines().map_while(Result::ok) {
@@ -84,5 +92,16 @@ mod tests {
         assert_eq!(r["result"]["isError"], true);
         let bad = answer(&json!({"jsonrpc": "2.0", "id": 4, "method": "resources/list"}), &cfg).unwrap();
         assert_eq!(bad["error"]["code"], -32601);
+    }
+
+    /// bug #6: the model says whether a search is for news (`recent`, required so a small model decides every time)
+    #[test]
+    fn web_search_asks_whether_the_search_is_for_news() {
+        let t = tools();
+        assert_eq!(t[0]["inputSchema"]["required"], json!(["query", "recent"]));
+        assert_eq!(t[0]["inputSchema"]["properties"]["recent"]["type"], "boolean");
+        for (v, want) in [(json!(true), true), (json!("true"), true), (json!(" Yes "), true), (json!(false), false), (json!("no"), false), (Value::Null, false)] {
+            assert_eq!(recent(&v), want, "{v}");
+        }
     }
 }

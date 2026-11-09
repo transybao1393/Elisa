@@ -185,3 +185,61 @@ fn a_server_still_busy_with_a_cancelled_call_is_restarted() {
     assert_ne!(first, again, "should be a new process");
     assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
 }
+
+/// a server that appends a line to DIR/started each time its process starts (then runs the fake server)
+fn marked_server(d: &Path, name: &str, tools: &str) -> ServerCfg {
+    let script = d.join("server.py").display().to_string();
+    let sh = format!("echo $$ >> '{}/started'; exec python3 '{script}' {tools} ok '{}'", d.display(), d.display());
+    ServerCfg { name: name.into(), command: vec!["/bin/sh".into(), "-c".into(), sh], ..ServerCfg::default() }
+}
+
+fn starts(d: &Path) -> usize { std::fs::read_to_string(d.join("started")).map(|t| t.lines().count()).unwrap_or(0) }
+
+/// lazy start: with the tool list cached, opening a session (and a plain chat turn, which makes no call) spawns no
+/// server; the first call starts it, a second call reuses that process; a server with no cached list (first use
+/// ever) is started once at open to learn its tools, which are then cached
+#[test]
+fn servers_start_on_their_first_call_and_then_stay() {
+    let d = dir("lazy");
+    let cache = d.0.join("home/.elisa/mcp-tools.json");
+    let c = marked_server(&d.0, "s", "echo,other");
+    // first use ever: started at open, its list cached
+    let (h, notes) = Host::open(std::slice::from_ref(&c), &taken, Some(cache.clone()));
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(starts(&d.0), 1);
+    assert!(cache.is_file());
+    drop(h);
+    // later sessions: nothing starts until a call needs it
+    let (mut h, notes) = Host::open(std::slice::from_ref(&c), &taken, Some(cache.clone()));
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(names(&h), ["s_echo", "s_other"]);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(starts(&d.0), 1, "opening the session started a server");
+    let r = h.report(&[], &|_| false);
+    assert!(r.contains("MCP servers: 0 running · 1 not started") && r.contains("s · user · not started (starts when needed) · stdio sh · 2 tools · ~"), "{r}");
+    let (first, err) = call(&mut h, "s_echo");
+    assert!(!err && first.starts_with("echo: pid "), "{first}");
+    assert_eq!(starts(&d.0), 2, "the first call starts it");
+    let (again, err) = call(&mut h, "s_other");
+    assert!(!err, "{again}");
+    assert_eq!(first["echo: ".len()..], again["other: ".len()..], "the second call reuses the process");
+    assert_eq!(starts(&d.0), 2);
+    assert!(h.report(&[], &|_| false).contains("s · user · running · stdio sh"));
+}
+
+/// a lazily started server that cannot start: the call gets the error, and no later call tries again
+#[test]
+fn a_lazy_server_that_cannot_start_says_so_in_the_call() {
+    let d = dir("lazyfail");
+    let cache = d.0.join("mcp-tools.json");
+    let c = server(&d.0, "crashy", "echo", "crash-once");
+    elisa::pins::cache_list(&cache, &elisa::pins::key(&c.name, &c.command, &c.url), &[json!({"name": "echo", "description": "fake echo", "inputSchema": {"type": "object", "properties": {}}})]).unwrap();
+    std::fs::write(d.0.join("crashed"), "1").unwrap();
+    let (mut h, notes) = Host::open(std::slice::from_ref(&c), &taken, Some(cache));
+    assert!(notes.is_empty() && names(&h) == ["crashy_echo"], "{notes:?}");
+    let (e, err) = call(&mut h, "crashy_echo");
+    assert!(err && e.starts_with("MCP server crashy could not start: the MCP server exited (exit code 3)"), "{e}");
+    assert!(h.report(&[], &|_| false).contains("crashy · user · failed to start: "));
+    let (e2, err) = call(&mut h, "crashy_echo");
+    assert!(err && e2.contains("could not start"), "{e2}");
+}

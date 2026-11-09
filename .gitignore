@@ -31,3 +31,6 @@ providers.toml
 *.rej
 .claude/settings.local.json
 .claude/worktrees/
+
+# the paid intent router (model weights + spec): served from our server, never in the repo or the app
+decision_models/

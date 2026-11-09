@@ -12,6 +12,9 @@
 //!   run. A read that failed whatever its arguments (a binary file, a directory, a missing file) is not run again on
 //!   that path at all; the model gets the reason and what to use instead. Paging through a long file (different
 //!   results) is never blocked. A change to the file resets this like the counts above.
+//! - **Attached document.** A `read` / `outline` / `read_symbol` / `grep` of a document attached to this turn, whose
+//!   text is already in the user's message, does not run; the model is told the text is above (BUGS #54: granite4.2:3b
+//!   read and outlined two attached spreadsheets until the turn stopped with no reply).
 //! - **No progress.** After `NUDGE_STEPS` tool steps without a successful change, one soft note asks the model to
 //!   answer with what it has or say what blocks it.
 use serde_json::Value;
@@ -52,6 +55,8 @@ pub struct Guard {
     /// per path read with `read`: its last result, how many reads in a row gave it, and whether it was an error no
     /// paging argument changes (binary file, directory, missing)
     reads: HashMap<String, ReadSeen>,
+    /// the file names of the documents whose text is in this turn's message (`attached`)
+    attached: Vec<String>,
 }
 
 struct ReadSeen { last: String, same: usize, unreadable: bool }
@@ -86,10 +91,23 @@ fn path_of(input: &Value) -> Option<String> {
 }
 
 impl Guard {
+    /// The documents whose text is in this turn's message: a file call on one of them is not run (`check`).
+    pub fn attached(&mut self, names: Vec<String>) { self.attached = names.into_iter().map(|n| n.to_lowercase()).collect(); }
+
+    /// A file call of Elisa's own on a document attached to this turn: the note that its text is already there.
+    fn attached_doc(&self, name: &str, input: &Value, local: bool) -> Option<String> {
+        if !local || !matches!(name, "read" | "outline" | "read_symbol" | "grep") { return None; }
+        let p = path_of(input)?;
+        let file = p.rsplit(['/', '\\']).next().unwrap_or(&p).to_lowercase();
+        self.attached.contains(&file).then(|| format!("[elisa: not run: {p} is a document attached to this message: Elisa \
+            already extracted its text and put it in the user's message above. Do not open it with a tool; answer the user \
+            from that text now.]"))
+    }
+
     /// Before a call runs: Block when this exact call already ran `SAME_CALL_MAX - 1` times in this turn (since the
     /// last change to what it reads). `local` = one of Elisa's own tools (an edit can change what it returns).
     pub fn check(&mut self, name: &str, input: &Value, local: bool) -> Verdict {
-        if let Some(why) = self.read_repeat(name, input, local) {
+        if let Some(why) = self.attached_doc(name, input, local).or_else(|| self.read_repeat(name, input, local)) {
             self.seq.push(key(name, input));
             self.blocked_now = true;
             return Verdict::Block(why);
@@ -342,6 +360,24 @@ mod tests {
         let mut g = Guard::default();
         step_out(&mut g, "read", json!({"path": "s.py", "offset": 99}), "offset 99 is past the end (2 lines)", true);
         assert_eq!(step_out(&mut g, "read", json!({"path": "s.py"}), all, false).0, Verdict::Run);
+    }
+
+    #[test]
+    fn a_file_call_on_an_attached_document_says_the_text_is_already_there() {
+        // BUGS #54: granite4.2:3b with sales.xlsx + plan.ods attached called outline / read on them
+        let mut g = Guard::default();
+        g.attached(vec!["sales.xlsx".into(), "Plan.ods".into()]);
+        let (v, a) = step(&mut g, "read", json!({"path": "sales.xlsx"}), false);
+        assert!(matches!(v, Verdict::Block(ref m) if m.contains("attached to this message") && m.contains("answer the user")), "{v:?}");
+        assert_eq!(a, After::Fine);
+        assert!(matches!(step(&mut g, "outline", json!({"path": ".elisa/uploads/7/plan.ods"}), false).0, Verdict::Block(_)), "by file name, any case");
+        // other files, and MCP tools, still run
+        let mut g = Guard::default();
+        g.attached(vec!["sales.xlsx".into()]);
+        assert_eq!(step(&mut g, "read", json!({"path": "notes.txt"}), false).0, Verdict::Run);
+        assert_eq!(g.check("docs_sheet", &json!({"path": "sales.xlsx"}), false), Verdict::Run);
+        // no attachment: a read runs
+        assert_eq!(step(&mut Guard::default(), "read", json!({"path": "sales.xlsx"}), false).0, Verdict::Run);
     }
 
     #[test]

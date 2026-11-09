@@ -1,9 +1,10 @@
 # Elisa
 
-**A coding agent that lives on your Mac and runs on your models.**
+**A personal assistant that lives on your Mac and runs on your models.**
 
-Elisa reads your code, edits it, runs your checks, and tells you what it did, with a model running on your own
-machine. Nothing leaves your laptop unless you point it at a server yourself. It comes with a native macOS window and
+Elisa is a chat assistant for everyday use: ask questions, research the web, read documents (PDF, spreadsheets) and
+images, and get coding and local development help when you ask for it, with a model running on your own machine.
+Nothing leaves your laptop unless you point it at a server yourself. It comes with a native macOS window and
 Shade, a small companion who shows you what Elisa is doing while it works.
 
 ![Elisa reading a file, then fixing a bug after asking permission, on a 2B model running locally in Ollama](assets/elisa-demo.gif)
@@ -14,11 +15,13 @@ Shade, a small companion who shows you what Elisa is doing while it works.
   already on your machine so you can pick one.
 - **You stay in charge.** Reading is free; writing, editing and running commands ask first. Anything outside the
   project folder always asks, with the exact paths shown.
-- **Checks before done.** After a turn that edits files, Elisa runs your project's own checks (compile, lint, tests)
-  and gives the model a couple of rounds to fix whatever fails.
+- **Coding when you ask.** Elisa reads and edits code with your approval. After a turn that edits files, it runs
+  your project's own checks (compile, lint, tests) and gives the model a couple of rounds to fix whatever fails.
 - **Small context, long sessions.** Built for 8K windows: a state card carries the goal and next step forward within a
   session (and into `--continue` / `/resume`, never into a new session), and old turns are compacted while you watch,
   not behind your back.
+- **Reads what you attach.** Drop a PDF, Word file, spreadsheet, CSV or text / code file on the app (or
+  `elisa -p "summarise" --attach report.pdf`) and ask about it; any model, no vision needed (see "Attached documents").
 - **Sees and searches.** Attach images to vision models. When the model needs the web it calls `web_search` or
   `web_fetch` from Elisa's built-in web MCP server; Elisa shows each call in the chat and asks before it runs
   (DuckDuckGo by default, or your own SearXNG, which is the reliable choice).
@@ -26,7 +29,7 @@ Shade, a small companion who shows you what Elisa is doing while it works.
 
 ---
 
-A small terminal coding agent for local models. It is a REPL that talks to any Anthropic Messages API server and is
+A small terminal assistant for local models, with coding tools. It is a REPL that talks to any Anthropic Messages API server and is
 built for `streamdense gateway` (Qwen3.8-27B, 8K context = `max_ctx = 8192` in `streamdense.toml`; measured prefill,
 decode and first-token times: the repo README and `docs/TEST_LOG.md` Tests 19 and 23). Nine tools
 (read, write, edit, bash, glob, grep, and the syntax-tree tools outline, read_symbol, edit_symbol), plus the tools of
@@ -59,7 +62,8 @@ Then, in a project directory:
 elisa                       # interactive; read/glob/grep/outline/read_symbol run without asking, write/edit/edit_symbol/bash ask
 elisa --yes                 # approve everything inside the project (never outside writes, see below)
 elisa -p "fix the failing test" --yes   # one task, prints the final answer, exit 1 on an API error
-elisa --continue            # reload the last saved session of this directory (and its last state card)
+elisa --continue            # reload the last saved session of this directory (its history, documents and cards)
+elisa -p "summarise this" --attach ~/Downloads/report.pdf   # ask about a document (repeat --attach for more)
 ```
 
 The mouse wheel scrolls the chat only (Elisa captures the mouse); to select text with the mouse hold fn while dragging
@@ -166,10 +170,44 @@ The status line after each reply shows tok/s, first-token time, real context use
 A reply with no decode window (a tool-call-only reply, or under 0.2 s of decode) shows `— tok/s` and its total time,
 never a false 0.0; after Esc the context shown is Elisa's estimate when the server reported no usage.
 
+Long replies: a text reply cut by the output limit (`stop_reason` max_tokens / OpenAI `finish_reason: "length"`) is
+continued automatically: the same request plus the partial reply as an assistant message and `Continue exactly where
+you stopped.` as a user note (that request only), streamed into the same reply, up to 2 times; still cut, it ends with
+`[reply was long; say "continue" for more]`. The history keeps the whole reply, never the note (2026-11-09: three
+"continue" turns in a row stopped mid-sentence at 1024 tokens). Long history: when it is over 35% of the window, each
+request (never the saved history) shortens the assistant answers older than the last 2 before the current turn to
+their first ~120 tokens plus ` …[shortened]` (`context::shorten_old_replies`); the document budget of a turn counts
+the shortened size, so a resumed chat with long padded answers gets more pages per question.
+
 Sessions and memory: a **new** session (no `--continue` / `/resume`) does not take over the last session's state card;
 its goal and next step were that session's task. It gets `.elisa/notes.md` as background (marked so in the first
 message, without the old session goal) and the project's pinned facts (`/pin`, and the notes' "Facts to remember").
-`--continue` and `/resume` bring the last card back. A card is never stored with template text: fields that only repeat
+`--continue` and `/resume` load that session's cards (`.elisa/session-meta/<id>.cards.json`) and send none until a
+message picks one. **Cards are kept per topic** (`src/topics.rs`): each card's key is the attached document it concerns
+(a `docs_pdf` path in it, else the turn's document) plus its goal's content words, and every user turn sends at most
+one card, the one its topic picks, as a `[state]` block in that turn's message for its requests only: (a) a document
+named (its file name, distinctive title words such as "Kronos" or "TradingAgents", "the first / second paper", "the
+other paper") → that document's newest card; (b) else words that one document has and the others hardly do, or that
+overlap one card's goal; (c) else a short follow-up ("why?", "continue", "more", "and the Sharpe ratio?") or a bare
+"the paper" → the last turn's topic; (d) else none. A card of another topic is never sent, and the same pick chooses
+which attached document's pages go into the turn, so "back to TradingAgents" works like "back to the paper".
+`/state` lists the topics with their cards and marks the active one; `ELISA_DEBUG=1` prints each pick and its
+reason. (2026-11-09: one card, "read the first few pages of the PDF file", was carried into every request for hours
+after the user had moved to another paper.) Asking for it in words does the same: in a session with no
+history yet, "continue the last one", "continue where we left off", "resume", "go back to the last chat", "what were we
+talking about?", "tiếp tục", "tiếp tục cuộc trò chuyện trước", "quay lại cuộc trước" (a fixed phrase list,
+`route::resume_intent`; "continue writing the poem" is not one) load the newest earlier session the way `--continue`
+does (history, its own notes, the card), show `[continued your last session: <title> · <age> ago]`, and answer in that
+context with a one-line hint (`(Follow-up: the user is back to this chat: go on from your last answer with concrete
+details, no repeats.)`, a retry when its last turn stopped, a 2-3 line recap for "what were we talking about?"). No
+earlier session: `There's no earlier conversation in this folder yet.`, with no model call. Nothing is carried
+without such an ask. `--continue` (and the app's dev relaunch, which uses it) and this ask both take the newest session
+with real content (`SessionStore::newest_real_session`): one whose user turns are only greetings, small talk, short
+follow-ups or continue asks, or whose replies are only a greeting or the generic intro, is skipped, so a dead session
+never shadows the real one under it; `/resume` still lists every session. When the last two answered turns got the
+same reply, the older copy is left out of the request (the history keeps it): the 2B model otherwise copies it again
+(measured: the intro three times running). Saved session files keep the user's words without that turn's situation
+line or follow-up hint. A card is never stored with template text: fields that only repeat
 the prompt's placeholders (`goal: …`, `keep: must-not-lose facts`) are dropped, and a card with nothing else is none.
 Summaries are cleaned the same way: lines that repeat the summary instructions or their example text, and empty
 headings, are not stored.
@@ -183,7 +221,21 @@ unlinked at once). Before 2026-11-09 they were shared: a second session's turns 
 idle first session, whose next turn panicked in elisa-mem and hung (longrun2 F1). A long compaction or indexing job in
 one process holds the lock, so another process's memory write waits for it.
 
-**Notes** (`.elisa/notes.md`, written by folds, `/compact` and `/clear`; no model call in any of these steps):
+**Notes** (`.elisa/notes/<session id>.md`, one file per session, written by folds, `/compact` and `/clear`; no model
+call in any of these steps). A session's notes come only from its own file: the shared `.elisa/notes.md` of older
+versions is never read (2026-11-09: `--continue` brought it back, and an old Python-async task's facts and a "hey"
+session goal were merged forward through a PDF chat). The first message heads them `## Notes from this conversation`
+(`## Notes from an earlier conversation` after `/clear` / `/reset`, with the background line).
+- On a fold and `/clear`, an old `Facts to remember`, `Done` or `Session goal` line stays only when this conversation
+  talks about it (`context::fact_in_talk`: at least 2, and at least half, of its content words are in the user's or
+  the assistant's turns, the notes block left out), it was `/pin`-ned, or this run already kept it; a new summary
+  sentence that only restates such a dropped line goes too. A small-talk session goal ("hey", "hi", "thanks", "ok")
+  is never stored (`context::small_talk_goal`).
+- New notes are checked against what the conversation holds (`context::ground_notes`): a sentence claiming code was
+  given ("provided … code examples") goes when no reply holds code; a `Done` sentence or `Files touched` line naming
+  only files no reply names and no edit touched goes; an attached document listed as a touched file becomes
+  `- attached: <name>` and an `.elisa/uploads/…` path reads `attached: <name>`; raw transcript lines (`[tool …]`,
+  `[result: …]`) never stay in notes.
 - A new summary is **merged** into the earlier notes (`context::merge_notes`): sections that describe "now" (the latest
   request, current state / next step, the state-card section) take the newer version; every other section keeps the
   older lines and adds the new ones. Elisa merges, not the model: the summary request no longer carries the old notes.
@@ -226,6 +278,120 @@ usable context on a plain turn, one info line says so and names the biggest serv
 qwen3-vl:2b-instruct at 8K, before → after: compactions 15 → 4–12 over three runs (the 2B model's tool loops vary),
 tool results cut 17 (4 of them to "0 tokens") → 0, no fold grew the prompt; at 16K: 4 → 4 compactions, cuts 3 → 0.
 
+## Attached documents
+
+The app's 📎 button and drag and drop (and `--attach FILE` on the command line) take documents as well as images:
+PDF, Word `.docx`, spreadsheets (xlsx / xlsm / xlsb / xls / ods / csv / tsv) and text or code files (txt, md, json,
+yaml, source files …). Images need a model with vision; documents work with any model. Code: `src/attach.rs`.
+
+- **Only the path travels.** The app sends each file's path with the message (`send.documents`, JSONL protocol v2).
+  Elisa copies the file into the session's upload area, `<project>/.elisa/uploads/<session-id>/<name>`, at most
+  50 MB a file (a larger one is refused with `not attached: report.pdf is too large to attach (63.2 MB; the limit is
+  50 MB per file)` and the message goes on without it). The copy is inside the project root, so the documents server
+  and `read` reach it, and nothing outside the project is opened again later. An upload folder that resolves outside
+  the project (a symlinked `.elisa`) is refused.
+- **Elisa reads it, not the model.** The text is extracted before the model is asked, with the documents server's own
+  parsers for PDF and spreadsheets (`mcp_docs::pdf_pages` / `sheet_rows`), `word/document.xml` for .docx, and as-is for
+  text. A scanned PDF with no text, a password-protected file or a binary format says why (no OCR).
+- **Intake, before Enter.** The moment a file is attached the app sends `prefetch`; Elisa checks it in the background
+  (activity "Checking report.pdf…", then a `doc_info` event; cached by file content) and nothing is ever run:
+  - *inspect*: the type from its magic bytes (not the name), size, pages / sheets and rows, words and tokens, language
+    (en / vi), whether a PDF has a text layer;
+  - *safety*: a password-protected PDF or Office file is refused; PDF JavaScript, launch actions or embedded files and
+    Office macros (`vbaProject.bin`, .docm / .xlsm) are a warning ("⚠ has macros (not run; text only)") and only the
+    text is read; zip bombs (over 400 MB unpacked or 20,000 entries) are refused before a parser opens them; the
+    extraction has a 30 s limit; a name that does not match the content ("named .pdf but it is a text file") warns;
+  - *category*, from cheap signals, no model call: paper, report, invoice, contract, cv, statement, slides, book, data,
+    code, notes, other;
+  - *structure*: sections with page ranges (the PDF outline when it has one, else numbered / named headings), tables;
+  - *fit*: whole, overview or selection against the window's document budget, with the token numbers;
+  - *readable parts* for the person, along sections or about 4–6 pages each: "show part 3" / "summarise part 2" answer
+    from those pages.
+
+  The app's chip shows the one-line result ("38 pages · research paper · 13 sections · fits as overview"); a click
+  opens a panel with the details, warnings and parts, and clicking a part sends "Summarise part 2 (pages 4–6) of
+  report.pdf". A terminal prints the line (`report.pdf: 38 pages · …`).
+- **Token saving: Elisa picks the text, not the model.** The document budget is about 45% of the window minus the
+  conversation so far (at least 600–2,000 tokens). A document that fits goes into the turn whole, as `[Attached:
+  name.pdf, 2 pages]` and its text, answered in one call with no tools. A larger one:
+  - a vague request ("read this one for me", "summarise", no text) gets an **overview**: title, abstract, every heading
+    with its first sentences, the conclusion, references and running headers left out — `[Attached: name.pdf, 38
+    pages; overview below, ask about any part for detail]`;
+  - a specific question gets **the pages that answer it**: pages, sections or parts it names first, then BM25 over the
+    pages, blended with MiniLM embeddings once they are cached (`cache` kind `docs`, keyed by the file's hash) —
+    `[Attached: name.pdf, 38 pages; pages 4, 9 below, picked for this question; …]`;
+  - **the text never stays in the conversation.** The history, the saved session and fold notes keep only the
+    reference line `[Attached: name.pdf, 38 pages · .elisa/uploads/<session>/name.pdf]`; the overview or pages are
+    added to that turn's requests only (like the situation and follow-up hints). Every later turn about the document
+    ("what about the risk team?", "continue", "and the Sharpe ratio for GOOGL?", "back to the paper") gets the pages
+    it needs picked again, the last question's words joined to short or "and …" questions, within the budget left
+    by the (now small) history; two turns on another topic and it stays out until it is named again. So folds stay
+    rare and a fold never loses the paper: the notes keep its reference and the next question re-reads it;
+  - **resuming** (`--continue`, `/resume`, "continue the last one", the dev reload) attaches every document the
+    loaded history or notes name again from the upload area (intake from the cache), so the next question gets its
+    pages; a copy that is gone gets "ta.pdf is no longer in this folder's uploads; attach it again". An older
+    session's inline text is replaced by its reference; one folded before references were kept gets its upload back
+    when the conversation names its title or file name;
+  - **tables**: a result table that PDF extraction flattens into rows of bare numbers is written out with its group
+    and column names ("TradingAgents — AAPL: CR% 26.62, ARR% 30.5, SR 8.21, MDD% 0.91; GOOGL: …"), the abbreviations
+    the document defines named once ("SR = Sharpe Ratio");
+  - the block names the full file's upload path, so the docs tools can still read any other page; they are not
+    offered by default (on the measured 2B model the tool definitions made the reply a state card).
+  - **Safety net**: a reply that says it cannot read the document (and called no tool) is withdrawn
+    (`reply_retracted`), and the turn is asked once more with the text and a line saying it is right there, shown as
+    an activity step "Giving the model the text of report.pdf again".
+
+  Measured (qwen3-vl:2b-instruct, a 38-page arXiv paper of ~32K tokens, 16K window, six turns: "read this one for
+  me", "what are the agent roles?", "and what about the risk team?", "continue", "what were the results on AAPL?
+  give the exact numbers", "and the Sharpe ratio for GOOGL and AMZN?"): prompts of 3.1K, 5.6K, 5.2K, 6.1K, 7.2K and
+  7.7K tokens, no fold (before: the text stayed in the history and a fold at 10.1K → 3.1K dropped it); turn 5
+  answered CR 26.62%, ARR 30.5%, SR 8.21, MDD 0.91% (all right; before the table labels it read the AMZN column),
+  turn 6 GOOGL SR 6.39 (right; AMZN left out). 4–14 s a turn.
+- **Outside text.** The extracted text has secrets hidden like tool output (config `redact`) and is fenced as
+  `<untrusted source="attached name.pdf">`. Memory and fold notes keep only the `[Attached: …]` line, never the text.
+- **Activity.** Reading shows as an activity step ("Reading report.pdf…" → "Read report.pdf · 12 pages").
+
+## Result cache
+
+Elisa keeps its own cache of results that are slow to make again, so a repeated question is quick on **any** model
+backend: Ollama's KV prefix reuse is a server feature that llama.cpp, a raw GGUF and most other servers do not have,
+and Elisa never relies on it. The cache lives in `~/.elisa/cache` (`src/cache.rs`) and holds results only — never a
+model's answer or a chat reply.
+
+| Kind | Key | Kept | Not cached |
+|---|---|---|---|
+| `web_fetch` | the normalised URL (scheme and host lower case, no fragment, no default port) and the size cap | 1 h | errors; a page sent with `Cache-Control: no-store` |
+| `web_search` | engine (and SearXNG server) and the query (case and spacing folded); never the API key | 15 min | errors |
+| `docs` | the file's content (sha256) and the extractor version: PDF pages, every sheet of a workbook, a .docx's text | until the file changes | CSV / TSV (cheap to parse) |
+
+Never cached: anything that holds a secret (`src/secrets.rs` finds one: the result is not stored at all), local file
+reads by `read` (cheap, and files change), model output. An entry is content-addressed (sha256 of kind, version and
+key); its file holds the key, creation time and TTL, its mtime is its last use and its length its size. Past
+`cache_max_mb` (200 MB) the least recently used entries go. `cache = false` switches it off.
+
+**Several Elisa processes at once** (two app windows, the app and a terminal, each session's own MCP servers) share
+it safely: an entry is written to a temp file and renamed into place, so a reader (who takes no lock) never sees half
+an entry; writers take an flock on `~/.elisa/cache/lock` around rename, eviction and clearing (the memory store's
+approach). A corrupt entry is ignored and removed. **In-flight dedup:** while one process or thread fetches a URL or
+parses a document, another asking for the same key waits for it (per-key flock in `inflight/`, up to 30 s for web,
+120 s for documents) and takes its result, so two windows asking for the same page make one request; if the first
+leaves nothing (an error, `no-store`), the waiter does the work itself.
+
+**Prefetch.** A file attached in the app is parsed into the cache in the background as soon as it is attached
+(`prefetch` line, src/jsonl.rs → `cache::prefetch_docs`), so pressing Enter does not wait for the parse.
+`cache::prefetch_url` does the same for a page the caller has already decided to read. `cache::docs_text(path)` is the
+cached text of a PDF, spreadsheet or .docx for other code.
+
+**Seeing it.** `/cache` lists each kind's entries, size and this session's hit rate (the session's MCP servers count
+theirs in `~/.elisa/cache/stats/`); `/stats` ends with the hits and misses; with `ELISA_DEBUG=1` a hit shows as an
+info line (`[cache hit: web_fetch]`). Also listed, and kept as they are: the MCP tool lists (`~/.elisa/mcp-tools.json`),
+the sandbox dependency volumes (`elisa-deps-<language>` in Colima's VM) and the memory store's hot vectors and
+embedding vocabulary.
+
+**Privacy.** The cache directories are mode 0700 and every file 0600. Fetched page text and the text of your
+documents are stored locally only, on this Mac, in plain text under `~/.elisa/cache` — the same machine the pages
+were read on and the documents came from; nothing is sent anywhere. `/cache clear` removes it all.
+
 ## Code by syntax tree (outline, read_symbol, edit_symbol, parse guard)
 
 Elisa parses code with tree-sitter (`src/ast.rs`) for Rust, Python, Swift, TypeScript / TSX, JavaScript / JSX, SQL and
@@ -254,7 +420,7 @@ bash (`.rs .py .pyi .swift .ts .mts .cts .tsx .js .mjs .cjs .jsx .sql .sh .bash`
 - Measured (2026-11-03, Elisa's token estimate, real tool outputs at the 6000-char cap, task = outline a file and
   read one function): elisa/src + mem/src (31 files) 254.7k tokens whole vs 23.3k for outline + the median-size
   symbol (10.9x fewer), 50.9k for outline + the largest (5.0x). engine/crates (115 files): 9.5x / 3.7x. app Swift
-  (29 files): 7.2x / 3.4x. On the demo crate (31-line split.rs) it is 1.6x / 1.0x: read small files whole.
+  (29 files): 7.2x / 3.4x. On a small crate (31-line split.rs) it was 1.6x / 1.0x: read small files whole.
   To rerun: `cargo test --offline --test ast_measure -- --ignored --nocapture`.
 - RAM: one parser and one tree at a time, nothing cached, and files over 1 MiB are not parsed. Peak RSS over all
   177 files was 28.8 MB for the whole debug test process.
@@ -293,12 +459,13 @@ celebration. `--serve-jsonl` sends a `check` event (`src/jsonl.rs`).
 | `/clear` | summarise to `.elisa/notes.md`, then empty the history and drop the state card (the notes become background, as in a new session); later saves go to a new session file, so the pre-clear one stays resumable. The summary is **merged** into the earlier notes (what folds and earlier summaries recorded stays), and its file list comes from Elisa's own edit records (see "Notes"), never from the model's claim. The context comes out smaller when it can without losing anything real: notes longer than the conversation lose only low-value lines (new alias items, the model's own file list and the request quote first, then the newest lines of an overlong section); facts, lines of the earlier notes and Elisa's file records are never cut, so after a very short chat the context may not shrink at all. With memory on, a pinned fact the notes already say is not repeated in `[state]` |
 | `/reset` | empty the history without a summary (notes kept); the state card is dropped for later sessions too (`.elisa/card-reset`) |
 | `/compact` | summarise now and continue with notes + empty history |
-| `/context` | estimated tokens of system / tools / history, the fold point, the tools' tokens by owner (Elisa's own, each MCP server offered this turn), whether the documents / security / reasoning tools are offered this turn, plus the gateway's real count |
+| `/context` | estimated tokens of system / tools / history, the fold point, the tools' tokens by owner (Elisa's own, each MCP server offered this turn), the last turn's route (its tool groups and why, config `route`), whether the documents / security / reasoning tools are offered this turn, plus the gateway's real count |
 | `/mcp [NAME]` | the MCP servers (see "MCP servers"): each one's state, transport, tools offered (of how many, when filtered), their token cost, pin state and tool names; `/mcp NAME`: one server with each tool's description and the tools its filter leaves out |
 | `/notes` | print the notes |
-| `/forget` | delete the notes |
+| `/forget` | forget what Elisa remembers in this project: delete the notes, unpin the pinned facts, stop recalling earlier chats (saved conversation files are kept) |
 | `/resume` | load the last saved session (`.elisa/sessions/`) |
 | `/stats` | metrics of the last request (each model call: kind agent / fold / summary, input, cached and output tokens, first-token time, total time, decode tok/s; wall time split into model time and the rest) and the session totals. One JSON line per request goes to `.elisa/metrics.jsonl` |
+| `/cache [clear [KIND]]` | Elisa's result cache (see "Result cache"): per kind (`web_fetch`, `web_search`, `docs`) its entries, size and this session's hit rate, plus the other caches Elisa keeps; `/cache clear` empties it, `/cache clear docs` one kind. `/stats` ends with the session's cache hits and misses |
 | `/yolo` | toggle approve-all |
 | `/trust [NAME]` | accept an MCP server's changed tool list (see "MCP servers"), or review and accept a plugin whose installed files changed (see "Plugins"); without a name, list both |
 | `/plugin …` | plugins (see "Plugins"): `list`, `add PATH`, `remove NAME`, `enable NAME`, `disable NAME`, `update NAME`, `trust NAME`, `trust project` |
@@ -473,7 +640,40 @@ time you run one of its commands, or with `/plugin trust project`). The trust is
 `~/.elisa/project-trust.json` (the repository's path and a hash of the content), never in the repository; any change
 asks again.
 
-**In the app (`--serve-jsonl`, full protocol in `src/jsonl.rs`).** Events:
+**In the app (`--serve-jsonl`, full protocol in `src/jsonl.rs`; protocol v2: every line Elisa writes has `"v":2` and
+`hello.protocol` is 2. v2 = v1 plus `send.documents: [{path}]`, absolute paths of attached files, at most 8, see
+"Attached documents"; the `prefetch` {documents: [{path}]} command, which checks files attached in the composer before
+Enter; and the `activity` event below).** Events:
+
+- `doc_info` {path, name, kind, bytes, pages, unit, sheets, words, tokens, lang, text_layer, category, category_word,
+  sections: [{title, pages: [from, to]}], tables, outline, parts: [{title, pages: [from, to]}], fit: {plan:
+  "whole"|"overview"|"selection", doc_tokens, budget}, warnings, line} — an attached file's intake, after `prefetch`
+  and again when the message is read (`line` = the chip's one-line result). A file that cannot be attached: {path,
+  name, refused: true, warnings: [why], line: "⚠ why"}
+- `reply_retracted` {} — the reply streamed in this turn said it could not read the attached document: the app removes
+  it, and the reply to the retry follows
+- `history` {items: [{role: "user"|"assistant", text}]} — a resumed conversation's earlier turns, right after the
+  `banner` (`--continue`) or the resume line (`/resume`, "continue the last one"); additive, no protocol bump. The
+  user's own words only (no Working directory / OS / Date / clock header, notes, `[state]`, recalled memories,
+  situation or follow-up hints; an attached document as its `[Attached: …]` line, never its text), replies as written
+  with each tool call as one line (`used read on README.md`), tool results left out; the last 40 user turns
+  (`context::earlier_turns`). The app shows them as normal user and reply blocks between `— earlier in this
+  conversation —` and `— continued —`; the TUI shows the last 3 turns the same way
+
+- `activity` {phase, id, kind, text, …} — what Elisa is doing, in plain words for the person, never tool names
+  (`src/activity.rs` holds the one mapping from tool + arguments to a phrase; arguments are redacted and shortened,
+  paths show only the file name). `phase`: `start` (`text` = the live line: `Searching the web for “Apple news”…`,
+  `Reading report.pdf…`, `Looking through your project files…`, `Running the tests…`, `Using gh tool list issues…`),
+  `update` (same `id`; `waiting_ok: true` while its approval is open: `Editing app.py (waiting for your OK)`; a lazy
+  MCP server start: `Starting the web reader…`), `done` (`text` = `Read apple.com` / `… didn't work` / `Skipped: …
+  (you said no)`, `summary` = `5 results` | `12 pages` | `exit 0`, `ms`, `error`) and `summary` (once per turn that had
+  steps, before `turn_done`: `Searched the web · read 2 pages · 3.1 s`; a pure chat turn has none). Model requests
+  are `kind: "model"` starts (`Waiting for the model…`, then `Thinking about the next step…`) updated to `Writing the
+  answer…` / `Thinking it over…`; a local model that is likely cold (first request, or idle for minutes) carries
+  `slow_after_ms` / `slow_text` and is updated to `Loading the model (first message)…` when no token came by then.
+  The app shows the newest line under the last message (a step under 300 ms never takes it) and folds a finished
+  reply's steps into the summary line, which opens to the steps and the detailed tool rows; the TUI shows the same
+  live line in its status bar
 
 - `plugins` {plugins: [{name, version, description, source: "user"|"project", enabled, trusted, servers: [{name,
   runs: "container"|"host", installed, tools, tokens, running?, state: "ok"|"failed"|"not installed", error}], tools,
@@ -579,7 +779,7 @@ active = "ollama"                     # or: --provider NAME, ELISA_PROVIDER (`no
 type = "openai"
 base_url = "http://127.0.0.1:11434/v1"
 model = "qwen3:8b"
-max_ctx = 8192                        # required for openai and mcp
+max_ctx = 8192                        # required for mcp; openai: optional, read from the server (see Backends)
 
 [providers.claude]                    # the Anthropic API
 type = "anthropic"
@@ -608,6 +808,18 @@ max_ctx = 8192
   capabilities) and anything else counts as no. Without vision the button is off and Elisa refuses attached pictures.
 - **Types**: only `streamdense` gets the gateway's extras (prompt reuse hints, warm-ups, `/health`, the
   watcher). The others send none of them, and the watcher is off, because its notes hold project text.
+- **No prompt cache needed**: Elisa works the same with or without a server-side prompt cache; the cache only changes
+  speed. Every request carries the whole conversation (no server state is assumed), the context meter comes from the
+  server's total prompt count (`prompt_tokens`, or Elisa's estimate when none is reported), and "reused N" shows only
+  when the server reports reused tokens. Measured on 2026-11-09 with the same 2B GGUF (qwen3-vl:2b-instruct's text
+  weights), one 8-turn session (greeting, "what can you do?", Tokyo time, read and summarise README.md, thanks, a
+  pasted traceback, "ok, and why?", `/compact`, a question about the crash): `llama-server --no-cache-prompt
+  --cache-reuse 0 --cache-ram 0` answered every turn correctly, with the same prompt sizes as with caching on (163 to
+  2.3K tokens on a turn's first request) and reused 0 throughout. First-token time grows with the prompt instead
+  (0.15 s for "hey", 1.1 s for a 1.6K-token tool turn, 1.7 s at 2.3K, about 1400 prompt tokens/s), against 0.03–1.0 s
+  with llama.cpp's cache on and 0.02–0.9 s on Ollama. With a 4K window (`max_ctx = 4096`, server `-c 4096`) the folds
+  and the "would not fit" stop kept every request under the server's limit (no context errors). Intent routing helps
+  most here: a chat turn sends about 0.2–0.8K tokens instead of 1.6K+ with every tool.
 - **MCP**: MCP has no standard "generate" call, so the tool's input schema decides the shape. A tool with a `messages`
   argument gets the messages, plus `system`, `tools`, `max_tokens` and `model` where it declares them; its reply may be
   plain text or an Anthropic-shaped message, which is how it can call Elisa's tools. Otherwise a text argument (`prompt`,
@@ -623,6 +835,53 @@ max_ctx = 8192
 - **Test**: the window's button or `elisa --provider-test NAME` uses free calls only (`/health`, the model list, MCP
   `tools/list`), but on an MCP `command` it does start that server. `--providers-json` and `--providers-save` are what
   the window uses. Code: `src/provider.rs`, `src/openai.rs`, `src/mcp.rs`.
+
+## Backends
+
+At connect time Elisa works out which server is behind a connection (`src/backend.rs`): the connection's `type`, the
+URL's host for the cloud APIs, and for any other server a few cheap GETs sent at once (at most 1.5 s, no tokens). It
+fills a `Caps` record (window, vision, tools, usage fields, stream quirks, the backend's own cache) and `/model` shows it.
+Nothing depends on a server-side cache: every request carries the whole conversation; a cache is only a speed bonus,
+used where Elisa controls it, and the status line says "reused N" only when the server reported N.
+
+| backend | detected how | caps read | cache features Elisa uses | tested |
+|---|---|---|---|---|
+| Ollama (native `/api/chat`, `/v1`) | `GET /api/version` | window: `/api/ps` loaded `context_length` (else `/api/show` max, capped at 8192); vision/tools/thinking: `/api/show` capabilities | none extra (keep_alive is yours, never sent); `num_ctx` on every request | real + replica + eval |
+| llama.cpp `llama-server` | `GET /props` (`default_generation_settings`, `total_slots`) | window `n_ctx`, vision `modalities`, tools `chat_template_caps`; reuse from `timings.cache_n` | `cache_prompt: true`; slot save/restore when started with `--slot-save-path` (probe: a restore of a missing file is not 501) | real + replica + eval |
+| LM Studio | `GET /api/v0/models` (`max_context_length`) | window (loaded, else max), vision `type: vlm`, tools `capabilities` | none extra (automatic) | replica + eval |
+| MLX `mlx_lm.server` | Python `BaseHTTP` server header on `/v1/models` | usage only with `stream_options.include_usage` (always sent) | none extra (automatic) | replica + eval |
+| vLLM | `/v1/models` `owned_by: "vllm"` (+ `/version`) | window `max_model_len`; `cached_tokens` only with `--enable-prompt-tokens-details` | none extra (automatic prefix caching) | replica + eval |
+| LocalAI / GPT4All / Jan / other OpenAI-style | LocalAI `GET /version`; GPT4All `owned_by: "humanity"`; Jan port 1337; else generic | usage may be missing: Elisa's estimate, marked `~` | none | replica + eval |
+| OpenAI | host `api.openai.com` | `max_completion_tokens`; usage chunk with `prompt_tokens_details.cached_tokens` | none extra (automatic); stable prefix | replica |
+| Anthropic | `type = anthropic` + host `api.anthropic.com` | `cache_creation_input_tokens` counted as read, `cache_read_input_tokens` as reused | `cache_control` breakpoints: system (covers tools), the previous user turn, the newest message (3 of 4) | replica (+ eval for Anthropic-compatible servers) |
+| Google Gemini | host `generativelanguage.googleapis.com` | tool calls arrive whole, maybe without `index`; error bodies as a list | implicit caching; an explicit `cachedContents` of system + tools (TTL 300 s) only when ≥ the model's minimum and ≥ 4096 tokens and the 3rd call with that prefix within 5 min; then sent as `extra_body.google.cached_content` | replica |
+| OpenRouter | host `openrouter.ai` | `: OPENROUTER PROCESSING` comments, mid-stream `error` | none extra | replica |
+| Groq | host `api.groq.com` | usage in `x_groq.usage` | none extra | replica |
+| Together | host `api.together.xyz` / `api.together.ai` | usage on the last chunk | none extra | replica |
+| DeepSeek | host `api.deepseek.com` | reuse `prompt_cache_hit_tokens`, `reasoning_content` | none extra (automatic) | replica |
+| Mistral | host `api.mistral.ai` | tool call ids rewritten to 9 letters/digits (stable) | none extra | replica |
+
+- **Context**: `max_ctx` is optional for `type = "openai"`: without it the server's window is used; a window the server
+  fixed (llama.cpp `-c`, LM Studio's loaded length, vLLM `max_model_len`) also caps a larger `max_ctx`, with a note.
+  Counts that cover only part of the prompt are made whole where they are read (llama.cpp `prompt_n + cache_n`,
+  Anthropic input + cache write + cache read). When the server reports no prompt count, the context meter uses Elisa's
+  estimate and shows it as `ctx ~3.1K/16.4K (19%, estimated)`.
+- **Tools**: native everywhere they exist; streamed argument fragments, whole calls, parallel calls and calls without
+  `index` are joined. A model or server without tools (Ollama capabilities without `tools`, llama.cpp without `--jinja`,
+  or a server that refuses `tools`) gets them described in the system prompt and `<tool_call>{…}</tool_call>` in the
+  reply becomes a real call (only for tools that exist).
+- **No stall timeout**: only the connect has a timeout, so a no-cache server reading a long prompt is waited for (Esc
+  stops it); the activity line says "Reading the conversation…" on servers that keep the model loaded. A 503 (model
+  still loading) is retried once after 3 s; other 5xx at once.
+- **`/compact`** uses the in-context form (same prefix + one message) only where the server reuses a prefix; elsewhere
+  the smaller plain transcript.
+- **llama.cpp slots**: on `/clear`, quit and `/resume` (the session left), slot 0 is saved to `elisa-<project>-<n>.bin`
+  in the server's slot dir (4 names per project, reused in turn, since the server cannot delete files);
+  `.elisa/slots.json` maps sessions to files; `/resume` and `--continue` restore it. Measured 2026-11-09 (qwen3-vl 2B
+  GGUF, `-c 16384 --cache-ram 0 --slot-save-path`, a 2.4–2.6K-token session, the slot first filled by another prompt):
+  first token after `--continue` 1.9–2.0 s without the restore, 0.0–0.1 s with it (3 runs each); save 0.1–0.6 s.
+- Tests: `tests/fake_server.rs` `replica_*` (one per backend, shapes from each backend's docs, URL in a comment) and
+  `elisa eval --suite backends` (detection + a tool turn per local protocol).
 
 ## Config
 
@@ -646,6 +905,7 @@ max_ctx = 8192
 | `web` | `"duckduckgo"` | the search engine of Elisa's built-in web MCP server: `"duckduckgo"`, `"searxng"` (with `searxng_url`), `"brave"` (the Brave Search API, with a key: `brave_api_key`), or `"off"` (no web tools). The model decides when to search or open a page; each call is shown in the chat and asks first. Any other value, `searxng` without an http(s) `searxng_url`, or `brave` without a key, turns web off with a startup note. A project config can only turn it off (another value there is ignored, with a note). DuckDuckGo rate-limits automated searches (it may answer with a bot check); SearXNG (its settings.yml must allow `json` in `search.formats`) and Brave are the reliable choices |
 | `brave_api_key` | none | the Brave Search API key for `web = "brave"`. The environment variable `BRAVE_API_KEY` wins over it when set; the setting is for when there is no shell environment (the macOS app started from Finder). Only `~/.config/elisa/config.toml` may hold it: a project config's `brave_api_key` is ignored with a note. Elisa hands it to the web server in that process's environment, never on its command line, and never prints it. A refused key (HTTP 401/403) or the rate limit (429) comes back to the model as one line |
 | `sandbox` | `"off"` | `"colima"` turns on the built-in code sandbox (`run_code`: python, javascript, bash, rust, go in a locked-down container on Colima, with optional pinned `deps` fetched online first; see "MCP servers"). Off by default; only `~/.config/elisa/config.toml` can switch it on, a project config can only switch it off (`sandbox = "off"`). Any other value is off with a startup note |
+| `route` | `"auto"` | Intent routing (`route.rs`): each turn's requests carry only the tool groups the user's words call for, judged by cheap signals (no model call), once per turn. Groups: **chat** (no tools at all: greetings, small talk, jokes, creative writing, short questions with no file / URL / code marker), **web** (`web_search`, `web_fetch`: a URL, "search", "latest", "news", "look up", weather, prices), **docs** (`docs_pdf`, `docs_sheet`, `read`: a PDF / spreadsheet / CSV), **files/code** (`read`, `glob`, `grep`, `outline`, `read_symbol`, `write`, `edit`, `edit_symbol`, `bash`: a file name or path, a code block, a traceback, "fix" / "build" / "refactor", "this repo / project / file", "write a python script"), **run** (`run_code`: "run this snippet", "sandbox"), **security** (`sec_*`, same words as `gate_tools`), **time** (no tools: the turn gets the local clock line, `Local time now: 2026-11-09 14:05 Monday (UTC+07:00, Asia/Ho_Chi_Minh)`, plus one line per place it names, `Time in Tokyo now: …`, from the system clock and zone database; a clock time to convert, "3pm PST to London", also offers the time server's tools), **other** servers (yours and plugins': offered when the turn names the server). The reasoning tools keep their own gate (`reason`). A follow-up ("continue", "more", "the second one", "tiếp đi", "now also add X", "it still fails") keeps the last turn's groups; a clear chat turn ("thanks!", "tell me a joke") drops them. A long message with no signal gets the small default set (web, or the last turn's groups). A call to a session tool outside the routed set widens the route to its group and runs after the usual approval (a tool the session does not have is still refused), so a wrong guess never fails the turn. Small talk is the exception: on a greeting, thanks, bye or bare "ok" routed as chat (an "ok" that answers an offer, a last answer ending in "?", is not small talk), a tool call never runs and never widens the route; the turn is asked once more with no tools and `(Reply in words; no tools for this message.)` after the user's words in that request only, and a reply that still calls a tool is replaced by a plain line (`Hi! What would you like to do next?`, or `Chào bạn! Bạn muốn làm gì tiếp theo?` for a Vietnamese message) instead of a loop (measured on qwen3-vl:2b: "hey" after a turn the loop guard stopped called tools, the widen path ran them, and the turn looped to 11-42K tokens). A short follow-up after an answer ("why?", "more", "go on", "tiếp đi", "the second one", "number 2", "cái thứ hai", "số 2", "and in Osaka?", "còn Osaka thì sao?") gets one hint line of at most ~25 tokens right before the user's words in that turn's message (`src/followup.rs`): `(Follow-up: explain the reason behind your last answer. Don't repeat it.)`, `(Follow-up: go deeper on your last answer with concrete details; no repeats; say if you're unsure.)`, `(Follow-up: the user picks item 2 from your last answer; tell more about that item only.)`, `(Follow-up: same question as before, now about Osaka.)`; when the conversation is about an attached document (an `[Attached: …]` reference in the history, a kept document, or the docs route) the hints stay with it: `(Follow-up: continue from the document: the next relevant part, only what it says, no repeats.)`, `(Follow-up: explain the reason behind your last answer using the document.)` (2026-11-09: "add new tips" got "details that are not in the original paper" and an unrequested code example). A bare "yes" / "ok" / "sure" after an answer that ends by offering several options ("Would you like me to: 1. … 2. …") gets `(Follow-up: you offered several options; ask which one the user wants. Don't start one.)` (the 2B model otherwise picked the first, a code example); a yes to a single offer goes ahead; none in a new session or after a turn with no answer (no invented context), and none for "more" / "continue" on a turn that carries tools (there it means resume the task). Titles and history views strip it (measured on qwen3-vl:2b: without it "more", "the second one" and "tiếp đi" got the last answer again word for word, "why?" got "I can't provide the answer"). A chat turn's system prompt leaves out the file / code rules and the state-card paragraph, and a chat first turn leaves the working directory out of its header (the first tool turn carries it). `/context` shows the last turn's route; `ELISA_DEBUG=1` prints a `[route: …]` line every turn. `"off"`: every tool on every turn (the `gate_tools` / `reason` gates still apply). Measured on qwen3-vl:2b: "hey" 1.9K → 0.27K prompt tokens. A project config can only set it `"auto"` |
 | `gate_tools` | `"auto"` | Relevance gating for the built-in documents and security servers (`mcp_reason::gate`, a check of your words, no model call, decided once per turn like `reason`): `"auto"` offers `docs_pdf` / `docs_sheet` only on a turn that mentions a document, PDF, spreadsheet, sheet, CSV / XLSX (or such a file is in the last few messages), and the `sec_*` tools only on a turn about security, secrets, leaks, credentials, vulnerabilities / CVEs, dependencies, JWTs or binaries; a follow-up ("continue", "yes") keeps the last turn's choice. Web, run_code, your own servers and Elisa's tools are always offered. The gated tools sit after every stable tool (documents, then security, then the reasoning tools), so a flip changes only the end of the tool list. A call to a gated tool on a turn without it is refused once and the tool is offered from the next request on. `"off"`: every tool on every turn. A plain coding turn at 8K: tools 1.0K instead of 1.4K (soak config with run_code and a time server: 2.4K before). A project config can only set it `"auto"` |
 | `reason` | `"auto"` | The built-in reasoning tools for small models (`think`, `steps`, `step_done`, `calc`; see "MCP servers"): `"auto"` offers them only on turns whose request looks like a multi-step task (a check of your words, no model call), `"always"` on every turn, `"off"` never (the server is not started). A project config can only switch it off; any other value is `"auto"` with a startup note |
 | `docs` | `"on"` | Elisa's built-in documents MCP server (`docs_pdf`, `docs_sheet`: PDF text and spreadsheets inside the project folder; see "MCP servers"). `"off"` removes its two tools (about 180 tokens of tool definitions). Any other value is off with a startup note; a project config can only switch it off (`docs = "on"` there is ignored, with a note, when the user config has it off) |
@@ -655,7 +915,7 @@ max_ctx = 8192
 | `max_steps` | 30 | model calls per user turn (the loop guard usually stops a stuck turn much earlier: see "Run") |
 | `system_prompt_file` | none | replaces `prompts/system.md` |
 | `think` | false | request thinking |
-| `think_simple` | `"off"` | Reasoning on a turn the reasoning gate (`mcp_reason::wanted`, the same check as `reason = "auto"`, whatever `reason` is) judges simple: a greeting, a short question ("2+2=?", "what is the capital of France?"). `"off"`: the model is asked not to reason and the reply gets a 1024-token cap, where the connection allows it: Ollama's native API sends `think: false` to a reasoning model, and a Qwen3-family reasoning model (which ignores that flag) also gets a closed one-line reasoning block as a trailing assistant message, so it answers at once (qwen3-vl:2b "hi": 150 s of reasoning with no answer before, under 1.5 s now); the answer is shown when complete, with any reasoning it still wrote taken out. Anthropic's API without `think` gets the cap only; other servers are unchanged. `"on"`: simple turns reason like any other. A reply with no visible text once its state card is taken out (any turn, any connection; qwen3-vl:2b sometimes answers "thanks" with only the card) is asked for once more with a one-off nudge that never enters the history; if that is empty too, an info line says so instead of silence. A simple turn whose reply uses its whole 1024-token cap and shows no text (a 2B model that opened a second reasoning block, which the held answer drops) is sent once more without the simple-turn limits, with an info line; a reply that hits the limit with no text again says so plainly instead of only `[stopped: reply hit max_tokens]`. A follow-up ("ok", "continue") keeps the last turn's choice; the choice is made once per turn, so a turn's requests keep one shape. A project config can only set it `"off"` |
+| `think_simple` | `"off"` | Reasoning on a turn the reasoning gate (`mcp_reason::wanted`, the same check as `reason = "auto"`, whatever `reason` is) judges simple: a greeting, a short question ("2+2=?", "what is the capital of France?"). `"off"`: the model is asked not to reason and the reply gets a smaller cap (1/8 of the window, 1024..4096: 2048 on a 16K window; a flat 1024 cut plain chat answers mid-sentence), where the connection allows it: Ollama's native API sends `think: false` to a reasoning model, and a Qwen3-family reasoning model (which ignores that flag) also gets a closed one-line reasoning block as a trailing assistant message, so it answers at once (qwen3-vl:2b "hi": 150 s of reasoning with no answer before, under 1.5 s now); the answer is shown when complete, with any reasoning it still wrote taken out. Anthropic's API without `think` gets the cap only; other servers are unchanged. `"on"`: simple turns reason like any other. A reply with no visible text once its state card is taken out (any turn, any connection; qwen3-vl:2b sometimes answers "thanks" with only the card) is asked for once more with a one-off nudge that never enters the history; if that is empty too, an info line says so instead of silence. A simple turn whose reply uses its whole cap and shows no text (a 2B model that opened a second reasoning block, which the held answer drops) is sent once more without the simple-turn limits, with an info line; a reply that hits the limit with no text again says so plainly instead of only `[stopped: reply hit max_tokens]`. A follow-up ("ok", "continue") keeps the last turn's choice; the choice is made once per turn, so a turn's requests keep one shape. A project config can only set it `"off"` |
 | `companion` | false | link to the companion window (app/ElisaCompanion) when it runs; same as `--companion` |
 | `checks` | true | check before done after edits (`--no-checks` turns it off) |
 | `check_rounds` | 2 | most fix rounds after a failed check |
@@ -666,6 +926,9 @@ max_ctx = 8192
 | `ast_guard` | true | refuse a write / edit / edit_symbol that adds syntax errors |
 | `ast_targeted_checks` | true | narrow the test check to the touched symbols |
 | `metrics` | true | per-request metrics: `.elisa/metrics.jsonl` and `/stats` (`src/metrics.rs`) |
+| `greet_context` | true | A greeting ("hey", "hi Elisa", "good morning", "chào") routed as chat is answered from the situation, not with a stock hello (`src/situation.rs`). With no context (a first session, or a new session whose last earlier session is over 3 days old) nothing is added: the user's words alone, the cheapest request. With context, ONE line of ~30-40 tokens goes right before the user's words in that turn's message only (after the cached system / tools / history prefix), built from data Elisa already keeps: mid-conversation, how long since the last turn, the topic (the latest request that was not small talk) or, after a task, the state card's `next:` step, and the part of the day after a gap of an hour or more, e.g. `(Situation: same chat, 3 min later · topic: "plan a 3-day trip to Tokyo…" · one line, no hello, e.g. "Yes? More on <topic>?")`; in a new session, the newest earlier session's title (from `.elisa/session-meta`, redacted; its last card's goal when the title is itself small talk) to offer, never continue: `(Situation: returning user · last chat 2 days ago: "…" · one line: greet, ask: continue it or something new?)`. Never notes or any other earlier text. A thanks / bye / "cool" gets no line (the history answers it well). After a stopped task (the loop guard, a step limit, an error) the line says so briefly, with its goal and an example reply in the greeting's language: `(Situation: last task stopped: "run ./test.sh and tell me what…" · reply like "Hi! Last task stopped. Try again or something new?")` (measured on qwen3-vl:2b: "hey" and "chào" 9 of 9 answered with that one line in one request, ~1.7K prompt tokens with the history, where before "hey" looped to 11-42K; a tool call there is not run anyway, see `route`). Titles and history views never show the line. Measured on qwen3-vl:2b-instruct: "hey" with no context 163 prompt tokens; returning user 204; mid-conversation ~285 (history included) |
+| `cache` | true | Elisa's own result cache, `~/.elisa/cache` (see "Result cache"): web pages, web searches and document text. A project config can only switch it off (`cache = true` there is ignored with a note when the user config has it off) |
+| `cache_max_mb` | 200 | the result cache's size cap in MB (1 ..= 100000); the least recently used entries go first. Only the user config sets it |
 | `outside` | `ask` | tool calls outside the project folder: `ask`, `read-ok` (outside reads run, writes ask), `deny`, `allow` (no outside prompt; `--yes` then allows outside writes). A project config can only tighten it |
 | `shell_sandbox` | `write` (macOS) | Seatbelt sandbox around `bash` and the checks (see "Shell sandbox"): `write` (writes only in the project, temp folders, build caches; secret stores unreadable), `strict` (also no network but localhost), `off`. A project config can only tighten it; a no-op off macOS |
 | `[permissions]` | none | `allow` / `ask` / `deny` lists of tool-call patterns (see "Permission rules"). A project config may add only `deny` and `ask` |
@@ -674,8 +937,18 @@ max_ctx = 8192
 
 ## MCP servers
 
-Elisa is an MCP host: tools from MCP servers sit next to its own and the model calls them like any other tool. Each
-server starts once per session; one that fails to start is left out with a note.
+Elisa is an MCP host: tools from MCP servers sit next to its own and the model calls them like any other tool.
+
+**Servers start when the conversation needs them.** Opening a session starts no server process: a plain chat turn
+runs none. The model is still offered every server's tools: a built-in server's (`web`, `docs`, `sec`, `run`,
+`reason`) come from the code, a user or plugin server's from its last `tools/list`, cached in `~/.elisa/mcp-tools.json`
+next to the pins (keyed like them; a plugin's install probe fills it too). A server starts on the first call to one of
+its tools, in that call and before its approval box (setup timeout as before), and then runs for the rest of the
+session (stopped at exit, restarted once if it dies). Its live tool list is checked against its pin then: a change
+warns and its tools ask on every call until `/trust`. One that fails to start gives the call its error, and no
+later call tries again this session; a plugin server whose image is missing asks once to download it, then tries
+again. Exception: a server with no cached list yet (its first use ever) is started when the session opens, once,
+to learn its tools; one that fails then is left out with a note.
 
 ```toml
 # ~/.config/elisa/config.toml
@@ -714,7 +987,7 @@ env = { GITHUB_TOKEN = "..." }             # extra environment for a command ser
   That is about 1.3K tokens (the session's tools 7.3K → 3.0K with qwen3-vl:2b at 16K). Add `fill_form`,
   `select_option` or `tabs` when a task needs them; leave out `run_code_unsafe` and `evaluate` (they run arbitrary
   JavaScript) unless you mean it.
-- **`/mcp`** shows every server: name, built-in or user, state (running, failed to start with the reason, off by
+- **`/mcp`** shows every server: name, built-in or user, state (running, not started (starts when needed), failed to start with the reason, off by
   config with the setting, or gated off this turn for the documents / security / reasoning servers), transport
   (`stdio` + the command's file name, or `http` + the URL's host), tools offered (`8 of 25 tools` when filtered), the
   approximate tokens of its offered tool definitions, its pin state (`pinned`, or `changed — run /trust NAME`) and its

@@ -106,17 +106,36 @@ pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
-/// `web_search {query}`: the top results as numbered lines
-pub fn search(query: &str, cfg: &WebCfg) -> Result<String, String> {
+/// `web_search {query, recent}`: the top results as numbered lines. `recent` (the model's choice, for news): only pages
+/// from the past week, each engine's own time filter (bug #6: "latest news about Apple" found only the news sites'
+/// front pages, whose snippets say "the latest Apple news", so the reply could only list sites). A recent search with
+/// no results falls back to a plain one.
+pub fn search(query: &str, recent: bool, cfg: &WebCfg) -> Result<String, String> {
     let q = query.trim();
     if q.is_empty() { return Err("missing query".into()); }
-    let hits = match cfg.engine.as_str() {
-        DUCKDUCKGO => duckduckgo(q)?,
-        SEARXNG => searxng(&cfg.searxng, q)?,
-        BRAVE => brave(&brave_base(), &cfg.brave_key, q)?,
+    let server = match cfg.engine.as_str() {
+        DUCKDUCKGO | BRAVE => String::new(),
+        SEARXNG => cfg.searxng.trim_end_matches('/').to_string(),
         e => return Err(format!("web search is off (engine \"{e}\")")),
     };
-    Ok(format_hits(q, &hits))
+    // Elisa's result cache (`cache.rs`, 15 min): per engine (and SearXNG server), time filter and query, never the API key
+    let key = format!("{}\n{server}\n{}{}", cfg.engine, if recent { "recent\n" } else { "" }, q.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase());
+    crate::cache::cached(crate::cache::Kind::WebSearch, &key, || {
+        let run = |week: bool| match cfg.engine.as_str() {
+            DUCKDUCKGO => duckduckgo(q, week),
+            SEARXNG => searxng(&cfg.searxng, q, week),
+            _ => brave(&brave_base(), &cfg.brave_key, q, week),
+        };
+        let mut hits = run(recent)?;
+        if recent && hits.is_empty() { hits = run(false)?; }
+        Ok((format_hits(q, &hits), true))
+    })
+}
+
+/// each engine's past-week filter as a query parameter (`&…`), or nothing
+fn week_param(engine: &str, week: bool) -> &'static str {
+    if !week { return ""; }
+    match engine { DUCKDUCKGO => "&df=w", SEARXNG => "&time_range=week", _ => "&freshness=pw" }
 }
 
 pub fn format_hits(q: &str, hits: &[Hit]) -> String {
@@ -131,11 +150,11 @@ pub fn format_hits(q: &str, hits: &[Hit]) -> String {
 
 /// DuckDuckGo rate-limits automated searches: a refusal is its bot check (`anomaly-modal`), or a page without any
 /// result markup and without its "no results" notice. One retry after a short pause, then a plain refusal message.
-fn duckduckgo(q: &str) -> Result<Vec<Hit>, String> {
+fn duckduckgo(q: &str, week: bool) -> Result<Vec<Hit>, String> {
     let mut last = String::new();
     for attempt in 0..2 {
         if attempt > 0 { std::thread::sleep(Duration::from_millis(1500)); }
-        let mut r = agent(15).get(format!("https://html.duckduckgo.com/html/?q={}", enc(q))).header("user-agent", UA)
+        let mut r = agent(15).get(format!("https://html.duckduckgo.com/html/?q={}{}", enc(q), week_param(DUCKDUCKGO, week))).header("user-agent", UA)
             .call().map_err(|e| format!("cannot reach DuckDuckGo: {e}"))?;
         let st = r.status().as_u16();
         let html = r.body_mut().with_config().limit(PAGE_BYTES).read_to_string().unwrap_or_default();
@@ -167,10 +186,10 @@ pub fn parse_duckduckgo(html: &str) -> Vec<Hit> {
     out
 }
 
-fn searxng(base: &str, q: &str) -> Result<Vec<Hit>, String> {
+fn searxng(base: &str, q: &str, week: bool) -> Result<Vec<Hit>, String> {
     let base = base.trim_end_matches('/');
     if base.is_empty() { return Err("set the SearXNG server URL (searxng_url) first".into()); }
-    let mut r = agent(15).get(format!("{base}/search?q={}&format=json", enc(q))).header("accept", "application/json")
+    let mut r = agent(15).get(format!("{base}/search?q={}&format=json{}", enc(q), week_param(SEARXNG, week))).header("accept", "application/json")
         .call().map_err(|e| format!("no SearXNG server answers at {base} ({e}): is it running?"))?;
     let st = r.status().as_u16();
     let t = r.body_mut().with_config().limit(PAGE_BYTES).read_to_string().unwrap_or_default();
@@ -197,11 +216,11 @@ fn brave_base_from(env: Option<&str>) -> String {
 
 /// The Brave Search API (`GET /res/v1/web/search`, key in `X-Subscription-Token`). Errors are one line for the model
 /// and the user, and never carry the key (a message that somehow did is scrubbed).
-fn brave(base: &str, key: &str, q: &str) -> Result<Vec<Hit>, String> {
+fn brave(base: &str, key: &str, q: &str, week: bool) -> Result<Vec<Hit>, String> {
     if key.is_empty() { return Err(format!("web = \"{BRAVE}\" needs an API key: set {BRAVE_KEY_ENV} or brave_api_key in ~/.config/elisa/config.toml")); }
     let scrub = |e: String| e.replace(key, "[key]");
     let base = base.trim_end_matches('/');
-    let mut r = agent(15).get(format!("{base}/res/v1/web/search?q={}&count={HITS}", enc(q)))
+    let mut r = agent(15).get(format!("{base}/res/v1/web/search?q={}&count={HITS}{}", enc(q), week_param(BRAVE, week)))
         .header("accept", "application/json").header("x-subscription-token", key)
         .call().map_err(|e| scrub(format!("cannot reach Brave Search: {e}")))?;
     let st = r.status().as_u16();
@@ -229,13 +248,43 @@ pub fn parse_brave(v: &Value) -> Vec<Hit> {
 pub fn fetch(url: &str) -> Result<String, String> { fetch_capped(url, PAGE_CHARS) }
 
 /// `fetch` with its own size cap (a page Elisa adds to a small context gets less room)
+/// Through Elisa's result cache (`cache.rs`, 1 h per normalised URL and cap): errors and `Cache-Control: no-store`
+/// pages are not stored. The address is checked before the cache is asked.
 pub fn fetch_capped(url: &str, max_chars: usize) -> Result<String, String> {
+    check_public(url.trim())?;
+    let key = format!("{max_chars}\n{}", normalise_url(url.trim()));
+    crate::cache::cached(crate::cache::Kind::WebFetch, &key, || fetch_page(url, max_chars, &fetch_agent(20), true))
+}
+
+/// Tests only: `fetch_capped` through the cache without the public-address checks, for a local stand-in server.
+/// Never reachable from a model's tool call (only Rust code calls it).
+#[doc(hidden)]
+pub fn fetch_local_for_tests(url: &str, max_chars: usize) -> Result<String, String> {
+    let key = format!("{max_chars}\n{}", normalise_url(url.trim()));
+    crate::cache::cached(crate::cache::Kind::WebFetch, &key, || fetch_page(url, max_chars, &agent(20), false))
+}
+
+/// A URL as the cache keys it: scheme and host lower case, no default port, no fragment, "/" for an empty path.
+pub fn normalise_url(url: &str) -> String {
+    let url = url.split('#').next().unwrap_or("");
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_string() };
+    let scheme = scheme.to_ascii_lowercase();
+    let cut = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (auth, tail) = rest.split_at(cut);
+    let mut auth = auth.to_ascii_lowercase();
+    let port = if scheme == "https" { ":443" } else { ":80" };
+    if auth.ends_with(port) { auth.truncate(auth.len() - port.len()); }
+    let tail = if tail.is_empty() || tail.starts_with('?') { format!("/{tail}") } else { tail.to_string() };
+    format!("{scheme}://{auth}{tail}")
+}
+
+/// the page as text and whether it may be cached (not when the server said `Cache-Control: no-store`)
+fn fetch_page(url: &str, max_chars: usize, a: &ureq::Agent, public_only: bool) -> Result<(String, bool), String> {
     let asked = url.trim().to_string();
     let mut url = asked.clone();
-    let a = fetch_agent(20);
     for _ in 0..6 {
         // every hop: the text check here, the resolved addresses in the agent's resolver
-        check_public(&url)?;
+        if public_only { check_public(&url)?; }
         let mut r = a.get(&url).header("user-agent", UA).header("accept", "text/html,text/plain;q=0.9,*/*;q=0.5")
             .call().map_err(|e| {
                 let e = e.to_string();
@@ -248,8 +297,12 @@ pub fn fetch_capped(url: &str, max_chars: usize) -> Result<String, String> {
             url = join(&url, loc);
             continue;
         }
+        // a site that refuses automated reading: say what to do instead (bug #6: the model searched the same query
+        // again after two 403s and was stopped as a loop, with no answer)
+        if matches!(st, 401 | 403 | 429) { return Err(format!("{url}: HTTP {st} (this site blocks automated reading: answer from the search results' titles and snippets, or fetch another result)")); }
         if !(200..300).contains(&st) { return Err(format!("{url}: HTTP {st}")); }
         let ct = r.headers().get("content-type").and_then(|c| c.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+        let store = !r.headers().get_all("cache-control").iter().any(|v| v.to_str().is_ok_and(|v| v.to_ascii_lowercase().contains("no-store")));
         // image/* out first: image/svg+xml would pass as xml
         if ct.trim_start().starts_with("image/") || !(ct.is_empty() || ct.contains("text/") || ct.contains("json") || ct.contains("xml")) {
             return Err(format!("{url} is not a text page ({ct})"));
@@ -263,7 +316,7 @@ pub fn fetch_capped(url: &str, max_chars: usize) -> Result<String, String> {
         let mut head = String::new();
         if url != asked { head.push_str(&format!("redirected to {url}\n")); }
         if !title.is_empty() { head.push_str(&format!("title: {title}\n")); }
-        return Ok(if head.is_empty() { text } else { format!("{head}\n{text}") });
+        return Ok((if head.is_empty() { text } else { format!("{head}\n{text}") }, store));
     }
     Err(format!("{url}: too many redirects"))
 }
@@ -444,6 +497,15 @@ mod tests {
         assert_eq!(urls_in("https://a.example/1 https://a.example/2 https://a.example/3", 2).len(), 2);
     }
 
+    /// bug #6: a news search asks each engine for the past week only
+    #[test]
+    fn a_recent_search_uses_each_engines_week_filter() {
+        assert_eq!(week_param(DUCKDUCKGO, true), "&df=w");
+        assert_eq!(week_param(SEARXNG, true), "&time_range=week");
+        assert_eq!(week_param(BRAVE, true), "&freshness=pw");
+        for e in [DUCKDUCKGO, SEARXNG, BRAVE] { assert_eq!(week_param(e, false), ""); }
+    }
+
     #[test]
     fn duckduckgo_results_are_read_and_ads_left_out() {
         let html = r#"
@@ -477,7 +539,7 @@ mod tests {
 
     #[test]
     fn brave_without_a_key_says_so_and_the_key_never_shows_in_debug() {
-        let e = brave("http://127.0.0.1:9", "", "x").unwrap_err();
+        let e = brave("http://127.0.0.1:9", "", "x", false).unwrap_err();
         assert!(e.contains("needs an API key") && e.contains(BRAVE_KEY_ENV), "{e}");
         let cfg = WebCfg { engine: BRAVE.into(), searxng: String::new(), brave_key: "sekret-123".into() };
         assert!(!format!("{cfg:?}").contains("sekret"), "{cfg:?}");

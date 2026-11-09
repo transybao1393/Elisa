@@ -4,7 +4,7 @@ kind = "fake"
 
 [[case]]
 id = "core.text_reply"
-description = "a plain reply streams; the state card is never shown as text; no tools run"
+description = "a plain reply streams; the state card is never shown as text nor kept (plain chat carries no card, BUGS #22); no tools run"
 [[case.script]]
 text = "Paris is the capital of France.\n<state>\ngoal: answer\ndone: answered\nnext: none\n</state>"
 [[case.turns]]
@@ -16,19 +16,21 @@ text = "Paris"
 type = "reply_not_contains"
 text = "<state>"
 [[case.checks]]
+type = "reply_not_contains"
+text = "goal:"
+[[case.checks]]
 type = "tool_not_called"
 name = "*"
-[[case.checks]]
-type = "event"
-event = "card"
 
 [[case]]
 id = "core.loop_guard_repeat"
-description = "the same failing command a 3rd time does not run; a 2nd blocked step stops the turn (QA chat #1, retest #3)"
+description = "the same failing command a 3rd time does not run; a 2nd blocked step stops the tool loop and the model answers once with no tools (QA chat #1, retest #3, BUGS #54)"
 approve = "yes"
 [[case.script]]
 tool = { name = "bash", input = { command = "echo boom; exit 3" } }
 repeat = 4
+[[case.script]]
+text = "The command fails with boom (exit 3)."
 [[case.script]]
 text = "never sent"
 [[case.turns]]
@@ -37,7 +39,13 @@ send = "run it"
 type = "stopped_by_loop_guard"
 [[case.checks]]
 type = "max_steps"
-n = 4
+n = 5
+[[case.checks]]
+type = "reply_contains"
+text = "fails with boom"
+[[case.checks]]
+type = "request_contains"
+text = "No more tool calls"
 [[case.checks]]
 type = "tool_result_contains"
 name = "bash"
@@ -183,8 +191,9 @@ prefix = "calc"
 type = "no_tools_offered"
 prefix = "sec_"
 [[case.checks]]
-type = "tools_offered"
-prefix = "read"
+# intent routing (route = "auto"): a plain question carries no tools at all
+type = "no_tools_offered"
+prefix = ""
 
 [[case]]
 id = "core.reason_gate_task"
@@ -251,3 +260,457 @@ turn = 2
 type = "reply_contains"
 text = "No problems."
 turn = 2
+
+# ---------- everyday chat (Elisa is a chat assistant first; coding is one feature) ----------
+
+[[case]]
+id = "core.chat_greeting"
+description = "\"hey\" gets a plain answer: chat-first system prompt sent, no tools run, no approval asked"
+[[case.script]]
+text = "Hey! What can I help you with?"
+[[case.turns]]
+send = "hey"
+[[case.checks]]
+type = "reply_contains"
+text = "help you"
+[[case.checks]]
+type = "request_contains"
+text = "a writing request gets the full text"
+[[case.checks]]
+type = "request_not_contains"
+text = "When tools are offered:"
+[[case.checks]]
+type = "request_not_contains"
+text = "coding agent"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "core.chat_what_can_you_do"
+description = "\"what can you do?\" is answered as chat: no tools, no approval, assistant framing in the prompt"
+[[case.script]]
+text = "I can chat, answer questions, research the web, work with your documents and files, and help with code."
+[[case.turns]]
+send = "what can you do?"
+[[case.checks]]
+type = "reply_contains"
+text = "answer questions"
+[[case.checks]]
+type = "request_contains"
+text = "(Situation: asked about you · answer as Elisa"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "core.chat_fact_question"
+description = "a plain factual question: answered without tools or approvals; a reply with no card is fine"
+[[case.script]]
+text = "Water boils at 100 °C at sea level."
+[[case.turns]]
+send = "At what temperature does water boil?"
+[[case.checks]]
+type = "reply_contains"
+text = "100 °C"
+[[case.checks]]
+type = "reply_not_contains"
+text = "<state>"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "core.chat_mixed_session"
+description = "chat, then a small file task (approved), then chat again: tools and approval only for the file task"
+[[case.script]]
+text = "Hi! How can I help?"
+[[case.script]]
+tool = { name = "write", input = { path = "shopping.txt", content = "milk\neggs\n" } }
+[[case.script]]
+text = "Created shopping.txt with milk and eggs.\n<state>\ngoal: shopping list\ndone: wrote shopping.txt\nnow: idle\nkeep: shopping.txt in project\nnext: none\n</state>"
+[[case.script]]
+text = "You're welcome!"
+[[case.turns]]
+send = "hello"
+[[case.turns]]
+send = "make a file shopping.txt with milk and eggs"
+approvals = ["yes"]
+[[case.turns]]
+send = "thanks!"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+turn = 1
+[[case.checks]]
+type = "approvals"
+max = 0
+turn = 1
+[[case.checks]]
+type = "tool_called"
+name = "write"
+turn = 2
+[[case.checks]]
+type = "approval_for"
+tool = "write"
+turn = 2
+[[case.checks]]
+type = "file_contains"
+path = "shopping.txt"
+text = "eggs"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+turn = 3
+[[case.checks]]
+type = "approvals"
+max = 0
+turn = 3
+[[case.checks]]
+type = "reply_contains"
+text = "welcome"
+turn = 3
+
+[[case]]
+id = "core.chat_new_session_clean"
+description = "a new session's chat request carries no text from the earlier session: at most its title is offered (`situation.rs`), never a later turn's words"
+[[case.script]]
+text = "Sure: sandwiches, fruit, a blanket."
+[[case.script]]
+text = "Got it, BLUEBERRY-42."
+[[case.script]]
+text = "Hi there!"
+[[case.turns]]
+send = "plan a picnic"
+[[case.turns]]
+send = "remember the code word BLUEBERRY-42"
+[[case.turns]]
+send = "hey"
+restart = true
+[[case.checks]]
+type = "request_not_contains"
+text = "BLUEBERRY-42"
+turn = 3
+[[case.checks]]
+type = "request_contains"
+text = "plan a picnic"
+turn = 3
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "core.chat_joke"
+description = "\"tell me a joke\" is chat: no tools, no approval, and no tool-use rules in the prompt"
+[[case.script]]
+text = "Why did the Mac go to therapy? Too many unresolved windows."
+[[case.turns]]
+send = "tell me a joke"
+[[case.checks]]
+type = "reply_contains"
+text = "windows"
+[[case.checks]]
+type = "request_not_contains"
+text = "\"I can …\": chat and answer questions"
+[[case.checks]]
+type = "request_not_contains"
+text = "Never explore files"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "core.chat_small_talk_no_widen"
+description = "a tool call on \"hey\" (small talk routed as chat) is not run and does not widen the route: asked once more in words, with no tools"
+[[case.files]]
+path = "a.txt"
+content = "alpha\n"
+[[case.script]]
+tool = { name = "read", input = { path = "a.txt" } }
+[[case.script]]
+text = "Hi! What are we doing next?"
+[[case.turns]]
+send = "hey"
+[[case.checks]]
+type = "reply_contains"
+text = "What are we doing next?"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "no_tools_offered"
+[[case.checks]]
+type = "request_contains"
+text = "(Reply in words; no tools for this message.)"
+[[case.checks]]
+type = "max_steps"
+n = 2
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "core.chat_small_talk_fallback"
+description = "small talk whose reply calls a tool even when asked in words: a plain fallback line (Vietnamese for a Vietnamese message), never a loop"
+[[case.script]]
+tool = { name = "bash", input = { command = "ls" } }
+repeat = 4
+[[case.turns]]
+send = "hey"
+[[case.turns]]
+send = "chào"
+[[case.checks]]
+type = "reply_contains"
+text = "Hi! What would you like to do next?"
+turn = 1
+[[case.checks]]
+type = "reply_contains"
+text = "Bạn muốn làm gì tiếp theo?"
+turn = 2
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "max_steps"
+n = 2
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "core.chat_follow_up_hints"
+description = "short follow-ups after an answer get a one-line hint before the words (\"why?\", \"cái thứ hai\", \"and in Osaka?\"); none in a new session"
+[[case.script]]
+text = "1. Kyoto 2. Nara 3. Osaka"
+[[case.script]]
+text = "Nara has deer and old temples."
+[[case.script]]
+text = "Because they are close to each other."
+[[case.script]]
+text = "In Osaka: Dotonbori, the castle, Kuromon market."
+[[case.script]]
+text = "Why what?"
+[[case.turns]]
+send = "list 3 day trips from Tokyo, one line"
+[[case.turns]]
+send = "cái thứ hai"
+[[case.turns]]
+send = "why?"
+[[case.turns]]
+send = "and in Osaka?"
+[[case.turns]]
+send = "why?"
+restart = true
+[[case.checks]]
+type = "request_not_contains"
+text = "(Follow-up:"
+turn = 1
+[[case.checks]]
+type = "request_contains"
+text = "(Follow-up: the user picks item 2 from your last answer"
+turn = 2
+[[case.checks]]
+type = "request_contains"
+text = "(Follow-up: explain the reason behind your last answer. Don't repeat it.)\n\nwhy?"
+turn = 3
+[[case.checks]]
+type = "request_contains"
+text = "(Follow-up: same question as before, now about Osaka.)"
+turn = 4
+[[case.checks]]
+type = "request_not_contains"
+text = "(Follow-up:"
+turn = 5
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+
+[[case]]
+id = "core.chat_resume_on_ask"
+description = "\"continue the last one\" in a new session loads the last session like --continue (its history goes in the request, an info line says so); a plain new session still carries nothing; a chat (no tools in its last turn) gets the recap-and-offer hint, not \"go on from your last answer\""
+[[case.script]]
+text = "Page 12 covers the budget."
+[[case.script]]
+text = "Noted: the code word is PELICAN-7."
+[[case.script]]
+text = "Hello!"
+[[case.script]]
+text = "Continuing: page 13 covers the timeline."
+[[case.turns]]
+send = "summarise page 12 of the report"
+[[case.turns]]
+send = "remember the code word PELICAN-7"
+[[case.turns]]
+send = "hello"
+restart = true
+[[case.turns]]
+send = "continue the last one"
+restart = true
+[[case.checks]]
+type = "request_not_contains"
+text = "PELICAN-7"
+turn = 3
+[[case.checks]]
+type = "request_contains"
+text = "PELICAN-7"
+turn = 4
+[[case.checks]]
+type = "request_contains"
+text = "(Follow-up: the user is back after a break. Talking to them directly, tell them in 1-2 short sentences what this chat covered"
+turn = 4
+[[case.checks]]
+type = "info_contains"
+text = "[continued your last session: summarise page 12 of the report"
+turn = 4
+[[case.checks]]
+type = "reply_contains"
+text = "page 13"
+turn = 4
+
+[[case]]
+id = "core.chat_continue_skips_dead_session"
+description = "--continue skips a newer session that is only a continue ask answered with the intro; a follow-up after the intro gets no hint"
+[[case.script]]
+text = "Page 12 covers the budget, code word PELICAN-7."
+[[case.script]]
+text = "I'm Elisa, a personal assistant on your Mac. How can I help?"
+[[case.script]]
+text = "Hey! How can I help you today?"
+[[case.script]]
+text = "Page 13 covers the timeline."
+[[case.turns]]
+send = "summarise page 12 of the report"
+[[case.turns]]
+send = "hello there"
+restart = true
+[[case.turns]]
+send = "more"
+[[case.turns]]
+send = "and page 13?"
+restart = true
+continue = true
+[[case.checks]]
+type = "request_not_contains"
+text = "(Follow-up:"
+turn = 3
+[[case.checks]]
+type = "request_contains"
+text = "PELICAN-7"
+turn = 4
+
+[[case]]
+id = "core.chat_resume_none"
+description = "\"continue the last one\" with no earlier session in the folder: a plain line, no model call, no generic intro"
+[[case.script]]
+text = "I'm Elisa, a personal assistant on your Mac."
+[[case.turns]]
+send = "continue the last one"
+[[case.checks]]
+type = "reply_contains"
+text = "There's no earlier conversation in this folder yet."
+[[case.checks]]
+type = "reply_not_contains"
+text = "personal assistant"
+[[case.checks]]
+type = "max_steps"
+n = 0
+
+[[case]]
+id = "core.chat_read_when_asked"
+description = "\"read README.md and summarise it\" does call read (tools when the user asks), no approval for an in-project read"
+[[case.files]]
+path = "README.md"
+content = "# Lemon\nLemon is a tiny timer app.\n"
+[[case.script]]
+tool = { name = "read", input = { path = "README.md" } }
+[[case.script]]
+text = "README.md: Lemon is a tiny timer app."
+[[case.turns]]
+send = "read README.md and summarise it"
+[[case.checks]]
+type = "tool_called"
+name = "read"
+[[case.checks]]
+type = "tool_result_contains"
+name = "read"
+text = "tiny timer app"
+[[case.checks]]
+type = "reply_contains"
+text = "timer"
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "core.chat_crash_help_may_read"
+description = "a pasted stack trace + \"this keeps crashing\" is coding help: reading/grepping the project is allowed, no approval for it"
+[[case.files]]
+path = "src/main.py"
+content = "def load(p):\n    return open(p).read()\n"
+[[case.script]]
+tools = [{ name = "grep", input = { pattern = "def load" } }]
+[[case.script]]
+tool = { name = "read", input = { path = "src/main.py" } }
+[[case.script]]
+text = "load() opens a path that does not exist; check the file exists first."
+[[case.turns]]
+send = "Traceback (most recent call last):\n  File \"src/main.py\", line 2, in load\nFileNotFoundError: [Errno 2] No such file or directory: 'cfg.json'\n\nthis keeps crashing, can you help?"
+[[case.checks]]
+type = "reply_contains"
+text = "load()"
+[[case.checks]]
+type = "tool_not_called"
+name = "write|edit|bash"
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "core.reply_language_hint"
+description = "English and Vietnamese: a one-language session carries no hint; once the session mixes them, each turn gets a short 'reply in X' hint after the user's words (reply_lang.rs; qwen3-vl:2b answered an English time turn in Vietnamese after a Vietnamese turn)"
+[[case.script]]
+text = "The capital of France is Paris."
+[[case.script]]
+text = "Thủ đô của Nhật Bản là Tokyo."
+[[case.script]]
+text = "Why did the chicken cross the road?"
+[[case.turns]]
+send = "what is the capital of France?"
+[[case.turns]]
+send = "thủ đô của Nhật Bản là gì?"
+[[case.turns]]
+send = "thanks, tell me a joke"
+[[case.checks]]
+type = "request_not_contains"
+text = "(Reply in English.)"
+turn = 1
+[[case.checks]]
+type = "request_not_contains"
+text = "(Trả lời bằng tiếng Việt.)"
+turn = 1
+[[case.checks]]
+type = "request_contains"
+text = "thủ đô của Nhật Bản là gì?\n\n(Trả lời bằng tiếng Việt.)"
+turn = 2
+[[case.checks]]
+type = "request_contains"
+text = "thanks, tell me a joke\n\n(Reply in English.)"
+turn = 3
+[[case.checks]]
+type = "tool_not_called"
+name = "*"

@@ -1,4 +1,4 @@
-// The Elisa process: `elisa --serve-jsonl --cwd DIR [--demo-states]`, JSON lines both ways (elisa/src/jsonl.rs).
+// The Elisa process: `elisa --serve-jsonl --cwd DIR`, JSON lines both ways (elisa/src/jsonl.rs).
 import Foundation
 
 @MainActor
@@ -21,7 +21,7 @@ final class ElisaProcess {
         return nil
     }
 
-    func start(cwd: String?, demo: Bool, extra: [String]) throws {
+    func start(cwd: String?, extra: [String]) throws {
         stop()
         guard let bin = ElisaProcess.binary() else {
             throw NSError(domain: "elisa", code: 1, userInfo: [NSLocalizedDescriptionKey: "elisa binary not found: build it (cd elisa && cargo build --release) or set ELISA_BIN"])
@@ -29,21 +29,23 @@ final class ElisaProcess {
         let p = Process()
         p.executableURL = bin
         var args = ["--serve-jsonl"]
-        if demo { args.append("--demo-states") }
         if let cwd { args += ["--cwd", cwd] }
         p.arguments = args + extra
         let out = Pipe(), inp = Pipe()
         p.standardOutput = out
         p.standardInput = inp
         p.standardError = FileHandle.standardError
+        // events and the exit of a core that was replaced (a model switch restarts it: BUGS #64, the old core's exit
+        // arrived after the new one started and the window said "elisa exited" while the new core ran) are dropped:
+        // only the current process speaks
         out.fileHandleForReading.readabilityHandler = { [weak self] h in
             let d = h.availableData
             if d.isEmpty { h.readabilityHandler = nil }
-            Task { @MainActor in self?.feed(d) }
+            Task { @MainActor in if let self, self.proc === p { self.feed(d) } }
         }
         p.terminationHandler = { [weak self] pr in
             let code = pr.terminationStatus
-            Task { @MainActor in self?.flushReplyLog(); self?.onExit(code) }
+            Task { @MainActor in if let self, self.proc === pr { self.flushReplyLog(); self.onExit(code) } }
         }
         try p.run()
         proc = p

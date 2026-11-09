@@ -1,7 +1,7 @@
 //! In-process fake Anthropic Messages server + tests for config, api, repl and ui working together.
 use elisa::api::{Client, Request};
 use elisa::config::Config;
-use elisa::types::{Block, Message};
+use elisa::types::{Block, Message, Role};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -106,7 +106,7 @@ fn handle(mut c: TcpStream, script: &Mutex<VecDeque<Resp>>, log: &Mutex<Vec<Reco
             let v = if q.len() > 1 { q.pop_front().unwrap() } else { q.front().cloned().unwrap_or(json!({})) };
             Resp::Json(200, v.to_string())
         }
-        ("POST", "/v1/messages") => script.lock().unwrap().pop_front()
+        ("POST", "/v1/messages") | ("POST", "/v1/chat/completions") => script.lock().unwrap().pop_front()
             .unwrap_or_else(|| Resp::Json(500, r#"{"type":"error","error":{"type":"api_error","message":"script exhausted"}}"#.into())),
         _ => Resp::Json(404, r#"{"type":"error","error":{"type":"not_found_error","message":"no route"}}"#.into()),
     };
@@ -181,6 +181,16 @@ impl Sse {
 
 fn text_reply(t: &str) -> Resp { Sse::new(100, 0).text(&[t]).end("end_turn", 5) }
 
+/// An OpenAI-compatible stream (llama.cpp, LM Studio, vLLM, Ollama's /v1): the deltas, a finish reason, then the
+/// usage chunk exactly as given (a server with no prompt cache may leave `prompt_tokens_details` out entirely).
+fn oa_reply(deltas: &[Value], finish: &str, usage: Value) -> Resp {
+    let mut ev: Vec<String> = deltas.iter().map(|d| format!("data: {}\n\n", json!({"choices": [{"index": 0, "delta": d}]}))).collect();
+    ev.push(format!("data: {}\n\n", json!({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}]})));
+    ev.push(format!("data: {}\n\n", json!({"choices": [], "usage": usage})));
+    ev.push("data: [DONE]\n\n".into());
+    Resp::Sse(ev)
+}
+
 // ---------- helpers ----------
 
 fn tmpdir(tag: &str) -> PathBuf {
@@ -209,14 +219,15 @@ struct Out { code: i32, stdout: String, stderr: String }
 /// 2026-11-01): old config files must still load, and the keys change nothing.
 fn run_elisa(args: &[&str], cwd: &Path, stdin: Option<&str>) -> Out { run_elisa_env(args, cwd, stdin, &[]) }
 
-/// `run_elisa` with extra environment (the demo crate's real cargo needs the real CARGO_HOME / RUSTUP_HOME)
+/// `run_elisa` with extra environment (a cargo project's real cargo needs the real CARGO_HOME / RUSTUP_HOME)
 fn run_elisa_env(args: &[&str], cwd: &Path, stdin: Option<&str>, env: &[(&str, String)]) -> Out { run_elisa_cfg(args, cwd, stdin, env, "") }
 
 /// `run_elisa_env` with extra lines in the user config (~/.config/elisa/config.toml)
 fn run_elisa_cfg(args: &[&str], cwd: &Path, stdin: Option<&str>, env: &[(&str, String)], user_cfg: &str) -> Out {
     let home = cwd.join("_home");
     std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
-    std::fs::write(home.join(".config/elisa/config.toml"), format!("auto_mode = true\nchat_window = 1600\n{user_cfg}")).unwrap();
+    // `route = "off"`: these tests check the full tool list; intent routing has its own cases (evals/tools.toml route_*)
+    std::fs::write(home.join(".config/elisa/config.toml"), format!("auto_mode = true\nchat_window = 1600\n{}{user_cfg}", if user_cfg.contains("route =") { "" } else { "route = \"off\"\n" })).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_elisa"));
     cmd.args(args).arg("--cwd").arg(cwd).current_dir(cwd).env("HOME", &home)
         .args(if args.contains(&"--model") || user_cfg.contains("model") { &[][..] } else { &["--model", "test-m"][..] })
@@ -292,6 +303,25 @@ fn api_text_split_mid_word_with_cache_read() {
     assert_eq!(keys, ["model", "max_tokens", "system", "messages", "stream"], "no tools/thinking when empty/off");
     assert_eq!(b["stream"], true);
     assert_eq!(b["model"], "test-m");
+}
+
+#[test]
+fn a_model_without_vision_never_gets_image_parts() {
+    // BUGS #62: an old saved session's image part, resumed on a model without vision
+    let msgs = vec![Message::new(Role::User, vec![Block::image("image/png", "iVBORw0KGgo="), Block::Text { text: "what is this?".into() }]),
+        Message::assistant_text("A cat."), Message::user_text("tell me a short joke")];
+    let f = Fake::start(vec![text_reply("ok"), text_reply("ok"), text_reply("ok")]);
+    let c = client(&f.url());
+    c.set_vision(false);
+    send(&c, &msgs).0.unwrap();
+    send(&c, &msgs).0.unwrap();
+    c.set_vision(true);
+    send(&c, &msgs).0.unwrap();
+    let reqs: Vec<Value> = f.log().iter().map(|r| r.json()).collect();
+    let body = |i: usize| reqs[i]["messages"].to_string();
+    assert!(!body(0).contains("\"image\"") && body(0).contains(elisa::context::IMAGE_STUB) && body(0).contains("what is this?"), "{}", body(0));
+    assert_eq!(body(0), body(1), "the same request every time: the prefix stays");
+    assert!(body(2).contains("\"image\""), "a model with vision gets the picture");
 }
 
 #[test]
@@ -374,7 +404,7 @@ fn config_files_and_env_overrides() {
     let home = d.join("home");
     std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
     std::fs::create_dir_all(d.join("proj/.elisa")).unwrap();
-    std::fs::write(home.join(".config/elisa/config.toml"), "model = \"user-m\"\nmax_output = 111\nauto_approve = [\"read\"]\n").unwrap();
+    std::fs::write(home.join(".config/elisa/config.toml"), "route = \"off\"\nmodel = \"user-m\"\nmax_output = 111\nauto_approve = [\"read\"]\n").unwrap();
     std::fs::write(d.join("proj/.elisa/config.toml"), "model = \"proj-m\"\nbase_url = \"http://x:1/\"\nmax_ctx = 999\n").unwrap();
     let env = std::cell::RefCell::new(std::collections::HashMap::<&str, &str>::new());
     let load = || Config::load_from(&d.join("proj"), Some(home.clone()), |k| env.borrow().get(k).map(|v| v.to_string()));
@@ -500,7 +530,7 @@ fn repl_clear_writes_notes_reset_does_not() {
     // the summary is in context: same system + tools, history + one instruction message (a prefix hit)
     assert_prefix_rule(&reqs[..2]);
     assert!(reqs[1]["messages"].as_array().unwrap().last().unwrap()["content"][0]["text"].as_str().unwrap().contains("will be erased"));
-    assert!(std::fs::read_to_string(d.join(".elisa/notes.md")).unwrap().contains("NOTES-CLR"));
+    assert!(newest_notes(&d).contains("NOTES-CLR"));
     // after /clear: same system prompt, notes in the first (only) message
     assert_eq!(system(&reqs[0]), system(&reqs[2]));
     // ... and the same tools: a reset never drops them (2026-11-01: after a reset the model typed tool calls as text)
@@ -552,8 +582,38 @@ fn repl_approval_prompts_and_prefix_across_turns() {
     let reqs = f.messages();
     assert_eq!(reqs.len(), 5);
     let (c, err) = last_tool_result(&reqs[1]);
-    assert!(err && c == format!("denied by user: {NO_RETRY}"), "{c}");
+    assert!(err && c == format!("denied by user: {SAID_NO}"), "{c}");
     assert_prefix_rule(&reqs);
+}
+
+/// A reply that says the file was saved after the user said no to the write is asked once more in words (no tools,
+/// a note that nothing was saved); still claiming it: a plain line instead. A reply that says it was not saved stands.
+#[test]
+fn a_saved_claim_after_a_denied_write_is_not_shown() {
+    let write = || Sse::new(10, 0).tool_input("w1", "write", json!({"path":"x.txt","content":"hello"})).end("tool_use", 5);
+    // the retry still claims it: the plain line
+    let d = tmpdir("deny-claim");
+    let f = Fake::start(vec![write(), text_reply("I've saved \"hello\" to x.txt for you."), text_reply("Saved it to x.txt.")]);
+    let o = run_elisa(&["--base-url", &f.url()], &d, Some("save hello to x.txt\nn\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(!d.join("x.txt").exists());
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 3, "{}", o.stderr);
+    assert!(!has_tools(&reqs[2]), "the retry offers no tools");
+    let last = reqs[2]["messages"].as_array().unwrap().last().unwrap().to_string();
+    assert!(last.contains("Nothing was saved: the user said no"), "{last}");
+    assert!(o.stdout.contains("Okay, I did not save it: you said no, so nothing was written."), "{}", o.stdout);
+    // the retry says it was not saved: that reply stands
+    let d = tmpdir("deny-claim2");
+    let f = Fake::start(vec![write(), text_reply("Done, x.txt has been created."), text_reply("Okay, I didn't save it, since you said no.")]);
+    let o = run_elisa(&["--base-url", &f.url()], &d, Some("save hello to x.txt\nn\n"));
+    assert_eq!((o.code, f.messages().len()), (0, 3), "{}", o.stderr);
+    assert!(o.stdout.contains("since you said no") && !o.stdout.contains("did not save it: you said no"), "{}", o.stdout);
+    // a plain "not saved" first reply: no retry
+    let d = tmpdir("deny-claim3");
+    let f = Fake::start(vec![write(), text_reply("Okay, I didn't do that, since you said no.")]);
+    let o = run_elisa(&["--base-url", &f.url()], &d, Some("save hello to x.txt\nn\n"));
+    assert_eq!((o.code, f.messages().len()), (0, 2), "{}", o.stderr);
 }
 
 /// "always allow" is kept per project in .elisa/allow: a restarted Elisa does not ask for that tool again.
@@ -677,7 +737,7 @@ fn tool_names(req: &Value) -> Vec<String> {
 /// plain question, a code request, a fold and a resume. Only the fold's transcript summary has its own small system.
 #[test]
 fn one_mode_same_system_and_tools_everywhere() {
-    const SUMMARY_SYSTEM: &str = "You write short, concrete session notes for a coding agent.";
+    const SUMMARY_SYSTEM: &str = "You write short, concrete session notes for an assistant.";
     // none of these turns is about documents or security: those tools stay out (gate_tools = "auto")
     let code = ["read", "write", "edit", "bash", "glob", "grep", "outline", "read_symbol", "edit_symbol", "web_search", "web_fetch"];
     let d = tmpdir("one-mode");
@@ -719,7 +779,7 @@ fn one_mode_same_system_and_tools_everywhere() {
         assert_eq!(r["tools"].to_string(), agent[0]["tools"].to_string(), "tools changed");
         assert_eq!(tool_names(r), code);
     }
-    assert!(system(agent[0]).contains("answer plain questions directly"), "{}", system(agent[0]));
+    assert!(system(agent[0]).contains("Default to normal chat: answer directly"), "{}", system(agent[0]));
     // the resumed request carries the earlier history (post-fold) before the new question
     let last = agent[4]["messages"].as_array().unwrap();
     assert!(last.len() > 1 && agent[4].to_string().contains("You're welcome."), "{last:?}");
@@ -774,11 +834,13 @@ fn watcher_view_parse_and_lines() {
 #[test]
 fn watcher_notes_on_card_and_fold() {
     let d = tmpdir("watch-notes");
+    // (a card comes only from a turn that ran a tool: plain chat carries none, BUGS #22)
     let f = Fake::start_watch(vec![
+        Sse::new(5, 0).tool_input("t", "glob", json!({"pattern": "*.md"})).end("tool_use", 3),
         text_reply("Hi.<state>goal: greet the user\nnow: waiting</state>"),
         text_reply("NOTES-W: greeted the user"),
     ], Some(vec![watch_view("chat-en", 0.7, 1, 1.2)]));
-    let o = run_elisa(&["--base-url", &f.url()], &d, Some("hello\n/compact\n"));
+    let o = run_elisa(&["--base-url", &f.url()], &d, Some("glob the markdown files, then greet me\n/compact\n"));
     assert_eq!(o.code, 0, "stderr: {}", o.stderr);
     let n = notes(&f);
     let card = n.iter().find(|x| x["kind"] == "state_card").unwrap_or_else(|| panic!("{n:?}"));
@@ -983,17 +1045,22 @@ fn write_cut_by_output_limit_is_not_saved() {
 
 /// The same call a third time in a turn does not run (session 1793540068 ran one failing command ~15 times; chat QA
 /// ran one web search 14 times with slightly different results): the model is told to use the earlier result, and a
-/// second blocked step stops the turn (`loop_guard.rs`).
+/// second blocked step ends the tool loop (`loop_guard.rs`). The model is then asked once, with no tools, for an
+/// answer from what it has (BUGS #54: the turn showed only the stop line and no reply); calling a tool anyway stops.
 #[test]
 fn repeated_identical_tool_call_stops_the_turn() {
     let d = tmpdir("repeat");
     let same = || Sse::new(100, 0).tool_input("b", "bash", json!({"command": "echo boom; exit 3"})).end("tool_use", 5);
-    let f = Fake::start(vec![same(), same(), same(), same(), text_reply("never sent")]);
+    let f = Fake::start(vec![same(), same(), same(), same(), text_reply("The command fails with boom (exit 3)."), text_reply("never sent")]);
     let o = run_elisa(&["-p", "run it", "--yes", "--base-url", &f.url()], &d, None);
     assert_eq!(o.code, 0, "stderr: {}", o.stderr);
-    assert!(o.stderr.contains("[stopped: the model kept repeating calls that already ran"), "{}", o.stderr);
-    assert_eq!(f.messages().len(), 4, "no 5th request");
+    assert!(o.stderr.contains("[loop guard: the model kept repeating calls that already ran; asking the model to answer"), "{}", o.stderr);
+    assert!(o.stdout.contains("The command fails with boom"), "the final answer is shown: {}", o.stdout);
+    assert_eq!(f.messages().len(), 5, "one more request, then none");
     assert_eq!(f.left(), 1);
+    let fin = &f.messages()[4];
+    assert!(fin["tools"].as_array().is_none_or(|t| t.is_empty()), "the final request offers no tools");
+    assert!(fin.to_string().contains("No more tool calls"), "and carries the note");
     let sess = std::fs::read_dir(d.join(".elisa/sessions")).unwrap().map(|e| e.unwrap().path())
         .find(|p| p.extension().is_some_and(|x| x == "json")).unwrap();
     let h: Vec<Message> = serde_json::from_str(&std::fs::read_to_string(sess).unwrap()).unwrap();
@@ -1002,7 +1069,33 @@ fn repeated_identical_tool_call_stops_the_turn() {
     assert!(results[1].contains("boom") && !results[1].contains("[elisa:"), "{results:?}");
     assert!(results[2].starts_with("[elisa: not run: this exact call already ran 2 times"), "{results:?}");
     let last = h.last().unwrap();
-    assert!(matches!(&last.content[0], Block::Text { text } if text.starts_with("[stopped: the model kept repeating calls")), "{last:?}");
+    assert!(matches!(&last.content[0], Block::Text { text } if text.starts_with("The command fails with boom")), "{last:?}");
+    assert!(!h.iter().flat_map(|m| &m.content).any(|b| matches!(b, Block::Text { text } if text.contains("No more tool calls"))), "the note is request-only");
+
+    // asked for the final answer, it calls a tool anyway: the turn stops as before, nothing runs
+    let d = tmpdir("repeat-final");
+    let f = Fake::start(vec![same(), same(), same(), same(), same(), text_reply("never sent")]);
+    let o = run_elisa(&["-p", "run it", "--yes", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert!(o.stderr.contains("[stopped: the model kept repeating calls that already ran"), "{}", o.stderr);
+    assert_eq!((f.messages().len(), f.left()), (5, 1));
+
+    // the step limit after a tool step: the same one no-tools answer, never an empty reply
+    let d = tmpdir("step-limit");
+    let step = |i: usize| Sse::new(100, 0).tool_input("r", "bash", json!({"command": format!("echo step{i}")})).end("tool_use", 5);
+    let f = Fake::start(vec![step(1), step(2), text_reply("Ran two steps: step1 and step2."), text_reply("never sent")]);
+    let o = run_elisa_cfg(&["-p", "run things", "--yes", "--base-url", &f.url()], &d, None, &[], "max_steps = 2\n");
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert!(o.stderr.contains("[step limit: the 2-step limit was reached; asking the model to answer"), "{}", o.stderr);
+    assert!(o.stdout.contains("Ran two steps"), "{}", o.stdout);
+    assert_eq!((f.messages().len(), f.left()), (3, 1));
+    assert!(f.messages()[2]["tools"].as_array().is_none_or(|t| t.is_empty()), "the final request offers no tools");
+    // it calls a tool anyway: stopped, nothing more runs
+    let d = tmpdir("step-limit-tool");
+    let f = Fake::start(vec![step(1), step(2), step(3), text_reply("never sent")]);
+    let o = run_elisa_cfg(&["-p", "run things", "--yes", "--base-url", &f.url()], &d, None, &[], "max_steps = 2\n");
+    assert!(o.stderr.contains("[stopped: the 2-step limit was reached"), "{}", o.stderr);
+    assert_eq!((f.messages().len(), f.left()), (3, 1));
 
     // a tool the request did not offer (security s1: `sec_malware` in a build without it) is refused before any
     // approval, even under --yes: one short error with real names, and only a `denial` in the audit log
@@ -1051,6 +1144,8 @@ impl Serve {
     fn start_full(url: &str, cwd: &Path, config: &str, args: &[&str], env: &[(&str, &str)]) -> Serve {
         let home = cwd.join("_home");
         std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
+        // `route = "off"` unless the test sets it: the full tool list (intent routing: evals/tools.toml route_*)
+        let config = if config.contains("route =") { config.to_string() } else { format!("route = \"off\"\n{config}") };
         std::fs::write(home.join(".config/elisa/config.toml"), config).unwrap();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_elisa"));
         cmd.args(["--serve-jsonl", "--model", "test-m", "--base-url", url]).args(args).arg("--cwd").arg(cwd).current_dir(cwd).env("HOME", &home)
@@ -1063,7 +1158,7 @@ impl Serve {
         std::thread::spawn(move || {
             for l in BufReader::new(out).lines().map_while(Result::ok) {
                 let j: Value = serde_json::from_str(&l).unwrap_or_else(|e| panic!("not JSON: {l}: {e}"));
-                assert_eq!(j["v"], 1, "{l}");
+                assert_eq!(j["v"], elisa::jsonl::VERSION, "{l}");
                 if tx.send(j).is_err() { return; }
             }
         });
@@ -1120,7 +1215,12 @@ fn jsonl_scripted_turn_gives_the_expected_events() {
     while s.until("shade").last().unwrap()["state"] == "greeting" {}
     s.cmd(json!({"type": "send", "text": "read a.txt"}));
     let evs = s.until("turn_done");
-    assert_eq!(kinds(&evs), ["user", "waiting", "reply_done", "tool_start", "tool_detail", "tool_done", "waiting", "reply_done", "card", "turn_done"]);
+    let no_act: Vec<Value> = evs.iter().filter(|e| e["type"] != "activity").cloned().collect();
+    assert_eq!(kinds(&no_act), ["user", "waiting", "reply_done", "tool_start", "tool_detail", "tool_done", "waiting", "reply_done", "card", "turn_done"]);
+    // the same turn in plain words (src/activity.rs): waiting, writing, the read step, its summary line
+    let acts: Vec<String> = evs.iter().filter(|e| e["type"] == "activity").map(|e| format!("{} {}", e["phase"].as_str().unwrap(), e["text"].as_str().unwrap())).collect();
+    assert_eq!(acts[..5], ["start Waiting for the model…", "update Writing the answer…", "start Reading a.txt…", "done Read a.txt", "start Thinking about the next step…"], "{acts:?}");
+    assert!(acts.last().unwrap().starts_with("summary Read a.txt · "), "{acts:?}");
     let text: String = evs.iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect();
     assert_eq!(text, "Looking.Done !", "the state card is not shown as text");
     let get = |k: &str| evs.iter().find(|e| e["type"] == k).unwrap().clone();
@@ -1174,7 +1274,7 @@ fn jsonl_approval_round_trip_yes_and_no() {
     assert!(!dir.join("x.txt").exists());
     let reqs = f.messages();
     assert_eq!(last_tool_result(&reqs[1]), ("wrote 1 lines to new.txt".into(), false));
-    assert_eq!(last_tool_result(&reqs[3]), (format!("denied by user: {NO_RETRY}"), true));
+    assert_eq!(last_tool_result(&reqs[3]), (format!("denied by user: {SAID_NO}"), true));
     s.quit();
 }
 
@@ -1521,41 +1621,127 @@ fn jsonl_symbol_tools_rows_and_card_number() {
     s.quit();
 }
 
-/// The scripted demo (`--serve-jsonl --demo-states`) on its real crate: real cargo check / clippy / test
-fn demo_run(tag: &str, prompt: &str) -> (Out, PathBuf) {
-    let proj = elisa::demo_gateway::project_in(&tmpdir(tag)).unwrap();
-    let url = elisa::demo_gateway::start().unwrap();
+/// a real dependency-free Cargo workspace (builds offline) whose `split_words` slices through multi-byte characters:
+/// check-before-done runs the real cargo check / clippy / test on it
+const SPLIT_RS: &str = "/// Splits `input` into words at whitespace and ASCII punctuation.
+pub fn split_words(input: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, b) in input.bytes().enumerate() {
+        if is_boundary(b as char) {
+            if start < i {
+                out.push(&input[start..i]);
+            }
+            start = i + 1;
+        }
+    }
+    if start < input.len() {
+        out.push(&input[start..]);
+    }
+    out
+}
+
+fn is_boundary(c: char) -> bool {
+    c.is_whitespace() || c.is_ascii_punctuation()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_words_multibyte() {
+        assert_eq!(split_words(\"voilà tout\"), [\"voilà\", \"tout\"]);
+    }
+}
+";
+/// `split_words` after the fix, as one symbol
+const SPLIT_FIXED_FN: &str = "/// Splits `input` into words at whitespace and ASCII punctuation.
+pub fn split_words(input: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, c) in input.char_indices() {
+        if is_boundary(c) {
+            if start < i {
+                out.push(&input[start..i]);
+            }
+            start = i + c.len_utf8();
+        }
+    }
+    if start < input.len() {
+        out.push(&input[start..]);
+    }
+    out
+}";
+const SPLIT_OLD: &str = "    for (i, b) in input.bytes().enumerate() {
+        if is_boundary(b as char) {
+            if start < i {
+                out.push(&input[start..i]);
+            }
+            start = i + 1;";
+/// parses, but does not compile (usize + u8)
+const SPLIT_NEW_BROKEN: &str = "    for (i, c) in input.char_indices() {
+        if is_boundary(c) {
+            if start < i {
+                out.push(&input[start..i]);
+            }
+            start = i + c.len_utf8() as u8;";
+
+fn cargo_project(tag: &str) -> PathBuf {
+    let d = tmpdir(tag);
+    std::fs::create_dir_all(d.join("crates/core/src")).unwrap();
+    std::fs::create_dir_all(d.join(".elisa")).unwrap();
+    std::fs::write(d.join("crates/core/src/split.rs"), SPLIT_RS).unwrap();
+    std::fs::write(d.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/core\"]\nresolver = \"2\"\n").unwrap();
+    std::fs::write(d.join("crates/core/Cargo.toml"), "[package]\nname = \"ferrous-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+    std::fs::write(d.join("crates/core/src/lib.rs"), "//! ferrous core: text utilities.\npub mod split;\n").unwrap();
+    std::fs::write(d.join(".elisa/config.toml"), "memory = false\n").unwrap();
+    d.canonicalize().unwrap()
+}
+
+/// `run_elisa` on a cargo project: its real cargo needs the real CARGO_HOME / RUSTUP_HOME
+fn run_cargo(args: &[&str], d: &Path) -> Out {
     let home = std::env::var("HOME").unwrap();
     let env = [("CARGO_HOME", std::env::var("CARGO_HOME").unwrap_or(format!("{home}/.cargo"))),
         ("RUSTUP_HOME", std::env::var("RUSTUP_HOME").unwrap_or(format!("{home}/.rustup")))];
-    let o = run_elisa_env(&["-p", prompt, "--yes", "--base-url", &url], &proj, None, &env);
-    (o, proj)
+    run_elisa_env(args, d, None, &env)
 }
 
 #[test]
-fn demo_symbols_scenario_guard_refuses_then_checks_pass() {
-    let (o, proj) = demo_run("demo-sym", "edit split_words by symbol");
-    assert_eq!(o.code, 0, "{}", o.stderr);
-    assert!(o.stderr.contains("refused"), "the broken edit_symbol was refused: {}", o.stderr);
-    assert!(std::fs::read_to_string(proj.join("crates/core/src/split.rs")).unwrap().contains("input.char_indices()"));
+fn cargo_edit_symbol_guard_refuses_then_checks_pass() {
+    let d = cargo_project("cargo-sym");
+    const SPLIT: &str = "crates/core/src/split.rs";
+    let f = Fake::start(vec![
+        // drops the closing brace: refused by the parse guard
+        Sse::new(800, 0).tool_input("e1", "edit_symbol", json!({"path": SPLIT, "name": "split_words", "source": SPLIT_FIXED_FN.trim_end_matches('}')})).end("tool_use", 9),
+        Sse::new(900, 0).tool_input("e2", "edit_symbol", json!({"path": SPLIT, "name": "split_words", "source": SPLIT_FIXED_FN})).end("tool_use", 9),
+        text_reply("Replaced `split_words` by name"),
+    ]);
+    let o = run_cargo(&["-p", "edit split_words by symbol", "--yes", "--base-url", &f.url()], &d);
+    assert_eq!((o.code, f.left()), (0, 0), "{}", o.stderr);
+    let (msg, err) = last_tool_result(&f.messages()[1]);
+    assert!(err && msg.starts_with("refused: this change would add"), "{msg}");
+    assert!(std::fs::read_to_string(d.join(SPLIT)).unwrap().contains("input.char_indices()"));
     for c in ["check: cargo check ✓", "check: cargo test ✓"] { assert!(o.stderr.contains(c), "{c}: {}", o.stderr); }
     assert!(!o.stderr.contains("✗"), "{}", o.stderr);
     assert!(o.stdout.contains("Replaced `split_words` by name"), "{}", o.stdout);
 }
 
 #[test]
-fn demo_fix_ends_green_and_check_scenario_fails_then_fixes() {
-    // the normal demo: edits, the tests script (asks: --yes), then the checks pass
-    let (o, _) = demo_run("demo-fix", "fix the split test");
-    assert_eq!(o.code, 0, "{}", o.stderr);
-    assert!(o.stderr.contains("check: cargo check ✓") && o.stderr.contains("check: cargo test ✓"), "{}", o.stderr);
-    assert!(!o.stderr.contains("✗"), "{}", o.stderr);
-    // the check scenario: compiles only after one fix round
-    let (o, proj) = demo_run("demo-chk", "make the check fail");
-    assert_eq!(o.code, 0, "{}", o.stderr);
+fn cargo_check_fails_then_fix_round_passes() {
+    let d = cargo_project("cargo-chk");
+    const SPLIT: &str = "crates/core/src/split.rs";
+    let f = Fake::start(vec![
+        Sse::new(800, 0).tool_input("e1", "edit", json!({"path": SPLIT, "old": SPLIT_OLD, "new": SPLIT_NEW_BROKEN})).end("tool_use", 9),
+        text_reply("Done."),
+        Sse::new(900, 0).tool_input("e2", "edit", json!({"path": SPLIT, "old": "c.len_utf8() as u8", "new": "c.len_utf8()"})).end("tool_use", 9),
+        text_reply("Fixed."),
+    ]);
+    let o = run_cargo(&["-p", "make split_words handle multi-byte input", "--yes", "--base-url", &f.url()], &d);
+    assert_eq!((o.code, f.left()), (0, 0), "{}", o.stderr);
     assert!(o.stderr.contains("check: cargo check ✗") && o.stderr.contains("→ fixing (1/2)"), "{}", o.stderr);
     assert!(o.stderr.contains("check: cargo check ✓") && o.stderr.contains("check: cargo test ✓"), "{}", o.stderr);
-    assert!(!std::fs::read_to_string(proj.join("crates/core/src/split.rs")).unwrap().contains("as u8"));
+    assert!(!std::fs::read_to_string(d.join(SPLIT)).unwrap().contains("as u8"));
 }
 
 #[test]
@@ -1733,7 +1919,7 @@ fn outside_read_asks_even_though_read_never_asks_and_deny_keeps_it_out() {
     assert!(o.stderr.contains(&format!("outside the project · read · {want}")), "prompt shows read + the exact path: {}", o.stderr);
     let reqs = f.messages();
     let (c, err) = last_tool_result(&reqs[1]);
-    assert!(err && c.starts_with("denied by user (read outside the project folder") && c.contains(&want) && c.ends_with(NO_RETRY), "{c}");
+    assert!(err && c.starts_with("denied by user (read outside the project folder") && c.contains(&want) && c.ends_with(SAID_NO), "{c}");
     assert!(!c.contains("top secret"));
     let (c, err) = last_tool_result(&reqs[3]);
     assert!(!err && c.contains("in"), "{c}");
@@ -2046,8 +2232,9 @@ fn brave_without_a_key_turns_web_off_with_one_note_and_a_project_cannot_set_the_
     assert!(!web(tool_names(&f.messages()[0])));
 }
 
-/// the advice a denied tool call carries back to the model
-const NO_RETRY: &str = "do not call this tool again for this request; answer without it or ask the user";
+/// the text a call the user said no to carries back to the model
+const SAID_NO: &str = "the user said no, so NOTHING was done: no file was written or changed and no command ran. Reply in one \
+    short sentence like \"Okay, I didn't do that, since you said no.\"; never say it was saved or done. Do not call this tool again for this request";
 
 #[test]
 fn a_project_config_cannot_add_mcp_servers_but_elisa_still_runs() {
@@ -2165,7 +2352,7 @@ fn mcp_always_allow_is_kept_as_mcp_name_and_does_not_cover_elisas_edit() {
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert_eq!(o.stderr.matches("for MCP server web").count(), 1, "a bare `web` entry is not `mcp:web`: {}", o.stderr);
     let (c, err) = last_tool_result(&g.messages()[1]);
-    assert!(err && c == format!("denied by user: {NO_RETRY}"), "{c}");
+    assert!(err && c == format!("denied by user: {SAID_NO}"), "{c}");
 }
 
 #[test]
@@ -2214,7 +2401,7 @@ fn jsonl_approve_names_the_mcp_server_and_a_no_says_do_not_retry() {
     let evs = s.until("tool_done");
     assert_eq!(evs.last().unwrap()["note"].as_str(), Some("denied"));
     s.until("turn_done");
-    assert_eq!(last_tool_result(&f.messages()[1]), (format!("denied by user: {NO_RETRY}"), true));
+    assert_eq!(last_tool_result(&f.messages()[1]), (format!("denied by user: {SAID_NO}"), true));
     s.quit();
 }
 
@@ -2382,28 +2569,32 @@ fn an_empty_visible_reply_is_retried_once_then_noted() {
 // ---------- session memory: state card carry-over, /clear, ctx after Esc, tok/s null ----------
 
 /// A new session does not take over the last session's state card (uitest 2026-11-08: "continuing from state card
-/// #9" with an old goal sent a 2B model on 30 web steps); `--continue` does, cleaned of template text.
+/// #9" with an old goal sent a 2B model on 30 web steps); `--continue` loads the continued session's cards (cleaned of
+/// template text), and sends one only when a message's topic picks it (`topics.rs`).
 #[test]
 fn state_card_is_carried_only_into_a_continued_session() {
     let d = tmpdir("card-carry");
-    let f = Fake::start(vec![text_reply("ok\n<state>\ngoal: OLD-GOAL-X\ndone: …\nkeep: must-not-lose facts\nnext: OLD-NEXT-X\n</state>")]);
-    let o = run_elisa(&["--base-url", &f.url()], &d, Some("first question R1\n/exit\n"));
+    // (a card comes only from a turn that ran a tool: plain chat carries none, BUGS #22)
+    let f = Fake::start(vec![Sse::new(5, 0).tool_input("t", "glob", json!({"pattern": "*.md"})).end("tool_use", 3),
+        text_reply("ok\n<state>\ngoal: OLD-GOAL-X\ndone: …\nkeep: must-not-lose facts\nnext: OLD-NEXT-X\n</state>")]);
+    let o = run_elisa(&["--base-url", &f.url()], &d, Some("glob the markdown files R1\n/exit\n"));
     assert_eq!(o.code, 0, "{}", o.stderr);
-    // run 2: a new session in the same project
-    let g = Fake::start(vec![text_reply("fresh")]);
-    let o = run_elisa(&["--base-url", &g.url()], &d, Some("an unrelated question R2\n/state\n/exit\n"));
-    assert_eq!(o.code, 0, "{}", o.stderr);
-    assert!(!o.stderr.contains("continuing from state card"), "{}", o.stderr);
-    assert!(o.stderr.contains("no state card yet"), "{}", o.stderr);
-    let req = g.messages()[0].to_string();
-    assert!(req.contains("R2") && !req.contains("OLD-GOAL-X") && !req.contains("OLD-NEXT-X"), "the old card reached a new session: {req}");
-    // run 3: --continue carries it, without the template placeholders (a new second: session ids are unix seconds)
+    // run 2: --continue has its cards, without the template placeholders (a new second: session ids are unix seconds)
     std::thread::sleep(Duration::from_millis(1100));
     let o = run_elisa(&["--base-url", "http://127.0.0.1:9", "--continue"], &d, Some("/state\n/exit\n"));
     assert_eq!(o.code, 0, "{}", o.stderr);
-    assert!(o.stderr.contains("continuing from state card #"), "{}", o.stderr);
+    assert!(o.stderr.contains("continuing your last conversation"), "{}", o.stderr);
     assert!(o.stderr.contains("goal: OLD-GOAL-X") && o.stderr.contains("next: OLD-NEXT-X"), "{}", o.stderr);
     assert!(!o.stderr.contains("must-not-lose") && !o.stderr.contains("done: …"), "template text in the card: {}", o.stderr);
+    // run 3: a new session in the same project
+    std::thread::sleep(Duration::from_millis(1100));
+    let g = Fake::start(vec![text_reply("fresh")]);
+    let o = run_elisa(&["--base-url", &g.url()], &d, Some("an unrelated question R2\n/state\n/exit\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(!o.stderr.contains("continuing your last conversation"), "{}", o.stderr);
+    assert!(o.stderr.contains("no state card yet"), "{}", o.stderr);
+    let req = g.messages()[0].to_string();
+    assert!(req.contains("R2") && !req.contains("OLD-GOAL-X") && !req.contains("OLD-NEXT-X"), "the old card reached a new session: {req}");
 }
 
 /// /clear shrinks the context even when the model's summary is longer than the conversation, stores no
@@ -2431,7 +2622,7 @@ fn jsonl_clear_shrinks_the_context_and_keeps_clean_notes() {
     assert!(to < from, "/clear grew the context: {from} -> {to}");
     let info = evs.iter().filter(|e| e["type"] == "info").map(|e| e["text"].as_str().unwrap()).find(|t| t.starts_with("[cleared:")).unwrap();
     assert!(info.contains("notes saved"), "{info}");
-    let notes = std::fs::read_to_string(dir.join(".elisa/notes.md")).unwrap();
+    let notes = newest_notes(&dir);
     assert!(notes.contains("REAL-NOTE-1"), "{notes}");
     assert!(notes.matches("PAD").count() < 120, "the notes were cut to fit under the conversation: {notes}");
     for bad in ["will be erased", "Finished steps", "name = other words", "Also known as", "Commands that build", "## Files touched", "<state>", "## Goal"] {
@@ -2478,12 +2669,12 @@ fn jsonl_interrupt_keeps_the_context_and_short_replies_have_no_rate() {
 
 /// soak 2026-11-08: /clear summarised one turn, replaced the notes and said "No files were touched" after 4 edits,
 /// and the notes kept a "done" item no edit made. Now: merged with the earlier notes, the file list from Elisa's own
-/// edit records, the invented claim dropped.
+/// edit records, the invented claim dropped. Notes are per session (2026-11-09): the earlier facts are this session's
+/// own (it continues a saved one with `--continue`), and the continued session's notes file stays as it was.
 #[test]
 fn jsonl_clear_merges_notes_and_lists_the_files_really_changed() {
     let dir = tmpdir("jsonl-clear-merge");
-    std::fs::create_dir_all(dir.join(".elisa")).unwrap();
-    std::fs::write(dir.join(".elisa/notes.md"), "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n").unwrap();
+    let seeded = seed_session(&dir, 100, "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n");
     let summary = "## Done\n- Wrote hello.txt with a greeting. REAL-DONE\n- Added restock_cost(items) to core.py.\n- Wrote hello.txt with a greeting. REAL-DONE\n\n\
         ## Files touched\nNo files were touched in this session.\n\n## Current state / next step\nnothing open";
     let f = Fake::start(vec![
@@ -2491,7 +2682,7 @@ fn jsonl_clear_merges_notes_and_lists_the_files_really_changed() {
         text_reply("Wrote it."),
         text_reply(summary),
     ]);
-    let mut s = Serve::start(&f.url(), &dir);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\n", &["--continue"], &[]);
     s.until("ready");
     s.cmd(json!({"type": "send", "text": "create hello.txt saying hi there"}));
     s.until("approve");
@@ -2500,11 +2691,12 @@ fn jsonl_clear_merges_notes_and_lists_the_files_really_changed() {
     assert_eq!(std::fs::read_to_string(dir.join("hello.txt")).unwrap(), "hi there\n");
     s.cmd(json!({"type": "send", "text": "/clear"}));
     s.until("turn_done");
-    let notes = std::fs::read_to_string(dir.join(".elisa/notes.md")).unwrap();
+    let notes = newest_notes(&dir);
     assert!(notes.contains("BLUE HERON"), "earlier facts kept: {notes}");
     assert!(notes.contains(&format!("{}\n- hello.txt: written (new file)", elisa::context::FILES_NOTES)), "{notes}");
     assert_eq!(notes.matches("REAL-DONE").count(), 1, "{notes}");
     assert!(!notes.contains("No files were touched") && !notes.contains("restock_cost"), "{notes}");
+    assert_eq!(std::fs::read_to_string(&seeded).unwrap(), "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n", "the notes of the continued session changed");
     s.quit();
 }
 
@@ -2512,11 +2704,11 @@ fn jsonl_clear_merges_notes_and_lists_the_files_really_changed() {
 /// first message after /clear carried "Codename BLUE HERON" twice (notes + `[state]`), came out bigger than the
 /// two-turn conversation, and the "always shrink" rule cut the fact from the notes, leaving only the file records.
 /// Now: the fact stays in the notes, is not repeated as a pinned fact, and the context may simply not shrink.
+/// (Notes are per session since 2026-11-09: the facts are this session's own, from the session it continues.)
 #[test]
 fn jsonl_clear_with_memory_keeps_the_earlier_facts() {
     let dir = tmpdir("jsonl-clear-mem");
-    std::fs::create_dir_all(dir.join(".elisa")).unwrap();
-    std::fs::write(dir.join(".elisa/notes.md"), "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n").unwrap();
+    let seeded = seed_session(&dir, 100, "## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n");
     let summary = "## Done\n- Wrote hello.txt with a greeting. REAL-DONE\n\n## Files touched\nNo files were touched in this session.\n\n\
         ## Current state / next step\nnothing open";
     let f = Fake::start(vec![
@@ -2525,7 +2717,7 @@ fn jsonl_clear_with_memory_keeps_the_earlier_facts() {
         text_reply(summary),
         text_reply("BLUE HERON."),
     ]);
-    let mut s = Serve::start_cfg(&f.url(), &dir, "memory = true\n");
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = true\n", &["--continue"], &[]);
     s.until("ready");
     s.cmd(json!({"type": "send", "text": "create hello.txt saying hi there"}));
     s.until("approve");
@@ -2535,7 +2727,7 @@ fn jsonl_clear_with_memory_keeps_the_earlier_facts() {
     let evs = s.until("turn_done");
     let info = evs.iter().filter(|e| e["type"] == "info").map(|e| e["text"].as_str().unwrap()).find(|t| t.starts_with("[cleared:")).unwrap();
     assert!(info.contains("notes saved"), "{info}");
-    let notes = std::fs::read_to_string(dir.join(".elisa/notes.md")).unwrap();
+    let notes = newest_notes(&dir);
     assert!(notes.contains("Codename BLUE HERON, owner Mira Tanaka."), "earlier facts kept: {notes}");
     assert!(notes.contains(&format!("{}\n- hello.txt: written (new file)", elisa::context::FILES_NOTES)), "{notes}");
     assert!(notes.contains("REAL-DONE") && notes.contains("nothing open"), "{notes}");
@@ -2545,6 +2737,7 @@ fn jsonl_clear_with_memory_keeps_the_earlier_facts() {
     let t = reqs[3]["messages"][0]["content"][0]["text"].as_str().unwrap();
     assert_eq!(t.matches("BLUE HERON").count(), 1, "the fact once, in the notes: {t}");
     assert!(!t.contains("Pinned facts"), "{t}");
+    assert!(std::fs::read_to_string(&seeded).unwrap().contains("BLUE HERON"), "the notes of the continued session were lost");
     s.quit();
 }
 
@@ -2659,7 +2852,7 @@ fn simple_turn_that_hits_max_tokens_with_no_text_is_retried_uncapped() {
         Sse::new(500, 0).end("max_tokens", 1024),
         text_reply("Both answers: 4 and 9."),
     ]);
-    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\n", &["--type", "anthropic"], &[]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
     s.until("ready");
     s.cmd(json!({"type": "send", "text": "hi"}));
     let evs = s.until("turn_done");
@@ -2668,7 +2861,7 @@ fn simple_turn_that_hits_max_tokens_with_no_text_is_retried_uncapped() {
     assert!(evs.iter().any(|e| e["type"] == "info" && e["text"].as_str().unwrap().contains("asking once more without that limit")), "{evs:?}");
     let reqs = f.messages();
     assert_eq!(reqs.len(), 2);
-    assert_eq!(reqs[0]["max_tokens"], 1024, "the simple turn's cap");
+    assert_eq!(reqs[0]["max_tokens"], 1024, "the simple turn's cap (1/8 of the 8K window)");
     assert!(reqs[1]["max_tokens"].as_u64().unwrap() > 1024, "{}", reqs[1]["max_tokens"]);
     assert_eq!(reqs[0]["messages"], reqs[1]["messages"], "the same request, only the cap differs");
     s.quit();
@@ -2682,4 +2875,864 @@ fn simple_turn_that_hits_max_tokens_with_no_text_is_retried_uncapped() {
     let evs = s.until("turn_done");
     assert!(evs.iter().any(|e| e["type"] == "info" && e["text"].as_str().unwrap().contains("wrote no text for you; ask again")), "{evs:?}");
     s.quit();
+}
+
+/// The newest per-session notes file (`.elisa/notes/<session id>.md`) of project `d`: (path, text).
+fn newest_notes_file(d: &std::path::Path) -> (std::path::PathBuf, String) {
+    let p = std::fs::read_dir(d.join(".elisa/notes")).expect("no .elisa/notes")
+        .filter_map(|e| { let p = e.ok()?.path(); let id: u64 = p.file_stem()?.to_str()?.parse().ok()?; Some((id, p)) })
+        .max_by_key(|(id, _)| *id).expect("no notes file").1;
+    let t = std::fs::read_to_string(&p).unwrap();
+    (p, t)
+}
+fn newest_notes(d: &std::path::Path) -> String { newest_notes_file(d).1 }
+
+/// A saved earlier session `id` in project `d` (one exchange) with its own notes file `notes`: returns the notes path.
+fn seed_session(d: &std::path::Path, id: u64, notes: &str) -> std::path::PathBuf {
+    std::fs::create_dir_all(d.join(".elisa/sessions")).unwrap();
+    std::fs::create_dir_all(d.join(".elisa/notes")).unwrap();
+    let h = json!([{"role": "user", "content": [{"type": "text", "text": "remember the codename BLUE HERON, the owner is Mira Tanaka"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Noted."}]}]);
+    std::fs::write(d.join(format!(".elisa/sessions/{id}.json")), h.to_string()).unwrap();
+    let p = d.join(format!(".elisa/notes/{id}.md"));
+    std::fs::write(&p, notes).unwrap();
+    p
+}
+
+/// The old Python-async task of the bug report (2026-11-09): notes of an earlier session.
+const OLD_TASK_NOTES: &str = "## Goal\nFix a Python async example that raises RuntimeError with asyncio.run. OLD-TASK-GOAL\n\n\
+    ## Current state / next step\nCheck the directory for the async file. OLD-TASK-NEXT\n\n## Facts to remember\n- OLD-TASK-FACT\n";
+
+/// 2026-11-09: in a folder whose earlier session left notes (the old shared `.elisa/notes.md` and a per-session
+/// notes file), a new session answered "hey" and "what can you do for me?" with that old task. A new session starts
+/// clean: no earlier notes in any request, and the earlier notes stay on disk as they were.
+#[test]
+fn jsonl_new_session_with_old_notes_answers_hey_without_the_old_task() {
+    let dir = tmpdir("jsonl-new-clean");
+    let seeded = seed_session(&dir, 100, OLD_TASK_NOTES);
+    std::fs::write(dir.join(".elisa/notes.md"), OLD_TASK_NOTES).unwrap();
+    let f = Fake::start(vec![text_reply("Hi! How can I help?"), text_reply("I can chat, answer questions and help with files.")]);
+    let mut s = Serve::start(&f.url(), &dir);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "hey"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "what can you do for me?"}));
+    s.until("turn_done");
+    s.quit();
+    for r in f.messages() {
+        let body = r.to_string();
+        for old in ["OLD-TASK", "asyncio", "Notes from earlier sessions", "Background from an earlier session"] {
+            assert!(!body.contains(old), "{old:?} reached a new session's request: {body}");
+        }
+    }
+    let first = f.messages()[0]["messages"][0]["content"][0]["text"].as_str().unwrap().to_string();
+    assert!(first.ends_with("hey"), "{first}");
+    assert_eq!(std::fs::read_to_string(&seeded).unwrap(), OLD_TASK_NOTES, "the earlier session's notes changed");
+    assert_eq!(std::fs::read_to_string(dir.join(".elisa/notes.md")).unwrap(), OLD_TASK_NOTES, "the legacy notes.md changed");
+    // the new session's own notes (if any) are a file of their own
+    let own: Vec<_> = std::fs::read_dir(dir.join(".elisa/notes")).unwrap().flatten().map(|e| e.path()).filter(|p| *p != seeded).collect();
+    for p in own { assert!(!std::fs::read_to_string(&p).unwrap().contains("OLD-TASK"), "{}", p.display()); }
+}
+
+/// `--continue` after a new session in between: the continued (newest) session comes back with its history and its
+/// own notes; `/clear` in it then carries those notes, and the notes of the session it continued are untouched.
+/// 2026-11-09: an old fact the conversation never mentions (another task's, carried in from a stale notes file) is
+/// not merged forward; one it talks about is.
+#[test]
+fn jsonl_continue_restores_history_and_its_own_notes() {
+    let dir = tmpdir("jsonl-continue-notes");
+    let own = "## Facts to remember\n- The codename to remember is HERON-FACT\n- Fix the Python asyncio RuntimeError example OLD-TASK-FACT\n";
+    let seeded = seed_session(&dir, 100, own);
+    let f = Fake::start(vec![text_reply("Back on it."), text_reply("## Done\n- talked\n\n## Current state / next step\nnothing open"), text_reply("ok")]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\n", &["--continue"], &[]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "/notes"}));
+    let evs = s.until("turn_done");
+    assert!(evs.iter().any(|e| e["type"] == "info" && e["text"].as_str().unwrap_or("").contains("OLD-TASK-FACT")), "continued notes: {evs:?}");
+    s.cmd(json!({"type": "send", "text": "go on"}));
+    s.until("turn_done");
+    let body = f.messages()[0].to_string();
+    assert!(body.contains("remember the codename") && body.contains("Noted."), "the continued history: {body}");
+    s.cmd(json!({"type": "send", "text": "/clear"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "next"}));
+    s.until("turn_done");
+    s.quit();
+    let t = f.messages()[2]["messages"][0]["content"][0]["text"].as_str().unwrap().to_string();
+    assert!(t.contains("HERON-FACT"), "after /clear the continued session's notes carry: {t}");
+    assert!(!t.contains("OLD-TASK-FACT"), "a fact the conversation never mentions is not merged forward: {t}");
+    assert!(newest_notes(&dir).contains("HERON-FACT") && !newest_notes(&dir).contains("OLD-TASK-FACT"));
+    assert_eq!(std::fs::read_to_string(&seeded).unwrap(), own, "the continued session's own file changed");
+}
+
+/// 2026-11-09: a continued conversation looked empty in the app ("resumed 8 messages" only). Right after the banner
+/// a `history` event lists its earlier turns: the user's own words (no Working directory / OS / Date header, notes,
+/// `[state]`, situation line; an attached document as its reference line), the replies as written, a tool call as one
+/// line, no tool results.
+#[test]
+fn jsonl_continue_sends_the_earlier_turns() {
+    let dir = tmpdir("jsonl-continue-history");
+    std::fs::create_dir_all(dir.join(".elisa/sessions")).unwrap();
+    let first = "Working directory: /x\nOS: macos\nDate: 2026-11-09\nLocal time now: 2026-11-09 15:15 Monday\n\n## Notes from this conversation (written by Elisa)\n## Done\nNOTES-BODY\n\n[state]\ngoal: read the first few pages\n[/state]\n\n## Request\nwhat day is today?";
+    let h = json!([
+        {"role": "user", "content": [{"type": "text", "text": first}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Today is **Monday**."}]},
+        {"role": "user", "content": [{"type": "text", "text": "what is in README.md?"}, {"type": "text", "text": "[Attached: paper.pdf, 3 pages · .elisa/uploads/1/paper.pdf]\nDOC-TEXT-HERE"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "read", "input": {"path": "README.md"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "TOOL-RESULT-BODY"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "It describes the project."}]}
+    ]);
+    std::fs::write(dir.join(".elisa/sessions/100.json"), h.to_string()).unwrap();
+    let f = Fake::start(vec![]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\n", &["--continue"], &[]);
+    let evs = s.until("ready");
+    s.quit();
+    let hi = evs.iter().position(|e| e["type"] == "history").unwrap_or_else(|| panic!("no history event: {evs:?}"));
+    let bi = evs.iter().position(|e| e["type"] == "banner").unwrap();
+    assert!(bi < hi, "history comes after the banner");
+    let items = evs[hi]["items"].as_array().unwrap();
+    let pairs: Vec<(String, String)> = items.iter().map(|i| (i["role"].as_str().unwrap().to_string(), i["text"].as_str().unwrap().to_string())).collect();
+    assert_eq!(pairs, vec![
+        ("user".to_string(), "what day is today?".to_string()),
+        ("assistant".to_string(), "Today is **Monday**.".to_string()),
+        ("user".to_string(), "what is in README.md?\n[Attached: paper.pdf, 3 pages · .elisa/uploads/1/paper.pdf]".to_string()),
+        ("assistant".to_string(), "used read on README.md\n\nIt describes the project.".to_string()),
+    ]);
+    let all = evs[hi].to_string();
+    for bad in ["Working directory", "NOTES-BODY", "[state]", "DOC-TEXT-HERE", "TOOL-RESULT-BODY", "Local time"] { assert!(!all.contains(bad), "{bad} in {all}"); }
+}
+
+/// With memory on, a session's notes' "Facts to remember" become facts in memory; they used to come back as
+/// "Pinned facts" in every new session's `[state]`. Now only facts the user pinned (/pin) do: the note facts stay
+/// with their session.
+#[test]
+fn jsonl_new_session_with_memory_gets_only_user_pinned_facts() {
+    let dir = tmpdir("jsonl-new-mem");
+    let summary = "## Done\n- talked\n\n## Facts to remember\n- Old task: fix the asyncio example OLD-TASK-FACT\n";
+    let long = format!("Sure. {}", "Some context about the old task. ".repeat(20));
+    let f = Fake::start(vec![text_reply(&long), text_reply(summary)]);
+    let mut s = Serve::start_cfg(&f.url(), &dir, "memory = true\n");
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "/pin the release branch is trunk USER-PIN"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "fix my asyncio example"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "/clear"}));
+    s.until("turn_done");
+    s.quit();
+    assert!(newest_notes(&dir).contains("OLD-TASK-FACT"), "the first session's notes keep its facts");
+    std::thread::sleep(Duration::from_millis(1100));
+    let g = Fake::start(vec![text_reply("Hi!")]);
+    let mut s = Serve::start_cfg(&g.url(), &dir, "memory = true\n");
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "hey"}));
+    s.until("turn_done");
+    s.quit();
+    let body = g.messages()[0].to_string();
+    assert!(!body.contains("OLD-TASK-FACT"), "a note fact of an earlier session reached a new one: {body}");
+    assert!(body.contains("USER-PIN"), "a fact the user pinned carries: {body}");
+}
+
+/// Lazy MCP start, end to end: a user server whose tool list is cached starts no process for a plain chat turn; the
+/// first call to one of its tools starts it and a second call reuses it (its start script logs each start).
+#[test]
+fn a_plain_chat_turn_starts_no_mcp_server_and_the_first_call_starts_it_once() {
+    let d = tmpdir("mcp-lazy");
+    let marker = d.join("started");
+    let exe = env!("CARGO_BIN_EXE_elisa");
+    let script = format!("echo $$ >> '{}'; exec '{exe}' --mcp-serve reason", marker.display());
+    let command = vec!["/bin/sh".to_string(), "-c".to_string(), script];
+    let home = d.join("_home");
+    elisa::pins::cache_list(&elisa::pins::lists_in(&home), &elisa::pins::key("m", &command, ""), elisa::mcp_reason::tools().as_array().unwrap()).unwrap();
+    // route = "off": every turn carries every tool, so the plain turn below is offered m_calc and still starts nothing
+    let cfg = format!("route = \"off\"\nweb = \"off\"\ndocs = \"off\"\nreason = \"off\"\nsecurity = \"off\"\nmemory = false\nchecks = false\n\n[mcp.m]\ncommand = {}\n",
+        serde_json::to_string(&command).unwrap());
+    let starts = || std::fs::read_to_string(&marker).map(|t| t.lines().count()).unwrap_or(0);
+    // a plain chat turn: the tools are offered, no server runs
+    let f = Fake::start(vec![text_reply("hi")]);
+    let o = run_elisa_cfg(&["-p", "hello", "--base-url", &f.url()], &d, None, &[], &cfg);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(tool_names(&f.messages()[0]).iter().any(|n| n == "m_calc"), "{:?}", tool_names(&f.messages()[0]));
+    assert_eq!(starts(), 0, "a plain chat turn started the server: {}", o.stderr);
+    // two calls: the first starts it, the second reuses it
+    let f = Fake::start(vec![
+        Sse::new(5, 0).tool_input("t1", "m_calc", json!({"expr": "2+3"})).end("tool_use", 3),
+        Sse::new(5, 0).tool_input("t2", "m_calc", json!({"expr": "4*5"})).end("tool_use", 3),
+        text_reply("done"),
+    ]);
+    let o = run_elisa_cfg(&["-p", "sums", "--yes", "--base-url", &f.url()], &d, None, &[], &cfg);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let m = f.messages();
+    assert!(last_tool_result(&m[1]).0.contains('5') && !last_tool_result(&m[1]).1, "{:?}", last_tool_result(&m[1]));
+    assert!(last_tool_result(&m[2]).0.contains("20") && !last_tool_result(&m[2]).1, "{:?}", last_tool_result(&m[2]));
+    assert_eq!(starts(), 1, "one start for both calls: {}", o.stderr);
+}
+
+// ---------- a backend with no prompt cache (llama.cpp --no-cache-prompt, a plain GGUF server) ----------
+
+/// Elisa must work the same without a server-side prompt cache: every request carries the whole conversation (no
+/// server state assumed), the context meter comes from `prompt_tokens` alone, the status line never claims reuse, and
+/// the metrics say "not reported" (null) or 0, never a guess. Turn 1: no cache fields at all; turn 2: llama.cpp's
+/// shape with prompt caching off (`cached_tokens: 0`).
+#[test]
+fn no_prompt_cache_backend_works_the_same() {
+    let d = tmpdir("nocache");
+    std::fs::write(d.join("a.txt"), "the answer is 42\n").unwrap();
+    let f = Fake::start(vec![
+        oa_reply(&[json!({"content": "Hello"}), json!({"content": " there."})], "stop", json!({"prompt_tokens": 400, "completion_tokens": 6, "total_tokens": 406})),
+        oa_reply(&[json!({"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"a.txt\"}"}}]})], "tool_calls",
+            json!({"prompt_tokens": 900, "completion_tokens": 12, "prompt_tokens_details": {"cached_tokens": 0}})),
+        oa_reply(&[json!({"content": "It says the answer is 42."})], "stop",
+            json!({"prompt_tokens": 1000, "completion_tokens": 9, "prompt_tokens_details": {"cached_tokens": 0}})),
+    ]);
+    let home = d.join("_home/.config/elisa");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("providers.toml"), format!("active = \"l\"\n[providers.l]\ntype = \"openai\"\nbase_url = \"{}/v1\"\nmodel = \"local\"\nmax_ctx = 4096\n", f.url())).unwrap();
+    let o = run_elisa(&["--no-checks"], &d, Some("hey\nread a.txt and tell me what it says\n/exit\n"));
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!(f.left(), 0, "stderr: {}", o.stderr);
+    assert!(o.stdout.contains("Hello there.") && o.stdout.contains("It says the answer is 42."), "stdout: {}", o.stdout);
+    assert!(!o.stderr.contains("reused"), "no reuse claimed without a cache: {}", o.stderr);
+    // ctx = the server's prompt_tokens + the reply, not a delta and not the estimate
+    assert!(o.stderr.contains("ctx 406/4.1K"), "{}", o.stderr);
+    assert!(o.stderr.contains("ctx 1.0K/4.1K"), "{}", o.stderr);
+
+    // stateless: each request resends the whole conversation, the last one holds the first turn and the tool result
+    let reqs: Vec<Value> = f.log().iter().filter(|r| r.path == "/v1/chat/completions").map(|r| r.json()).collect();
+    assert_eq!(reqs.len(), 3);
+    let msgs = |r: &Value| r["messages"].as_array().unwrap().clone();
+    let (m0, m2) = (msgs(&reqs[0]), msgs(&reqs[2]));
+    assert_eq!(m0[0]["role"], "system");
+    assert_eq!(m2[0], m0[0], "the same system turn every time");
+    let all = serde_json::to_string(&m2).unwrap();
+    assert!(all.contains("Hello there.") && all.contains("the answer is 42"), "{all}");
+    assert!(m2.iter().any(|m| m["role"] == "tool"), "{all}");
+
+    // metrics: not reported = null, reported 0 = 0; input_tokens is the whole prompt
+    let text = std::fs::read_to_string(d.join(".elisa/metrics.jsonl")).unwrap();
+    let calls: Vec<Value> = text.lines().flat_map(|l| serde_json::from_str::<Value>(l).unwrap()["calls"].as_array().unwrap().clone()).collect();
+    let agent: Vec<&Value> = calls.iter().filter(|c| c["kind"] == "agent").collect();
+    assert_eq!(agent.iter().map(|c| c["input_tokens"].as_u64().unwrap()).collect::<Vec<_>>(), [400, 900, 1000], "{text}");
+    assert_eq!(agent.iter().map(|c| c["cached_input_tokens"].clone()).collect::<Vec<_>>(), [Value::Null, json!(0), json!(0)], "{text}");
+}
+
+// ---------- backend protocol replicas (src/backend.rs) ----------
+//
+// One small server per backend, answering with the shapes of that backend's public docs (URL above each replica):
+// its model / props endpoints for detection, and a streamed chat reply with a tool call, its usage fields and its
+// quirks. Each test checks detection (or the host table, for cloud APIs that cannot be pointed at 127.0.0.1), the
+// request Elisa sends (the backend's own cache controls) and that the reply comes back as a correct tool turn.
+
+mod replicas {
+    use super::Recorded;
+    use elisa::api::{Client, Request};
+    use elisa::backend;
+    use elisa::config::Config;
+    use elisa::provider::Transport;
+    use elisa::types::{Block, Message, Reply, Role, ToolDef};
+    use serde_json::{json, Value};
+    use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// (status, content type, body)
+    pub type Answer = (u16, &'static str, String);
+
+    pub struct Replica { pub port: u16, pub log: Arc<Mutex<Vec<Recorded>>> }
+
+    impl Replica {
+        /// `routes`: (method, path with query, answer) for the info endpoints; any POST to a chat path
+        /// (`/chat/completions`, `/api/chat`, `/v1/messages`) takes the next of `chats`. `server`: the Server header.
+        pub fn start(server: &'static str, routes: Vec<(&'static str, &'static str, Answer)>, chats: Vec<Answer>) -> Replica {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let chats = Arc::new(Mutex::new(VecDeque::from(chats)));
+            let routes = Arc::new(routes);
+            let (g, c) = (log.clone(), chats);
+            std::thread::spawn(move || for s in l.incoming() {
+                let Ok(s) = s else { continue };
+                let (g, c, r) = (g.clone(), c.clone(), routes.clone());
+                std::thread::spawn(move || { let _ = serve(s, server, &r, &c, &g); });
+            });
+            Replica { port, log }
+        }
+        pub fn url(&self) -> String { format!("http://127.0.0.1:{}", self.port) }
+        pub fn reqs(&self, path_end: &str) -> Vec<Value> {
+            self.log.lock().unwrap().iter().filter(|r| r.method == "POST" && r.path.ends_with(path_end)).map(|r| r.json()).collect()
+        }
+        pub fn hits(&self, path: &str) -> usize { self.log.lock().unwrap().iter().filter(|r| r.path == path).count() }
+    }
+
+    fn serve(mut c: TcpStream, server: &str, routes: &[(&str, &str, Answer)], chats: &Mutex<VecDeque<Answer>>, log: &Mutex<Vec<Recorded>>) -> std::io::Result<()> {
+        c.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut r = BufReader::new(c.try_clone()?);
+        let mut first = String::new();
+        r.read_line(&mut first)?;
+        let mut it = first.split_whitespace();
+        let (method, path) = (it.next().unwrap_or("").to_string(), it.next().unwrap_or("").to_string());
+        let mut headers = Vec::new();
+        loop {
+            let mut l = String::new();
+            if r.read_line(&mut l)? == 0 { break; }
+            let l = l.trim_end();
+            if l.is_empty() { break; }
+            if let Some((k, v)) = l.split_once(':') { headers.push((k.trim().to_string(), v.trim().to_string())); }
+        }
+        let len: usize = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
+        let mut body = vec![0; len];
+        r.read_exact(&mut body)?;
+        log.lock().unwrap().push(Recorded { method: method.clone(), path: path.clone(), headers, body: String::from_utf8_lossy(&body).into_owned() });
+        let chat = method == "POST" && (path.ends_with("/chat/completions") || path == "/api/chat" || path == "/v1/messages");
+        let (code, ctype, b) = match routes.iter().find(|(m, p, _)| *m == method && *p == path) {
+            Some((_, _, a)) => a.clone(),
+            None if chat => chats.lock().unwrap().pop_front().unwrap_or((500, "application/json", r#"{"error":{"message":"script exhausted"}}"#.into())),
+            None => (404, "application/json", r#"{"error":{"code":404,"message":"File Not Found","type":"not_found_error"}}"#.into()),
+        };
+        write!(c, "HTTP/1.1 {code} X\r\nserver: {server}\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{b}", b.len())?;
+        c.flush()
+    }
+
+    pub fn json_ok(v: Value) -> Answer { (200, "application/json", v.to_string()) }
+    /// an OpenAI-style SSE stream: one `data:` line per chunk, then `[DONE]`
+    pub fn sse(chunks: &[Value]) -> Answer {
+        let mut s: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
+        s += "data: [DONE]\n\n";
+        (200, "text/event-stream", s)
+    }
+    pub fn chunk(delta: Value, finish: Option<&str>) -> Value {
+        json!({"id": "chatcmpl-1", "object": "chat.completion.chunk", "created": 1, "model": "m", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+    }
+
+    pub fn tools() -> Vec<ToolDef> {
+        vec![ToolDef { name: "read".into(), description: "Read a file".into(), input_schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}) }]
+    }
+
+    /// A tool turn's second request: the user asked, the model called `read`, the result came back.
+    pub fn tool_history(id: &str) -> Vec<Message> {
+        vec![
+            Message::user_text("read README.md"),
+            Message::new(Role::Assistant, vec![Block::ToolUse { id: id.into(), name: "read".into(), input: json!({"path": "README.md"}) }]),
+            Message::new(Role::User, vec![Block::ToolResult { tool_use_id: id.into(), content: "# Elisa".into(), is_error: false }]),
+        ]
+    }
+
+    pub fn rclient(url: &str, transport: Transport, caps: backend::Caps, key: &str) -> Client {
+        let cfg = Config { base_url: url.into(), model: "m".into(), api_key: key.into(), transport, max_ctx: Some(8192), ..Config::default() };
+        let mut c = Client::new(&cfg);
+        c.set_caps(caps, 8192);
+        c
+    }
+
+    pub fn rsend(c: &Client, system: &str, msgs: &[Message]) -> Result<Reply, String> {
+        let t = tools();
+        c.send(&Request { system, tools: &t, messages: msgs, max_tokens: 256 }, &AtomicBool::new(false), &mut |_| {})
+    }
+
+    pub fn call_of(r: &Reply) -> (String, Value) {
+        r.content.iter().find_map(|b| if let Block::ToolUse { name, input, .. } = b { Some((name.clone(), input.clone())) } else { None }).expect("a tool call")
+    }
+
+    pub fn detect(url: &str) -> backend::Caps { backend::detect_with(&Transport::OpenAi, &format!("{url}/v1"), "m", "", 3000) }
+
+    /// the usual OpenAI-shaped tool call: id/name in the first fragment, the arguments in pieces
+    pub fn fragmented_call() -> Vec<Value> {
+        vec![
+            chunk(json!({"role": "assistant", "content": null, "tool_calls": [{"index": 0, "id": "call_abc", "type": "function", "function": {"name": "read", "arguments": ""}}]}), None),
+            chunk(json!({"tool_calls": [{"index": 0, "function": {"arguments": "{\"pa"}}]}), None),
+            chunk(json!({"tool_calls": [{"index": 0, "function": {"arguments": "th\": \"README.md\"}"}}]}), None),
+            chunk(json!({}), Some("tool_calls")),
+        ]
+    }
+
+    pub fn assert_read_call(r: &Reply) {
+        assert_eq!(r.stop_reason, "tool_use", "{r:?}");
+        assert_eq!(call_of(r), ("read".to_string(), json!({"path": "README.md"})));
+    }
+
+    pub use elisa::backend::{Cache as C, Kind as K, Tools as T};
+}
+
+use replicas::*;
+use elisa::backend;
+use elisa::provider::Transport;
+
+// Ollama: https://github.com/ollama/ollama/blob/main/docs/api.md (GET /api/version, POST /api/show, POST /api/chat NDJSON)
+#[test]
+fn replica_ollama_detects_native_api_window_and_tool_turn() {
+    let show = json!({"modelfile": "", "details": {"family": "qwen3vl"}, "model_info": {"general.architecture": "qwen3vl", "qwen3vl.context_length": 262144},
+        "capabilities": ["completion", "vision", "tools", "thinking"]});
+    let ndjson = [
+        json!({"model": "m", "created_at": "2026-11-09T00:00:00Z", "message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "read", "arguments": {"path": "README.md"}}}]}, "done": false}),
+        json!({"model": "m", "created_at": "2026-11-09T00:00:01Z", "message": {"role": "assistant", "content": ""}, "done": true, "done_reason": "stop",
+            "total_duration": 1, "load_duration": 1, "prompt_eval_count": 120, "prompt_eval_cached_count": 100, "prompt_eval_duration": 1, "eval_count": 12, "eval_duration": 400000000}),
+    ].iter().map(|v| format!("{v}\n")).collect::<String>();
+    // GET /api/ps: the loaded model's context (https://github.com/ollama/ollama/blob/main/docs/api.md#list-running-models)
+    let ps = json!({"models": [{"name": "m", "model": "m", "size": 3732783758u64, "details": {"format": "gguf"}, "expires_at": "2026-11-09T13:50:39Z", "size_vram": 3732783758u64, "context_length": 16384}]});
+    let f = Replica::start("", vec![("GET", "/api/version", json_ok(json!({"version": "0.5.1"}))), ("POST", "/api/show", json_ok(show.clone())), ("GET", "/api/ps", json_ok(ps))],
+        vec![(200, "application/x-ndjson", ndjson)]);
+    let caps = detect(&f.url());
+    assert_eq!((caps.kind, caps.ctx, caps.vision, caps.thinking, caps.tools, caps.cache), (K::Ollama, Some(16384), Some(true), true, T::Native, C::OllamaKeepAlive));
+    // not loaded: the model's maximum, capped
+    let idle = Replica::start("", vec![("GET", "/api/version", json_ok(json!({"version": "0.5.1"}))), ("POST", "/api/show", json_ok(show)), ("GET", "/api/ps", json_ok(json!({"models": []})))], vec![]);
+    assert_eq!(detect(&idle.url()).ctx, Some(backend::OLLAMA_CAP));
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, caps, "");
+    let r = rsend(&c, "sys", &[Message::user_text("read README.md")]).unwrap();
+    assert_read_call(&r);
+    assert_eq!((r.usage.input_tokens, r.usage.cache_read_input_tokens), (20, 100));
+    let b = &f.reqs("/api/chat")[0];
+    assert_eq!(b["options"]["num_ctx"], 8192, "native API with the session's window");
+    assert!(b.get("keep_alive").is_none(), "the user's keep_alive is left alone");
+}
+
+// Ollama, a model without "tools" in its capabilities: https://github.com/ollama/ollama/blob/main/docs/api.md#show-model-information
+#[test]
+fn replica_ollama_model_without_tools_gets_them_as_text() {
+    let show = json!({"model_info": {"gemma3.context_length": 8192}, "capabilities": ["completion"]});
+    let text = "I will read it.\n<tool_call>{\"name\": \"read\", \"arguments\": {\"path\": \"README.md\"}}</tool_call>";
+    let ndjson = [json!({"message": {"role": "assistant", "content": text}, "done": false}), json!({"message": {"role": "assistant", "content": ""}, "done": true, "done_reason": "stop", "prompt_eval_count": 50, "eval_count": 20})]
+        .iter().map(|v| format!("{v}\n")).collect::<String>();
+    let f = Replica::start("", vec![("GET", "/api/version", json_ok(json!({"version": "0.5.1"}))), ("POST", "/api/show", json_ok(show))], vec![(200, "application/x-ndjson", ndjson)]);
+    let caps = detect(&f.url());
+    assert_eq!(caps.tools, T::Text);
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, caps, "");
+    let r = rsend(&c, "sys", &tool_history("t1")).unwrap();
+    assert_read_call(&r);
+    assert_eq!(r.content[0], Block::Text { text: "I will read it.".into() });
+    let b = &f.reqs("/api/chat")[0];
+    assert!(b.get("tools").is_none(), "no native tools sent");
+    assert!(b["messages"][0]["content"].as_str().unwrap().contains("<tool_call>"), "described in the system prompt");
+    assert!(b.to_string().contains("tool_result"), "the earlier result went as text");
+}
+
+// llama.cpp llama-server: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+// (GET /props, POST /slots/{id}?action=save|restore, streamed chunks with `timings`, error {"error":{code,message,type}})
+#[test]
+fn replica_llamacpp_props_slots_cache_prompt_and_fragmented_tool_call() {
+    let props = json!({"default_generation_settings": {"id": 0, "id_task": -1, "n_ctx": 16384, "speculative": false, "is_processing": false, "params": {}},
+        "total_slots": 1, "model_path": "../models/x.gguf", "chat_template": "...", "chat_template_caps": {"supports_tools": true}, "modalities": {"vision": false}, "build_info": "b11429-d81235049"});
+    let mut chunks = fragmented_call();
+    chunks.push(json!({"id": "chatcmpl-1", "object": "chat.completion.chunk", "choices": [], "usage": {"completion_tokens": 9, "prompt_tokens": 2524, "total_tokens": 2533},
+        "timings": {"cache_n": 2400, "prompt_n": 124, "prompt_ms": 30.9, "predicted_n": 9, "predicted_ms": 120.0}}));
+    let save = json_ok(json!({"id_slot": 0, "filename": "f.bin", "n_saved": 2533, "n_written": 14309796, "timings": {"save_ms": 49.8}}));
+    let f = Replica::start("llama.cpp", vec![
+        ("GET", "/props", json_ok(props)),
+        // a probe of a missing file: fails, but not "not supported" (the server has --slot-save-path)
+        ("POST", "/slots/0?action=restore", (400, "application/json", r#"{"error":{"code":400,"message":"failed to restore slot","type":"invalid_request_error"}}"#.into())),
+        ("POST", "/slots/0?action=save", save),
+    ], vec![sse(&chunks)]);
+    let caps = detect(&f.url());
+    assert_eq!((caps.kind, caps.ctx, caps.ctx_hard, caps.slots, caps.slot_save, caps.cache), (K::LlamaCpp, Some(16384), true, 1, true, C::LlamaCpp));
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, caps, "");
+    let r = rsend(&c, "sys", &[Message::user_text("read README.md")]).unwrap();
+    assert_read_call(&r);
+    assert_eq!((r.usage.input_tokens, r.usage.cache_read_input_tokens), (124, 2400), "reuse from timings.cache_n");
+    let b = &f.reqs("/chat/completions")[0];
+    assert_eq!(b["cache_prompt"], true);
+    assert!(b.get("id_slot").is_none(), "one slot: no pinning needed");
+    assert_eq!(c.slot_save("elisa-p-0.bin").unwrap(), (2533, 49.8));
+    assert_eq!(f.reqs("action=save")[0], json!({"filename": "elisa-p-0.bin"}));
+}
+
+// llama.cpp without --slot-save-path (501 not_supported_error) and without --jinja (tools refused):
+// https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+#[test]
+fn replica_llamacpp_without_slot_path_or_jinja() {
+    let props = json!({"default_generation_settings": {"n_ctx": 4096}, "total_slots": 1, "modalities": {"vision": false}});
+    let refused = (500, "application/json", r#"{"error":{"code":500,"message":"tools param requires --jinja flag","type":"server_error"}}"#.to_string());
+    let text = sse(&[chunk(json!({"role": "assistant", "content": "<tool_call>{\"name\": \"read\", \"arguments\": {\"path\": \"README.md\"}}</tool_call>"}), None), chunk(json!({}), Some("stop"))]);
+    let f = Replica::start("llama.cpp", vec![("GET", "/props", json_ok(props)),
+        ("POST", "/slots/0?action=restore", (501, "application/json", r#"{"error":{"code":501,"message":"This server does not support slots action. Start it with `--slot-save-path`","type":"not_supported_error"}}"#.into()))],
+        vec![refused, text]);
+    let caps = detect(&f.url());
+    assert!(!caps.slot_save);
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, caps, "");
+    assert!(c.slot_save("x.bin").is_err(), "no slot calls without the save path");
+    let r = rsend(&c, "sys", &[Message::user_text("read README.md")]).unwrap();
+    assert_read_call(&r);
+    assert!(c.text_tools(), "after the refusal the tools stay text");
+    let reqs = f.reqs("/chat/completions");
+    assert!(reqs[0].get("tools").is_some() && reqs[1].get("tools").is_none());
+    assert_eq!(f.hits("/slots/0?action=save"), 0);
+}
+
+// LM Studio: https://lmstudio.ai/docs/developer/rest/endpoints (GET /api/v0/models) and
+// https://lmstudio.ai/docs/app/api/endpoints/openai (OpenAI-compatible /v1/chat/completions)
+#[test]
+fn replica_lmstudio_window_vision_and_reasoning_content() {
+    let models = json!({"object": "list", "data": [
+        {"id": "qwen2-vl-7b-instruct", "object": "model", "type": "vlm", "publisher": "mlx-community", "arch": "qwen2_vl", "compatibility_type": "mlx", "quantization": "4bit", "state": "loaded", "max_context_length": 32768},
+        {"id": "meta-llama-3.1-8b-instruct", "object": "model", "type": "llm", "publisher": "lmstudio-community", "arch": "llama", "compatibility_type": "gguf", "quantization": "Q4_K_M", "state": "not-loaded", "max_context_length": 131072}]});
+    let mut chunks = vec![chunk(json!({"role": "assistant", "reasoning_content": "The user wants the file."}), None)];
+    chunks.extend(fragmented_call());
+    chunks.push(json!({"id": "chatcmpl-1", "object": "chat.completion.chunk", "choices": [], "usage": {"prompt_tokens": 300, "completion_tokens": 20, "total_tokens": 320}}));
+    let f = Replica::start("", vec![("GET", "/api/v0/models", json_ok(models))], vec![sse(&chunks)]);
+    let caps = backend::detect_with(&Transport::OpenAi, &format!("{}/v1", f.url()), "qwen2-vl-7b-instruct", "", 3000);
+    assert_eq!((caps.kind, caps.ctx, caps.vision, caps.cache), (K::LmStudio, Some(32768), Some(true), C::Automatic));
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, caps, "");
+    let r = rsend(&c, "sys", &[Message::user_text("read README.md")]).unwrap();
+    assert_read_call(&r);
+    assert_eq!((r.usage.input_tokens, r.usage.cache_read_input_tokens), (300, 0), "no reuse claimed: none reported");
+}
+
+// MLX mlx_lm.server: https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md (Python BaseHTTP server;
+// usage in a last `chat.completion` object with stream_options.include_usage; tool calls arrive whole with index)
+#[test]
+fn replica_mlx_whole_tool_call_and_final_usage_object() {
+    let models = json!({"object": "list", "data": [{"id": "mlx-community/Qwen3-4B-4bit", "object": "model", "created": 1700000000}]});
+    let chunks = [
+        json!({"id": "chatcmpl-u", "system_fingerprint": "x", "object": "chat.completion.chunk", "model": "m", "created": 1, "choices": [{"index": 0, "finish_reason": null,
+            "delta": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "read", "arguments": "{\"path\": \"README.md\"}"}, "type": "function", "id": "u-1", "index": 0}]}}]}),
+        json!({"id": "chatcmpl-u", "object": "chat.completion.chunk", "model": "m", "created": 1, "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {"role": "assistant", "content": ""}}]}),
+        json!({"id": "chatcmpl-u", "system_fingerprint": "x", "object": "chat.completion", "model": "m", "created": 0, "choices": [],
+            "usage": {"prompt_tokens": 500, "completion_tokens": 15, "total_tokens": 515, "prompt_tokens_details": {"cached_tokens": 450}}}),
+    ];
+    let f = Replica::start("BaseHTTP/0.6 Python/3.12.7", vec![("GET", "/v1/models", json_ok(models))], vec![sse(&chunks)]);
+    let caps = detect(&f.url());
+    assert_eq!(caps.kind, K::Mlx);
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, caps, "");
+    let r = rsend(&c, "sys", &[Message::user_text("read README.md")]).unwrap();
+    assert_read_call(&r);
+    assert_eq!((r.usage.input_tokens, r.usage.cache_read_input_tokens), (50, 450));
+    assert_eq!(f.reqs("/chat/completions")[0]["stream_options"], json!({"include_usage": true}), "mlx reads include_usage directly");
+}
+
+// vLLM: https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html (/v1/models owned_by vllm with
+// max_model_len, /version, usage chunk with stream_options, cached_tokens with --enable-prompt-tokens-details)
+#[test]
+fn replica_vllm_max_model_len_and_parallel_tool_calls() {
+    let models = json!({"object": "list", "data": [{"id": "m", "object": "model", "created": 1700000000, "owned_by": "vllm", "root": "m", "parent": null, "max_model_len": 32768, "permission": []}]});
+    let chunks = [
+        chunk(json!({"role": "assistant", "tool_calls": [{"index": 0, "id": "chatcmpl-tool-a", "type": "function", "function": {"name": "read", "arguments": ""}}]}), None),
+        chunk(json!({"tool_calls": [{"index": 1, "id": "chatcmpl-tool-b", "type": "function", "function": {"name": "read", "arguments": ""}}]}), None),
+        chunk(json!({"tool_calls": [{"index": 0, "function": {"arguments": "{\"path\": \"README.md\"}"}}]}), None),
+        chunk(json!({"tool_calls": [{"index": 1, "function": {"arguments": "{\"path\": \"a.txt\"}"}}]}), None),
+        chunk(json!({}), Some("tool_calls")),
+        json!({"id": "chatcmpl-1", "object": "chat.completion.chunk", "choices": [], "usage": {"prompt_tokens": 800, "total_tokens": 830, "completion_tokens": 30, "prompt_tokens_details": {"cached_tokens": 768}}}),
+    ];
+    let f = Replica::start("uvicorn", vec![("GET", "/v1/models", json_ok(models)), ("GET", "/version", json_ok(json!({"version": "0.11.0"})))], vec![sse(&chunks)]);
+    let caps = detect(&f.url());
+    assert_eq!((caps.kind, caps.ctx, caps.version.as_deref()), (K::Vllm, Some(32768), Some("0.11.0")));
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, caps, "");
+    let r = rsend(&c, "sys", &[Message::user_text("read both")]).unwrap();
+    let calls: Vec<Value> = r.content.iter().filter_map(|b| if let Block::ToolUse { input, .. } = b { Some(input["path"].clone()) } else { None }).collect();
+    assert_eq!(calls, [json!("README.md"), json!("a.txt")]);
+    assert_eq!(r.usage.cache_read_input_tokens, 768);
+}
+
+// LocalAI (GET /version), GPT4All (owned_by "humanity"), Jan (port 1337) and an unknown server:
+// https://localai.io/basics/getting_started/ · https://docs.gpt4all.io/gpt4all_api_server/home.html · https://jan.ai/docs/api-server
+#[test]
+fn replica_generic_servers_are_told_apart_and_missing_usage_is_estimated() {
+    let local_ai = Replica::start("", vec![("GET", "/version", json_ok(json!({"version": "v2.24.2"}))), ("GET", "/v1/models", json_ok(json!({"object": "list", "data": [{"id": "m", "object": "model"}]})))], vec![]);
+    assert_eq!(detect(&local_ai.url()).kind, K::LocalAi);
+    let gpt4all = Replica::start("", vec![("GET", "/v1/models", json_ok(json!({"object": "list", "data": [{"id": "m", "object": "model", "created": 0, "owned_by": "humanity", "root": "m", "parent": null}]})))], vec![]);
+    assert_eq!(detect(&gpt4all.url()).kind, K::Gpt4All);
+    // a server that sends no usage at all: the reply has none, and the context comes from Elisa's estimate
+    let plain = Replica::start("", vec![("GET", "/v1/models", json_ok(json!({"object": "list", "data": [{"id": "m", "object": "model"}]})))],
+        vec![sse(&[chunk(json!({"role": "assistant", "content": "Hi!"}), None), chunk(json!({}), Some("stop"))])]);
+    let caps = detect(&plain.url());
+    assert_eq!(caps.kind, K::OpenAiCompat);
+    let c = rclient(&format!("{}/v1", plain.url()), Transport::OpenAi, caps, "");
+    let r = rsend(&c, "sys", &[Message::user_text("hey")]).unwrap();
+    assert_eq!((r.usage.input_tokens, r.usage.output_tokens), (0, 0));
+    assert_eq!(backend::ctx_from(r.usage.input_tokens, 1234), (1234, true));
+}
+
+// OpenAI: https://platform.openai.com/docs/api-reference/chat/streaming and
+// https://platform.openai.com/docs/guides/prompt-caching (usage chunk with choices [], prompt_tokens_details.cached_tokens)
+#[test]
+fn replica_openai_usage_chunk_and_cached_tokens() {
+    assert_eq!(backend::host_kind("https://api.openai.com/v1"), Some(K::OpenAi));
+    let mut chunks: Vec<Value> = fragmented_call().into_iter().map(|mut c| { c["usage"] = Value::Null; c }).collect();
+    chunks.push(json!({"id": "chatcmpl-123", "object": "chat.completion.chunk", "created": 1694268190, "model": "gpt-4o-mini", "choices": [],
+        "usage": {"prompt_tokens": 2006, "completion_tokens": 300, "total_tokens": 2306, "prompt_tokens_details": {"cached_tokens": 1920, "audio_tokens": 0},
+            "completion_tokens_details": {"reasoning_tokens": 0, "audio_tokens": 0, "accepted_prediction_tokens": 0, "rejected_prediction_tokens": 0}}}));
+    let f = Replica::start("", vec![], vec![sse(&chunks), (401, "application/json", r#"{"error":{"message":"Incorrect API key provided: sk-...","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}"#.into())]);
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, backend::defaults(K::OpenAi), "sk-x");
+    let r = rsend(&c, "sys", &[Message::user_text("read README.md")]).unwrap();
+    assert_read_call(&r);
+    assert_eq!((r.usage.input_tokens, r.usage.cache_read_input_tokens), (86, 1920));
+    assert!(rsend(&c, "sys", &[Message::user_text("x")]).unwrap_err().contains("Incorrect API key"));
+}
+
+// Anthropic: https://docs.claude.com/en/docs/build-with-claude/streaming and
+// https://docs.claude.com/en/docs/build-with-claude/prompt-caching (cache_control, cache_creation/read_input_tokens)
+#[test]
+fn replica_anthropic_breakpoints_and_cache_usage() {
+    let ev = |k: &str, d: Value| format!("event: {k}\ndata: {d}\n\n");
+    let s = [
+        ev("message_start", json!({"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": [], "model": "claude", "stop_reason": null, "stop_sequence": null,
+            "usage": {"input_tokens": 48, "cache_read_input_tokens": 1800, "cache_creation_input_tokens": 248, "output_tokens": 1}}})),
+        ev("content_block_start", json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "read", "input": {}}})),
+        ev("ping", json!({"type": "ping"})),
+        ev("content_block_delta", json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"READ"}})),
+        ev("content_block_delta", json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "ME.md\"}"}})),
+        ev("content_block_stop", json!({"type": "content_block_stop", "index": 0})),
+        ev("message_delta", json!({"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": null}, "usage": {"output_tokens": 15}})),
+        ev("message_stop", json!({"type": "message_stop"})),
+    ].concat();
+    let overloaded = (529, "application/json", r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"request_id":"req_1"}"#.to_string());
+    let f = Replica::start("", vec![], vec![(200, "text/event-stream", s), overloaded.clone(), overloaded]);
+    let caps = backend::detect(&Transport::Anthropic, "https://api.anthropic.com", "m", "k");
+    assert_eq!((caps.kind, caps.cache), (K::Anthropic, C::AnthropicBreakpoints));
+    let c = rclient(&f.url(), Transport::Anthropic, caps, "sk-ant");
+    let r = rsend(&c, "a long stable system prompt", &tool_history("toolu_0")).unwrap();
+    assert_read_call(&r);
+    assert_eq!((r.usage.input_tokens, r.usage.cache_read_input_tokens), (296, 1800), "a cache write is prefilled too");
+    let b = &f.reqs("/v1/messages")[0];
+    assert_eq!(b["system"][0]["cache_control"], json!({"type": "ephemeral"}));
+    assert_eq!(b["messages"][2]["content"][0]["cache_control"], json!({"type": "ephemeral"}));
+    assert!(b.to_string().matches("cache_control").count() <= 4);
+    let e = rsend(&c, "s", &[Message::user_text("x")]).unwrap_err();
+    assert!(e.contains("Overloaded") && e.contains("tried twice"), "529 is retried once: {e}");
+    // another Anthropic-style server gets no breakpoints
+    assert_eq!(backend::detect(&Transport::Anthropic, "http://127.0.0.1:9", "m", "").cache, C::None);
+}
+
+// Gemini: https://ai.google.dev/gemini-api/docs/openai (OpenAI endpoint, extra_body.google.cached_content) and
+// https://ai.google.dev/api/caching (POST /v1beta/cachedContents)
+#[test]
+fn replica_gemini_explicit_cache_for_a_long_hot_prefix_and_unindexed_calls() {
+    let whole = |id: &str, path: &str| chunk(json!({"role": "assistant", "tool_calls": [{"id": id, "type": "function", "function": {"name": "read", "arguments": format!("{{\"path\":\"{path}\"}}")}}]}), None);
+    let reply = || sse(&[whole("", "README.md"), whole("", "a.txt"), chunk(json!({}), Some("tool_calls")),
+        json!({"object": "chat.completion.chunk", "choices": [], "usage": {"prompt_tokens": 9000, "completion_tokens": 20, "total_tokens": 9020}})]);
+    let cache = json_ok(json!({"name": "cachedContents/abc123", "model": "models/gemini-2.5-pro", "createTime": "2026-11-09T00:00:00Z", "expireTime": "2026-11-09T00:05:00Z", "usageMetadata": {"totalTokenCount": 8200}}));
+    let f = Replica::start("", vec![("POST", "/v1beta/cachedContents", cache)], vec![reply(), reply(), reply(), reply()]);
+    assert_eq!(backend::host_kind("https://generativelanguage.googleapis.com/v1beta/openai/"), Some(K::Gemini));
+    let cfg = Config { base_url: format!("{}/v1beta/openai", f.url()), model: "gemini-2.5-pro".into(), api_key: "g-key".into(), transport: Transport::OpenAi, ..Config::default() };
+    let mut c = Client::new(&cfg);
+    c.set_caps(backend::defaults(K::Gemini), 1_000_000);
+    let system = "Stable instructions. ".repeat(1200);
+    for _ in 0..4 { let r = rsend(&c, &system, &[Message::user_text("read both")]).unwrap(); assert_eq!(r.content.len(), 2, "two unindexed calls stay two: {r:?}"); }
+    let reqs = f.reqs("/chat/completions");
+    assert!(reqs[0]["messages"][0]["role"] == "system" && reqs[1].get("extra_body").is_none(), "first calls: the prefix as usual");
+    assert_eq!(reqs[2]["extra_body"], json!({"google": {"cached_content": "cachedContents/abc123"}}), "the third call in the window uses the cache");
+    assert!(reqs[2].get("tools").is_none() && reqs[2]["messages"][0]["role"] == "user", "system and tools live in the cache");
+    assert_eq!(reqs[3]["extra_body"]["google"]["cached_content"], "cachedContents/abc123", "reused, not created again");
+    assert_eq!(f.reqs("/v1beta/cachedContents").len(), 1);
+    let created = &f.reqs("/v1beta/cachedContents")[0];
+    assert_eq!((created["model"].as_str(), created["ttl"].as_str()), (Some("models/gemini-2.5-pro"), Some("300s")));
+    assert_eq!(f.log.lock().unwrap().iter().find(|r| r.path == "/v1beta/cachedContents").unwrap().header("x-goog-api-key"), Some("g-key"));
+    // an error list body
+    assert_eq!(elisa::api::err_message(r#"[{"error":{"code":400,"message":"API key not valid","status":"INVALID_ARGUMENT"}}]"#), "API key not valid");
+}
+
+// OpenRouter: https://openrouter.ai/docs/api/reference/streaming (": OPENROUTER PROCESSING" comments, usage in the last
+// chunk with finish_reason, mid-stream error with finish_reason "error")
+#[test]
+fn replica_openrouter_comments_usage_and_midstream_error() {
+    let (_, _, body) = sse(&[chunk(json!({"role": "assistant", "content": "Hel"}), None), chunk(json!({"content": "lo"}), None),
+        json!({"id": "gen-1", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"content": "", "role": "assistant"}, "finish_reason": "stop", "native_finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 2, "total_tokens": 1002, "prompt_tokens_details": {"cached_tokens": 900, "cache_write_tokens": 0}}})]);
+    let ok = (200, "text/event-stream", format!(": OPENROUTER PROCESSING\n\n: OPENROUTER PROCESSING\n\n{body}"));
+    let err = sse(&[chunk(json!({"content": "partial"}), None), json!({"id": "gen-2", "object": "chat.completion.chunk", "provider": "x",
+        "error": {"code": "server_error", "message": "Provider disconnected unexpectedly"}, "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}]})]);
+    let f = Replica::start("", vec![], vec![ok, err]);
+    let c = rclient(&format!("{}/api/v1", f.url()), Transport::OpenAi, backend::defaults(K::OpenRouter), "or-key");
+    let r = rsend(&c, "sys", &[Message::user_text("hi")]).unwrap();
+    assert_eq!((r.content.clone(), r.usage.cache_read_input_tokens, r.usage.input_tokens), (vec![Block::Text { text: "Hello".into() }], 900, 100));
+    assert!(rsend(&c, "sys", &[Message::user_text("hi")]).unwrap_err().contains("Provider disconnected"));
+}
+
+// Groq: https://console.groq.com/docs/api-reference (usage in x_groq.usage of the last chunk)
+#[test]
+fn replica_groq_usage_in_x_groq() {
+    let mut chunks = fragmented_call();
+    chunks.push(json!({"id": "chatcmpl-1", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+        "x_groq": {"id": "req_1", "usage": {"queue_time": 0.03, "prompt_tokens": 418, "prompt_time": 0.0006, "completion_tokens": 20, "completion_time": 0.04, "total_tokens": 438, "total_time": 0.05}}}));
+    let f = Replica::start("", vec![], vec![sse(&chunks)]);
+    let c = rclient(&format!("{}/openai/v1", f.url()), Transport::OpenAi, backend::defaults(K::Groq), "gsk");
+    let r = rsend(&c, "sys", &[Message::user_text("read README.md")]).unwrap();
+    assert_read_call(&r);
+    assert_eq!((r.usage.input_tokens, r.usage.output_tokens), (418, 20));
+}
+
+// Together AI: https://docs.together.ai/docs/chat-overview (OpenAI-compatible; usage on the final chunk)
+#[test]
+fn replica_together_usage_on_the_finish_chunk() {
+    let mut chunks = fragmented_call();
+    chunks.pop();
+    chunks.push(json!({"id": "x", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 700, "completion_tokens": 12, "total_tokens": 712}}));
+    let f = Replica::start("", vec![], vec![sse(&chunks)]);
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, backend::defaults(K::Together), "tg");
+    let r = rsend(&c, "sys", &[Message::user_text("read README.md")]).unwrap();
+    assert_read_call(&r);
+    assert_eq!(r.usage.input_tokens, 700);
+}
+
+// DeepSeek: https://api-docs.deepseek.com/api/create-chat-completion (prompt_cache_hit_tokens / miss, reasoning_content)
+#[test]
+fn replica_deepseek_cache_hit_tokens_and_reasoning() {
+    let chunks = [chunk(json!({"role": "assistant", "reasoning_content": "Think."}), None), chunk(json!({"content": "Done."}), None),
+        json!({"id": "x", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1200, "completion_tokens": 11, "total_tokens": 1211, "prompt_cache_hit_tokens": 1152, "prompt_cache_miss_tokens": 48, "completion_tokens_details": {"reasoning_tokens": 5}}})];
+    let f = Replica::start("", vec![], vec![sse(&chunks)]);
+    let c = rclient(&f.url(), Transport::OpenAi, backend::defaults(K::DeepSeek), "ds");
+    let r = rsend(&c, "sys", &[Message::user_text("hi")]).unwrap();
+    assert_eq!(r.content, vec![Block::Text { text: "Done.".into() }], "reasoning is not shown");
+    assert_eq!((r.usage.input_tokens, r.usage.cache_read_input_tokens, r.usage.reasoning_tokens), (48, 1152, 5));
+}
+
+// Mistral: https://docs.mistral.ai/api/endpoint/chat and https://docs.mistral.ai/openapi.yaml (tool call ids
+// ^[a-zA-Z0-9]{9}$, tool calls arrive whole)
+#[test]
+fn replica_mistral_tool_ids_are_nine_alphanumerics() {
+    let chunks = [chunk(json!({"role": "assistant", "content": "", "tool_calls": [{"id": "D681PevKs", "function": {"name": "read", "arguments": "{\"path\": \"README.md\"}"}, "index": 0}]}), Some("tool_calls")),
+        json!({"id": "x", "object": "chat.completion.chunk", "choices": [], "usage": {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}})];
+    let f = Replica::start("", vec![], vec![sse(&chunks)]);
+    let c = rclient(&format!("{}/v1", f.url()), Transport::OpenAi, backend::defaults(K::Mistral), "ms");
+    let r = rsend(&c, "sys", &tool_history("toolu_01XYZ")).unwrap();
+    assert_read_call(&r);
+    let b = &f.reqs("/chat/completions")[0];
+    let id = b["messages"][2]["tool_calls"][0]["id"].as_str().unwrap().to_string();
+    assert!(id.len() == 9 && id.chars().all(|c| c.is_ascii_alphanumeric()), "{id}");
+    assert_eq!(b["messages"][3]["tool_call_id"], id.as_str(), "the result names the same id");
+}
+
+#[test]
+fn replica_lines_for_model_command() {
+    let mut caps = backend::defaults(K::LlamaCpp);
+    (caps.ctx, caps.ctx_from, caps.slot_save, caps.slots, caps.detected_by) = (Some(16384), "n_ctx (/props)", true, 1, "GET /props".into());
+    let l = backend::lines(&caps, 16384).join("\n");
+    assert!(l.contains("llama.cpp") && l.contains("server window 16384") && l.contains("slot save/restore: on"), "{l}");
+    let l = backend::lines(&backend::defaults(K::OpenAiCompat), 8192).join("\n");
+    assert!(l.contains("reports no window") && l.contains("usage may be missing"), "{l}");
+}
+
+// ---------- a reply cut by the output limit is continued ----------
+
+/// 2026-11-09: plain answers about a paper stopped mid-sentence at the output limit ("continue" turns with
+/// stop_reason max_tokens, three in a row). A text reply cut by the limit (OpenAI `finish_reason: "length"`) is
+/// continued: the same history plus the partial reply and "Continue exactly where you stopped." (that request only),
+/// streamed into the same reply, up to 2 times; still cut: a quiet line to say "continue".
+#[test]
+fn reply_cut_at_output_limit_is_continued() {
+    let usage = || json!({"prompt_tokens": 400, "completion_tokens": 6});
+    let provider = |d: &Path, url: &str| {
+        let home = d.join("_home/.config/elisa");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("providers.toml"), format!("active = \"l\"\n[providers.l]\ntype = \"openai\"\nbase_url = \"{url}/v1\"\nmodel = \"local\"\nmax_ctx = 16384\n")).unwrap();
+    };
+    let chat = |f: &Fake| -> Vec<Value> { f.log().iter().filter(|r| r.path == "/v1/chat/completions").map(|r| r.json()).collect() };
+
+    // cut once, then finished: one reply, and the next turn's history holds it whole, without the note
+    let d = tmpdir("cont-ok");
+    let f = Fake::start(vec![
+        oa_reply(&[json!({"content": "The paper has three uses: trading"})], "length", usage()),
+        oa_reply(&[json!({"content": ", risk control and research."})], "stop", usage()),
+        oa_reply(&[json!({"content": "You're welcome."})], "stop", usage()),
+    ]);
+    provider(&d, &f.url());
+    let o = run_elisa(&["--no-checks"], &d, Some("what are the uses of the trading paper you know about?\nthanks\n/exit\n"));
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!(f.left(), 0, "stderr: {}", o.stderr);
+    assert!(o.stdout.contains("The paper has three uses: trading, risk control and research."), "stdout: {}", o.stdout);
+    assert!(!o.stderr.contains("hit max_tokens") && !o.stderr.contains("reply was long"), "{}", o.stderr);
+    let reqs = chat(&f);
+    assert_eq!(reqs.len(), 3);
+    let m1 = reqs[1]["messages"].as_array().unwrap();
+    let n = m1.len();
+    assert_eq!(m1[n - 2]["role"], "assistant");
+    assert!(serde_json::to_string(&m1[n - 2]).unwrap().contains("The paper has three uses: trading"), "{:?}", m1[n - 2]);
+    assert_eq!(m1[n - 1]["role"], "user");
+    assert!(serde_json::to_string(&m1[n - 1]).unwrap().contains("Continue exactly where you stopped."), "{:?}", m1[n - 1]);
+    // the continuation is the same request plus those two messages
+    assert_eq!(&reqs[0]["messages"].as_array().unwrap()[..], &m1[..n - 2]);
+    let next = serde_json::to_string(&reqs[2]["messages"]).unwrap();
+    assert!(next.contains("The paper has three uses: trading, risk control and research.") && !next.contains("Continue exactly where you stopped."), "{next}");
+    let text = std::fs::read_to_string(d.join(".elisa/metrics.jsonl")).unwrap();
+    let first: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(first["outcome"], "done", "{first}");
+
+    // still cut after 2 continuations: 3 requests, the reply kept, and the line to say "continue"
+    let d = tmpdir("cont-cut");
+    let f = Fake::start(vec![
+        oa_reply(&[json!({"content": "Part one,"})], "length", usage()),
+        oa_reply(&[json!({"content": " part two,"})], "length", usage()),
+        oa_reply(&[json!({"content": " part three,"})], "length", usage()),
+    ]);
+    provider(&d, &f.url());
+    let o = run_elisa(&["--no-checks"], &d, Some("write a long essay about the sea\n/exit\n"));
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!((chat(&f).len(), f.left()), (3, 0), "stderr: {}", o.stderr);
+    assert!(o.stdout.contains("Part one, part two, part three,"), "stdout: {}", o.stdout);
+    assert!(o.stderr.contains("[reply was long; say \"continue\" for more]"), "{}", o.stderr);
+}
+
+/// BUGS #57, #58: the picture flow through `--serve-jsonl`. Picture text a model copies into its reply is never shown;
+/// on the turn after, a picture answer that is a refusal is not carried (the read ask keeps its tools and runs), the
+/// earlier turn's picture text has left the history, and the turn after that asks no picture request at all.
+#[test]
+fn picture_text_is_never_a_reply_and_only_its_own_turn_carries_it() {
+    let dir = tmpdir("jsonl-picture");
+    std::fs::write(dir.join("a.txt"), "the word is MANGO\n").unwrap();
+    let f = Fake::start(vec![
+        text_reply("A black cat with blue ears."),
+        text_reply("[picture: A black cat with blue ears.] It's a black cat."),
+        // the turn after: the picture request answers the read ask with a refusal
+        text_reply("I'm sorry, but I can't assist with that."),
+        Sse::new(800, 0).tool_input("t1", "read", json!({"path": "a.txt"})).end("tool_use", 9),
+        text_reply("The word is MANGO."),
+        text_reply("You're welcome!"),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    let shown = |evs: &[Value]| -> String { evs.iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect::<String>() };
+    s.cmd(json!({"type": "send", "text": "what is this?", "images": [{"media_type": "image/png", "data": "iVBORw0KGgo="}]}));
+    let evs = s.until("turn_done");
+    assert!(evs.iter().any(|e| e["type"] == "reply_retracted"), "{evs:?}");
+    let after = evs.iter().rposition(|e| e["type"] == "reply_retracted").unwrap();
+    assert_eq!(shown(&evs[after..]), "It's a black cat.");
+    s.cmd(json!({"type": "send", "text": "read a.txt and tell me the word"}));
+    let evs = s.until("turn_done");
+    assert!(evs.iter().any(|e| e["type"] == "tool_start" && e["name"] == "read"), "{evs:?}");
+    assert!(shown(&evs).ends_with("The word is MANGO."), "{}", shown(&evs));
+    s.cmd(json!({"type": "send", "text": "thanks"}));
+    s.until("turn_done");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 6, "two picture requests, four turn requests");
+    let has_image = |r: &Value| r["messages"].to_string().contains("\"image\"");
+    assert!(has_image(&reqs[0]) && has_image(&reqs[2]), "the picture turn and the one after look");
+    assert!(!reqs[1..].iter().enumerate().any(|(i, r)| i != 1 && has_image(r)), "no picture in the turn requests");
+    let body = |r: &Value| r["messages"].to_string();
+    assert!(body(&reqs[1]).contains("[picture: A black cat with blue ears.]"), "the picture turn carries its text");
+    for r in &reqs[3..] {
+        assert!(!body(r).contains("[picture:"), "no picture text after its turn: {}", body(r));
+        assert!(!body(r).contains("can't assist"), "the refusal is not carried");
+        assert!(r.get("tools").is_some_and(|t| t.as_array().is_some_and(|a| !a.is_empty())), "tools offered");
+    }
+    assert_prefix_rule(&reqs[3..5]);
+}
+
+/// BUGS #60: a reply that names a saved file on a turn with no write at all is corrected: asked once more in words
+/// with no tools, and a reply that still claims it gets the plain line. A plain reply is left alone.
+#[test]
+fn a_saved_claim_with_no_write_is_corrected() {
+    let dir = tmpdir("jsonl-noclaim");
+    let f = Fake::start(vec![
+        text_reply("Okay, the plan is saved to `marketing-plan.md`."),
+        text_reply("Done, I've saved it to marketing-plan.md."),
+        text_reply("Keep your menu updated and post daily."),
+    ]);
+    let mut s = Serve::start(&f.url(), &dir);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "save that plan to marketing-plan.md"}));
+    let evs = s.until("turn_done");
+    let after = evs.iter().rposition(|e| e["type"] == "reply_retracted").expect("retracted");
+    let text: String = evs[after..].iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect();
+    assert_eq!(text, "I have not saved it: no file was written.");
+    s.cmd(json!({"type": "send", "text": "one more tip?"}));
+    let evs = s.until("turn_done");
+    assert!(!evs.iter().any(|e| e["type"] == "reply_retracted"), "a plain reply stays: {evs:?}");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 3);
+    assert!(reqs[1].get("tools").is_none_or(|t| t.as_array().is_some_and(|a| a.is_empty())), "the retry has no tools");
+    assert!(reqs[1]["messages"].to_string().contains("Nothing was saved: no write was made"), "{}", reqs[1]["messages"]);
+    assert!(!dir.join("marketing-plan.md").exists());
 }

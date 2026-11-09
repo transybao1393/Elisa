@@ -1,7 +1,7 @@
-// The welcome screen: what the window shows before a project folder is open (App.swift: launched without --cwd or
-// --demo). Shade says hello, a few words on what Elisa is, then the two things a first session needs: a model to talk
+// The welcome screen: what the window shows before a project folder is open (App.swift: launched without --cwd).
+// Shade says hello, a few words on what Elisa is, then the two things a first session needs: a model to talk
 // to (Model Connections, on this machine or online) and a folder to work in (recent folders, or the folder picker,
-// which can make a new one). Opening a folder or the demo session leaves it for the usual transcript.
+// which can make a new one). Opening a folder leaves it for the usual transcript.
 import AppKit
 import SwiftUI
 
@@ -79,16 +79,17 @@ struct WelcomeView: View {
             ShadeImage(state: greeting ? "greeting" : "idle", since: greetSince, size: 112, animate: !reduceMotion)
                 .frame(width: 112, height: 112)
             Wordmark(height: 30)
-            Text("A coding agent that lives on your Mac and runs on your models.")
+            Text("A personal assistant that lives on your Mac and runs on your models.")
                 .font(Fonts.mono(15, .semibold)).foregroundStyle(p.tx).multilineTextAlignment(.center)
-            Text("Elisa reads your code, edits it, runs your checks and tells you what it did. Reading is free; writing, editing and running commands ask you first. With a local model, nothing leaves this Mac.")
+            Text("Chat with Elisa, ask questions, search the web, read documents and images, or get help with code. Reading is free; writing, editing and running commands ask you first. With a local model, nothing leaves this Mac.")
                 .font(Fonts.mono(12.5)).foregroundStyle(p.fg2).multilineTextAlignment(.center).lineSpacing(3)
                 .frame(maxWidth: 600)
             HStack(spacing: 8) {
-                pill("reads & edits code")
+                pill("chat & answers")
+                pill("web search")
+                pill("documents & images")
+                pill("coding help")
                 pill("asks before changes")
-                pill("checks before done")
-                pill("images & web search")
             }
             .padding(.top, 2)
         }
@@ -181,7 +182,7 @@ struct WelcomeView: View {
                 }
             }
             .padding(.top, 2)
-            Text(note).font(Fonts.mono(11)).foregroundStyle(p.fg2).italic()
+            Text(note).font(Fonts.monoItalic(11)).foregroundStyle(p.fg2)
             Spacer(minLength: 0)
             WelcomeButton(title: button) {
                 if preset == "ollama" { withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85)) { picker.toggle() } }
@@ -211,8 +212,6 @@ struct WelcomeView: View {
                     WelcomeButton(title: "Open a folder…", primary: true) { openFolderPanel(m) }
                         .keyboardShortcut(.defaultAction)
                     Text("⌘O").font(Fonts.mono(11)).foregroundStyle(p.gut)
-                    Spacer()
-                    WelcomeButton(title: "Try the demo (no model)") { m.demo = true; m.folder = nil; m.start() }
                 }
             }
         }

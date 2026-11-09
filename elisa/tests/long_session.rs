@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const MAX_CTX: usize = 8192;
-const COMPACT_SYSTEM: &str = "You write short, concrete session notes for a coding agent.";
+const COMPACT_SYSTEM: &str = "You write short, concrete session notes for an assistant.";
 
 // ---------- token formula (the same as src/context.rs) ----------
 
@@ -371,7 +371,7 @@ fn row(step: &str, r: &Rec, edited: &BTreeSet<String>, made: &BTreeSet<String>) 
     let decs: Vec<&String> = made.iter().filter(|x| x.starts_with("DEC-")).collect();
     let first = user_texts(&r.body).first().cloned().unwrap_or_default();
     let mut where_ = Vec::new();
-    if first.contains("## Notes from earlier sessions") { where_.push("notes"); }
+    if first.contains("## Notes from") { where_.push("notes"); }
     if first.contains("[state]") { where_.push("state"); }
     if first.contains("[memory") || user_texts(&r.body).iter().any(|t| t.contains("[memory")) { where_.push("memory"); }
     Row {
@@ -392,28 +392,23 @@ fn print_rows(title: &str, rows: &[Row]) {
     }
 }
 
-/// System + tools of every agent request byte-identical to the first one (all runs). One intended exception: the
-/// built-in reasoning tools (think / steps / step_done / calc, `mcp_reason.rs`) are offered only on turns whose request
-/// looks like a multi-step task, decided once at turn start. So: the tools without them never change, and the reasoning
-/// tools may appear or go only on the first request of a user turn (last message a user text, not tool results),
-/// never mid-turn, where a change would throw away the prompt cache inside the agent loop.
+/// System + tools stable within a user turn (all runs). Intent routing (`route.rs`, config `route = "auto"`) and the
+/// reasoning gate (`mcp_reason.rs`) pick the tool groups once per user turn, so system and tools may change only on
+/// the first request of a turn (last message a user text, not tool results). Mid-turn the one allowed change is a
+/// widen: a call to a session tool outside the route adds that group, so the tool list only grows.
 fn assert_stable_prefix(reqs: &[&Rec]) {
-    const REASON: [&str; 4] = ["think", "steps", "step_done", "calc"];
-    let split = |r: &Rec| -> (String, bool) {
-        let all = r.body["tools"].as_array().cloned().unwrap_or_default();
-        let on = all.iter().any(|t| t["name"] == "think");
-        let rest: Vec<Value> = all.into_iter().filter(|t| !REASON.iter().any(|n| t["name"] == *n)).collect();
-        (serde_json::to_string(&rest).unwrap(), on)
-    };
+    let names = |r: &Rec| -> Vec<String> { r.body["tools"].as_array().cloned().unwrap_or_default().iter().filter_map(|t| t["name"].as_str().map(String::from)).collect() };
     let turn_start = |r: &Rec| msgs(&r.body).last().is_some_and(|m| m["role"] == "user" && m["content"][0]["type"] == "text");
-    let s0 = reqs[0].body["system"].to_string();
-    let (t0, mut on) = split(reqs[0]);
-    for (i, r) in reqs.iter().enumerate() {
-        assert_eq!(r.body["system"].to_string(), s0, "agent request {i}: system changed");
-        let (t, now) = split(r);
-        assert_eq!(t, t0, "agent request {i}: tools changed");
-        assert!(now == on || turn_start(r), "agent request {i}: reasoning tools changed mid-turn");
-        on = now;
+    for (i, w) in reqs.windows(2).enumerate() {
+        let (a, b) = (w[0], w[1]);
+        if turn_start(b) { continue; }
+        let (na, nb) = (names(a), names(b));
+        if na == nb {
+            assert_eq!(b.body["system"].to_string(), a.body["system"].to_string(), "agent request {}: system changed mid-turn", i + 1);
+            assert_eq!(b.body["tools"].to_string(), a.body["tools"].to_string(), "agent request {}: tools changed mid-turn", i + 1);
+        } else {
+            assert!(na.iter().all(|n| nb.contains(n)), "agent request {}: tools went away mid-turn: {na:?} -> {nb:?}", i + 1);
+        }
     }
 }
 
@@ -539,8 +534,8 @@ fn long_session_context_and_memory() {
     // after /compact: only the first message (notes + [state] + request)
     let q25 = first_req(&log1, "Q25").unwrap();
     assert_eq!(msgs(&q25.body).len(), 1);
-    let notes1 = std::fs::read_to_string(d.join(".elisa/notes.md")).unwrap();
-    eprintln!("run 1 notes.md:\n{notes1}");
+    let (notes1_path, notes1) = newest_notes_file(&d);
+    eprintln!("run 1 notes ({}):\n{notes1}", notes1_path.display());
 
     // ===== run 2: a brand-new session in the same project, then /clear and /reset =====
     age_sessions(&d);
@@ -566,10 +561,12 @@ fn long_session_context_and_memory() {
     both.extend(a2.iter());
     assert_stable_prefix(&both);
     assert_budget(&log2);
-    // the new session starts with run 1's notes as background, without run 1's last card (its goal / next step were
-    // that session's task: uitest 2026-11-08) and nothing of run 1's raw history
+    // the new session starts clean (2026-11-09: a 2B model answered "hey" with the earlier session's task): none of
+    // run 1's notes, nor run 1's last card (its goal / next step were that session's task: uitest 2026-11-08), nor
+    // run 1's raw history. Run 1's notes stay in their own file, unchanged.
     let w01 = whole(r01);
-    assert!(w01.contains("## Notes from earlier sessions") && w01.contains(elisa::context::NOTES_BACKGROUND), "{w01}");
+    assert!(!w01.contains(elisa::context::NOTES_HEADING) && !w01.contains(elisa::context::NOTES_BACKGROUND), "run 1's notes reached a new session: {w01}");
+    assert_eq!(std::fs::read_to_string(&notes1_path).unwrap(), notes1, "run 2 changed run 1's notes");
     assert!(!w01.contains("next: tests for --top"), "run 1's state card reached a new session: {w01}");
     assert!(!w01.contains("Q31-R") && !w01.contains("big3 sample line"), "raw run-1 history leaked into a new session");
     // after /clear: notes (with the /clear summary), no raw pre-clear history (R02's tool output and reply)
@@ -578,7 +575,7 @@ fn long_session_context_and_memory() {
     assert!(!w03.contains("big1 sample line") && !w03.contains("R02 answer."), "pre-/clear history leaked: {w03}");
     // after /reset: the state card is gone, notes stay
     let w04 = whole(r04);
-    assert!(!w04.contains("[state]") && w04.contains("## Notes from earlier sessions"), "{w04}");
+    assert!(!w04.contains("[state]") && w04.contains("## Notes from"), "{w04}");
 
     // ===== run 3: restart, then /resume run 1 =====
     age_sessions(&d);
@@ -676,7 +673,7 @@ fn card_folds_keep_the_next_step_and_write_notes() {
     assert_eq!(log.iter().filter(|r| r.kind == Kind::SummaryTranscript).count(), 0, "card folds only");
     let q3 = whole(first_req(&log, "Q3").unwrap());
     assert!(q3.contains("[state]") && q3.contains("next: step s2"), "{q3}");
-    let notes = std::fs::read_to_string(d.join(".elisa/notes.md")).unwrap();
+    let notes = newest_notes(&d);
     assert!(notes.contains("## From state cards") && notes.contains("goal: GOAL-G1 word-count CLI") && notes.contains("open: step s2"), "{notes}");
 }
 
@@ -803,3 +800,13 @@ fn a_denser_tokenizer_never_overflows_the_context() {
     assert!(!o.stderr.contains("Context full"), "{}", o.stderr);
     assert_budget(&log);
 }
+
+/// The newest per-session notes file (`.elisa/notes/<session id>.md`) of project `d`: (path, text).
+fn newest_notes_file(d: &std::path::Path) -> (std::path::PathBuf, String) {
+    let p = std::fs::read_dir(d.join(".elisa/notes")).expect("no .elisa/notes")
+        .filter_map(|e| { let p = e.ok()?.path(); let id: u64 = p.file_stem()?.to_str()?.parse().ok()?; Some((id, p)) })
+        .max_by_key(|(id, _)| *id).expect("no notes file").1;
+    let t = std::fs::read_to_string(&p).unwrap();
+    (p, t)
+}
+fn newest_notes(d: &std::path::Path) -> String { newest_notes_file(d).1 }

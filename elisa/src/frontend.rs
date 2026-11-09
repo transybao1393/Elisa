@@ -9,6 +9,9 @@ pub struct Args {
     pub prompt: Option<String>,
     pub yes: bool,
     pub cont: bool,
+    /// --continue-open: `--continue` on the conversation that was open last, the newest saved session whatever was
+    /// said in it (the app's restart on a model switch, BUGS #63); plain `--continue` skips a dead session
+    pub cont_open: bool,
     pub base_url: Option<String>,
     pub model: Option<String>,
     /// --provider NAME: a connection of `~/.config/elisa/providers.toml` (`none` = ignore that file)
@@ -22,17 +25,16 @@ pub struct Args {
     pub no_character: bool,
     /// --theme dark|light (overrides config `theme`)
     pub theme: Option<String>,
-    /// --demo-states [STATE]: drive the TUI through every companion state with scripted events (no model, no
-    /// server); with a STATE, play up to that state and hold it
-    pub demo: Option<String>,
     /// --companion: mirror Shade to the companion window (app/ElisaCompanion) over ~/.elisa/companion.sock; the
     /// terminal dock hides while the window is connected (also config `companion = true`)
     pub companion: bool,
     /// --serve-jsonl: no terminal UI; JSON lines on stdin / stdout for the native app (src/jsonl.rs, app/ElisaApp).
-    /// With --demo-states it talks to the scripted demo gateway (no model) in a fresh demo project.
     pub serve_jsonl: bool,
     /// --no-checks: no automatic check-before-done after edits (also config `checks = false`, `.elisa/checks.toml`)
     pub no_checks: bool,
+    /// --attach FILE (repeatable, with -p): documents for the prompt, read like the app's attachments (src/attach.rs);
+    /// absolute paths (made so against the directory Elisa started in)
+    pub attach: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -41,12 +43,20 @@ pub struct Banner {
     pub base_url: String,
     pub cwd: String,
     pub max_ctx: usize,
-    /// notes loaded from .elisa/notes.md (full text), shown as a preview at startup
+    /// this session's notes (`.elisa/notes/<id>.md`, full text; only a continued session has any), shown as a preview at startup
     pub notes: Option<String>,
     /// messages restored by --continue / /resume
     pub resumed: Option<usize>,
     /// the model can see pictures: the app enables its image button
     pub vision: bool,
+}
+
+/// One earlier turn of a resumed conversation, for the display (`context::earlier_turns`).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct Earlier {
+    /// "user" or "assistant"
+    pub role: String,
+    pub text: String,
 }
 
 /// Shown after every model reply and kept in the status bar.
@@ -60,6 +70,9 @@ pub struct Status {
     pub max_ctx: usize,
     pub reused: usize,
     pub output_tokens: usize,
+    /// `ctx_used` is Elisa's own estimate: the server reported no prompt count, or one that means something else
+    /// (`backend::ctx_from`). Shown with a `~`.
+    pub estimated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -172,14 +185,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/plugin", "plugins: /plugin list · add PATH · remove · enable · disable · update NAME · trust NAME|project"),
     ("/sandbox", "sandbox images: /sandbox list · pull NAME|IMAGE|stable|project|all (asks first; into Colima's VM)"),
     ("/audit", "the last tool calls and approvals in the audit log, and its chain check: /audit [N]"),
-    ("/forget", "delete the saved notes and unpin the pinned facts"),
+    ("/forget", "forget what Elisa remembers in this project: delete the notes, unpin the pinned facts, stop recalling earlier chats (saved conversations are kept)"),
     ("/resume", "pick a past session to continue"),
-    ("/state", "show the current state card (what Elisa carries forward)"),
+    ("/state", "the state cards per topic (document) and which one this turn uses"),
     ("/pin", "pin a fact to memory (carried in [state]): /pin <fact>"),
     ("/watcher", "domain watcher: domain, candidates, unload plan, audit scorecard"),
     ("/full", "the full model's answer to the last reply its audit found changed"),
     ("/copy", "copy the last reply to the clipboard"),
     ("/stats", "metrics: the last request's model calls and the session totals"),
+    ("/cache", "Elisa's result cache: entries, size, hit rate per kind · /cache clear [web_fetch|web_search|docs]"),
     ("/model", "the model connection in use, and the saved ones"),
     ("/yolo", "toggle approve-all for tools"),
     ("/water", "give Elisa water (F2)"),
@@ -225,6 +239,9 @@ pub trait Frontend {
     }
     /// a structured event for frontends that carry them (`--serve-jsonl`: `{"type": kind, …fields}`); others ignore it
     fn event(&mut self, kind: &str, fields: &serde_json::Value) { let _ = (kind, fields); }
+    /// A resumed conversation's earlier turns (`--continue`, `/resume`, "continue the last one"), right after the
+    /// banner / the resume line: the app's `history` event shows them as normal blocks.
+    fn history(&mut self, items: &[Earlier]) { if !items.is_empty() { self.event("history", &serde_json::json!({ "items": items })); } }
     fn info(&mut self, s: &str);
     fn error(&mut self, s: &str);
     /// a summary was written to notes (/clear, /compact, auto-compact): show it in full
@@ -254,8 +271,24 @@ pub trait Frontend {
     fn read_input(&mut self) -> Option<String>;
     /// pictures that came with the line `read_input` just returned (only the app can attach them)
     fn take_images(&mut self) -> Vec<crate::types::Block> { Vec::new() }
+    /// pictures the display itself refused for that line because the model has no vision (the app's
+    /// `send.images_refused`): the agent answers a question about them honestly (`context::no_picture_line`)
+    fn take_refused_images(&mut self) -> usize { 0 }
+    /// paths of the documents that came with that line (the app's `send` {documents}; `attach.rs` reads them)
+    fn take_documents(&mut self) -> Vec<String> { Vec::new() }
+    /// an attached file's intake result (`attach::info_json`): the app shows it on the document's chip; a terminal
+    /// prints its one-line check result
+    fn doc_info(&mut self, fields: &serde_json::Value) {
+        if let Some(l) = fields["line"].as_str() { self.info(&format!("{}: {l}", fields["name"].as_str().unwrap_or("document"))); }
+    }
+    /// the reply just streamed is withdrawn (it said it could not read an attached document; the turn is asked once
+    /// more and the new reply follows): the app removes the streamed text; a terminal says so in one line
+    fn reply_retracted(&mut self) { self.info("(that reply is replaced by the one below)") }
     /// a check-before-done step after the model edited files (src/checks.rs); default: one info line
     fn check(&mut self, c: &CheckEvent) { self.info(&c.line()) }
+    /// what Elisa is doing, in plain words (src/activity.rs): a step's start / update / done, and the reply's one
+    /// summary line. Default: ignored (plain mode prints its own tool lines)
+    fn activity(&mut self, a: &crate::activity::Activity) { let _ = a; }
     /// the current user turn is finished (agent idle again)
     fn turn_done(&mut self);
 }

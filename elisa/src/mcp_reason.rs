@@ -247,7 +247,7 @@ fn words(s: &str) -> Vec<String> {
 }
 
 /// a word that names a file or path: `src/web.rs`, `README.md`, `./x`, `Cargo.toml`
-fn names_file(text: &str) -> bool {
+pub fn names_file(text: &str) -> bool {
     text.split_whitespace().any(|w| {
         let w = w.trim_matches(|c: char| "`'\"()[]{},;:!?".contains(c));
         let ext = w.rsplit_once('.').map(|(a, e)| !a.is_empty() && FILE_EXTS.contains(&e.to_lowercase().as_str())).unwrap_or(false);
@@ -321,7 +321,7 @@ const SEC_WORDS: &[&str] = &[
 fn names_tool(words: &[String], server: &str) -> bool { words.iter().any(|w| w.starts_with(&format!("{server}_"))) }
 
 /// Whether `text` (the user's words, or recent context) is about documents.
-fn about_docs(text: &str) -> bool {
+pub fn about_docs(text: &str) -> bool {
     let w = words(text);
     if w.iter().any(|x| DOC_WORDS.contains(&x.as_str())) || names_tool(&w, "docs") { return true; }
     text.split(|c: char| c.is_whitespace() || "`'\"()[]{},;:!?<>".contains(c)).any(|t| {
@@ -330,7 +330,7 @@ fn about_docs(text: &str) -> bool {
 }
 
 /// Whether `text` (the user's words) is about security.
-fn about_sec(text: &str) -> bool {
+pub fn about_sec(text: &str) -> bool {
     let w = words(text);
     w.iter().any(|x| SEC_WORDS.contains(&x.as_str())) || names_tool(&w, "sec") || text.to_lowercase().contains("api key")
 }

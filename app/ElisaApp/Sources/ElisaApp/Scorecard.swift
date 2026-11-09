@@ -149,9 +149,35 @@ final class EvalStore: ObservableObject {
 
     func loadOnce() { if !loaded { load() } }
 
+    /// how many model cases a test runs (`elisa eval --list`, kind "model": what `--suite model` picks); nil until
+    /// known, and the texts then leave the number out
+    @Published private(set) var modelCases: Int?
+    private var countAsked = false
+
+    private func countCases() {
+        guard !countAsked, let bin = ElisaProcess.binary() else { return }
+        countAsked = true
+        DispatchQueue.global(qos: .utility).async {
+            let p = Process()
+            p.executableURL = bin
+            p.arguments = ["eval", "--list"]
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return }
+            let d = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            // "id  suite  kind  description"
+            let n = String(decoding: d, as: UTF8.self).split(separator: "\n")
+                .filter { $0.split(separator: " ", omittingEmptySubsequences: true).dropFirst(2).first == "model" }.count
+            if p.terminationStatus == 0, n > 0 { Task { @MainActor in self.modelCases = n } }
+        }
+    }
+
     /// reads the history (and each line's saved report) off the main thread
     func load() {
         loaded = true
+        countCases()
         let path = Self.historyPath
         DispatchQueue.global(qos: .userInitiated).async {
             var by: [String: [EvalRun]] = [:]
@@ -306,7 +332,7 @@ struct EvalControl: View {
                             Text(verbatim: "Test this model").font(Fonts.mono(11, .semibold)).foregroundStyle(store.job == nil ? p.acc : p.fg2)
                         }
                         .buttonStyle(.plain).disabled(store.job != nil)
-                        .help(store.job == nil ? "Run Elisa's 11 model test cases with \(target.model)" : "Another test is running")
+                        .help(store.job == nil ? "Run Elisa's \(casesWord) with \(target.model)" : "Another test is running")
                     }
                     if let o = store.outcome[target.model] {
                         Text(verbatim: o.text).font(Fonts.mono(11)).foregroundStyle(o.ok ? p.ok : p.warn).lineLimit(2)
@@ -316,12 +342,15 @@ struct EvalControl: View {
         }
     }
 
+    /// "14 model test cases" (the suite's real count), or "model test cases" before it is known
+    private var casesWord: String { "\(store.modelCases.map { "\($0) " } ?? "")model test cases" }
+
     private var confirm: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(verbatim: "Runs Elisa's 11 model test cases with \(target.model): small chat, reading, editing and approval tasks in a temporary folder. It takes a few minutes and keeps the model busy; your projects are not touched.")
+            Text(verbatim: "Runs Elisa's \(casesWord) with \(target.model): small chat, reading, editing and approval tasks in a temporary folder. It takes about a minute on a quick model, longer on a slow one, and keeps the model busy; your projects are not touched.")
                 .font(Fonts.mono(11)).foregroundStyle(p.tx).fixedSize(horizontal: false, vertical: true)
             if let h = target.leaves {
-                Text(verbatim: "Sends 11 short test tasks to \(h) (one or a few requests each). A paid API bills these requests.")
+                Text(verbatim: "Sends \(store.modelCases.map { "\($0) " } ?? "")short test tasks to \(h) (one or a few requests each). A paid API bills these requests.")
                     .font(Fonts.mono(11, .semibold)).foregroundStyle(p.warn).fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
@@ -600,5 +629,20 @@ enum DebugFrame {
         rep.size = v.bounds.size
         v.cacheDisplay(in: v.bounds, to: rep)
         if let d = rep.representation(using: .png, properties: [:]) { try? d.write(to: URL(fileURLWithPath: path)) }
+    }
+
+    /// set while the main window is captured offscreen (--frames, --selftest): always 2x (as on a Retina screen),
+    /// whatever screen the window landed on; the small Shades draw at this scale and animate as if in front
+    static var scale: CGFloat?
+
+    /// the main window as it is now, into `d`/`name`.png (offscreen render, no screen-recording permission)
+    static func capture(_ name: String, into d: String) {
+        scale = 2
+        guard let v = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil && $0.title == "Elisa" })?.contentView ?? NSApp.windows.first?.contentView,
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(v.bounds.width * 2), pixelsHigh: Int(v.bounds.height * 2), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { print("capture: no window"); return }
+        rep.size = v.bounds.size
+        v.cacheDisplay(in: v.bounds, to: rep)
+        let path = (d as NSString).appendingPathComponent(name + ".png")
+        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: path)); print("shot: \(path) \(rep.pixelsWide)x\(rep.pixelsHigh)") }
     }
 }

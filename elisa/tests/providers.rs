@@ -124,7 +124,9 @@ fn bad_files_say_what_is_wrong() {
     let e = |t: &str| Providers::parse(t, "f").unwrap_err();
     assert!(e("active = \"x\"\n").contains("no such provider"));
     assert!(e("[providers.a]\ntype = \"grpc\"\nbase_url = \"http://x\"\nmodel = \"m\"\n").contains("grpc"));
-    assert!(e("[providers.a]\ntype = \"openai\"\nbase_url = \"http://x\"\nmodel = \"m\"\n").contains("max_ctx"));
+    // openai without max_ctx is fine: the window comes from the server (`backend::detect`)
+    assert!(Providers::parse("[providers.a]\ntype = \"openai\"\nbase_url = \"http://x\"\nmodel = \"m\"\n", "f").is_ok());
+    assert!(e("[providers.a]\ntype = \"mcp\"\ncommand = [\"x\"]\n").contains("max_ctx"));
     assert!(e("[providers.a]\ntype = \"openai\"\nbase_url = \"x\"\nmodel = \"m\"\nmax_ctx = 1\n").contains("http"));
     assert!(e("[providers.a]\ntype = \"mcp\"\nmax_ctx = 1\n").contains("exactly one"));
     assert!(e("[providers.a]\ntype = \"mcp\"\ncommand = [\"x\"]\nurl = \"http://y\"\nmax_ctx = 1\n").contains("exactly one"));
@@ -473,4 +475,27 @@ fn server_model_lists_are_read_from_ollama_and_openai_shapes() {
     let l = serde_json::json!({"object": "list", "data": [{"id": "gemma-3-4b-it-Q4_K_M.gguf", "object": "model"}]});
     assert_eq!(parse_openai_models(&l).unwrap()[0].name, "gemma-3-4b-it-Q4_K_M.gguf");
     assert!(parse_openai_models(&serde_json::json!({"error": "x"})).is_none());
+}
+
+/// A server with no prompt cache (llama.cpp `--no-cache-prompt`, a plain GGUF server, Ollama's native API with a cold
+/// prompt): the usage without any cache field is the whole prompt as input, 0 reused, and not "reported" for metrics.
+#[test]
+fn usage_without_cache_fields_is_the_whole_prompt() {
+    let mut on = |_: &str| {};
+    let mut s = elisa::openai::Stream::default();
+    s.feed(r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}"#, &mut on).unwrap();
+    s.feed(r#"{"choices":[],"usage":{"prompt_tokens":2280,"completion_tokens":84,"total_tokens":2364}}"#, &mut on).unwrap();
+    let (_, stop, u, seen) = s.finish(false);
+    assert_eq!((stop.as_str(), u.input_tokens, u.cache_read_input_tokens, u.output_tokens, seen), ("end_turn", 2280, 0, 84, false));
+
+    // llama.cpp with prompt caching off still sends the field, as 0
+    let mut s = elisa::openai::Stream::default();
+    s.feed(r#"{"choices":[],"usage":{"prompt_tokens":2280,"completion_tokens":84,"prompt_tokens_details":{"cached_tokens":0}}}"#, &mut on).unwrap();
+    let (_, _, u, seen) = s.finish(false);
+    assert_eq!((u.input_tokens, u.cache_read_input_tokens, seen), (2280, 0, true));
+
+    let mut s = elisa::ollama::Stream::default();
+    assert!(s.feed(r#"{"message":{"role":"assistant","content":"hi"},"done":true,"done_reason":"stop","prompt_eval_count":2280,"eval_count":84}"#, &mut on).unwrap());
+    let (_, _, u) = s.finish(false);
+    assert_eq!((u.input_tokens, u.cache_read_input_tokens, u.output_tokens), (2280, 0, 84));
 }

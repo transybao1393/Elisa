@@ -71,7 +71,7 @@ fn notes_on_disk_never_hold_a_secret() {
     let cwd = tmp();
     let s = Store::new(&cwd);
     s.save_notes(&format!("## Facts\n- the CI token is {}\n", token())).unwrap();
-    let disk = std::fs::read_to_string(cwd.join(".elisa/notes.md")).unwrap();
+    let disk = std::fs::read_to_string(cwd.join(format!(".elisa/notes/{}.md", elisa::context::session_id()))).unwrap();
     assert!(!disk.contains(&token()), "{disk}");
     assert!(disk.contains("[redacted:github-token]"));
 }
@@ -152,7 +152,7 @@ fn reformatted_secrets_never_reach_notes_or_sessions() {
         let cwd = tmp();
         let s = Store::new(&cwd);
         s.save_notes(&format!("## Facts\n{f}\n")).unwrap();
-        let notes = std::fs::read_to_string(cwd.join(".elisa/notes.md")).unwrap();
+        let notes = std::fs::read_to_string(cwd.join(format!(".elisa/notes/{}.md", elisa::context::session_id()))).unwrap();
         assert!(!notes.contains(&v), "notes: {f:?} -> {notes}");
         let msgs = vec![Message::user_text("list the settings"), Message::new(Role::Assistant, vec![Block::Text { text: format!("Settings:\n{f}\n") }])];
         let p = s.save_session(&msgs).unwrap();

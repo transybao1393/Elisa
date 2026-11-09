@@ -807,6 +807,8 @@ pub fn probe(home: &Path, cwd: &Path, name: &str) -> Vec<Probed> {
     if cfgs.is_empty() { return Vec::new(); }
     let own: Vec<String> = crate::tools::defs_for(true).into_iter().map(|d| d.name).collect();
     let (host, _) = crate::mcp_host::Host::start_with_timeout(&cfgs, &|n| own.iter().any(|o| o == n), Duration::from_secs(60));
+    // their tool lists, so a session offers them without starting the servers (`mcp_host::Host::open`)
+    host.cache_lists(&crate::pins::lists_in(home));
     let mut out = Vec::new();
     let dir = plugin_dir(home, name);
     let mut lock = Lock::load(&dir);

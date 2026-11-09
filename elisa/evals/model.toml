@@ -188,3 +188,49 @@ name = "read"
 [[case.checks]]
 type = "no_secret_on_disk"
 values = ["{{secret1}}", "{{secret2}}"]
+
+[[case]]
+id = "model.chat_hey"
+description = "\"hey\" (chat-first): a short friendly answer, no tools, quickly"
+[[case.turns]]
+send = "hey"
+[[case.checks]]
+type = "reply_not_empty"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "approvals"
+max = 0
+[[case.checks]]
+type = "max_seconds"
+n = 60
+
+[[case]]
+id = "model.chat_what_can_you_do"
+description = "\"what can you do?\" answered as chat (not only coding), no tools"
+[[case.turns]]
+send = "what can you do?"
+[[case.checks]]
+type = "reply_not_empty"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "approvals"
+max = 0
+
+[[case]]
+id = "model.chat_fact"
+description = "a plain factual question: right answer, no tools, no approval"
+[[case.turns]]
+send = "How many legs does a spider have? Answer with the number."
+[[case.checks]]
+type = "reply_contains"
+text = "8"
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "approvals"
+max = 0

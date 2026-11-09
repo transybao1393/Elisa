@@ -69,6 +69,15 @@ pub struct Config {
     pub ast_targeted_checks: bool,
     /// per-request metrics (src/metrics.rs): one JSON line per request in `.elisa/metrics.jsonl`, and `/stats`
     pub metrics: bool,
+    /// Elisa's own result cache (`src/cache.rs`, `~/.elisa/cache`): web pages, searches, document text. On by
+    /// default; a project config can only switch it off
+    pub cache: bool,
+    /// the cache's size cap in MB (config `cache_max_mb`, default 200); least recently used entries go first
+    pub cache_max_mb: u64,
+    /// one short situation line on a small-talk turn ("hey", "thanks", "chào") when there is context to give
+    /// (`situation.rs`): the same conversation and how long ago, a task in progress or failed, a recent earlier
+    /// session's title to offer. No context, no line. Default true
+    pub greet_context: bool,
     /// after a fold, send the folded prompt as a prefill-only warm-up in the background (gateway `x-streamdense-warm`,
     /// docs/GATEWAY.md), so the next real call reuses it: "auto" (only when the gateway's /health says it can), "on"
     /// (try; an error or a generated token turns it off for the session), "off"
@@ -87,6 +96,8 @@ pub struct Config {
     pub transport: crate::provider::Transport,
     /// the active connection sends the conversation here (None: it stays on this machine)
     pub leaves: Option<String>,
+    /// the hosted intent router (`router.rs`, providers.toml `[router]`): None = off (no URL or no key)
+    pub router: Option<crate::router::Target>,
     /// the connection's `vision` setting (None: work it out at startup, `provider::vision`)
     pub vision: Option<bool>,
     /// web access for the model (config.toml `web`): "duckduckgo" (default), "searxng" or "brave"; "" or "off" = off.
@@ -125,6 +136,9 @@ pub struct Config {
     /// JWTs or binaries; decided once per turn) or "off" (every tool on every turn). A project config can only set it
     /// "auto" (fewer tools is the stricter side)
     pub gate_tools: String,
+    /// intent routing (`route.rs`): "auto" (default: each turn carries only the tool groups its words call for; a
+    /// plain chat turn carries no tools) or "off" (every tool on every turn). A project config can only set "auto"
+    pub route: String,
     /// the audit log (`audit.rs`, `~/.elisa/audit/<project>.jsonl`, `/audit`): "on" (default) | "off". A project
     /// config may only switch it off
     pub audit: String,
@@ -190,12 +204,16 @@ impl Default for Config {
             perms: Default::default(),
             ast_targeted_checks: true,
             metrics: true,
+            cache: true,
+            cache_max_mb: crate::cache::DEFAULT_MAX_MB,
+            greet_context: true,
             warm: "auto".into(),
             outside: "ask".into(),
             shell_sandbox: crate::sandbox::Mode::platform_default().word().into(),
             provider: String::new(),
             transport: crate::provider::Transport::Gateway,
             leaves: None,
+            router: None,
             vision: None,
             web: crate::web::DUCKDUCKGO.into(),
             searxng_url: String::new(),
@@ -208,6 +226,7 @@ impl Default for Config {
             reason: "auto".into(),
             think_simple: "off".into(),
             gate_tools: "auto".into(),
+            route: "auto".into(),
             audit: "on".into(),
             redact: "remote".into(),
             notes: Vec::new(),
@@ -306,6 +325,7 @@ struct FileConfig {
     reason: Option<String>,
     think_simple: Option<String>,
     gate_tools: Option<String>,
+    route: Option<String>,
     audit: Option<String>,
     redact: Option<String>,
     max_steps: Option<usize>,
@@ -338,6 +358,9 @@ struct FileConfig {
     ast_targeted_checks: Option<bool>,
     warm: Option<String>,
     metrics: Option<bool>,
+    cache: Option<bool>,
+    cache_max_mb: Option<u64>,
+    greet_context: Option<bool>,
     outside: Option<String>,
     shell_sandbox: Option<String>,
     /// legacy (chat/code modes removed 2026-11-01): accepted with any value and ignored, so old config files load
@@ -411,6 +434,10 @@ impl Config {
         c.check_security();
         c.check_reason();
         c.check_gate_tools();
+        if c.route != "auto" && c.route != "off" {
+            c.notes.push(format!("route: auto — route = {:?} is not a setting (use \"auto\" or \"off\")", c.route));
+            c.route = "auto".into();
+        }
         if !matches!(c.think_simple.as_str(), "off" | "on") {
             c.notes.push(format!("think_simple: off — think_simple = {:?} is not a setting (use \"off\" or \"on\")", c.think_simple));
             c.think_simple = "off".into();
@@ -530,6 +557,8 @@ impl Config {
             .or_else(|| set("ELISA_BASE_URL").map(|_| NONE.to_string()));
         if chosen.as_deref() == Some(NONE) { return Ok(()); }
         let file = match home { Some(h) => Providers::load(h)?, None => Providers::default() };
+        // the intent router is its own setting: on whenever it has a URL and a key, whichever connection is active
+        self.router = file.router.as_ref().and_then(|r| r.target(getenv));
         let name = chosen.unwrap_or_else(|| file.active.clone());
         if name.is_empty() { return Ok(()); }
         let p = file.providers.get(&name).ok_or_else(|| format!("no provider named {name:?} in ~/.config/elisa/providers.toml"))?;
@@ -670,10 +699,28 @@ impl Config {
                     change it in ~/.config/elisa/config.toml", p.display()));
             }
         }
+        // intent routing: a project may switch it on ("auto": fewer tools per turn), never off
+        if let Some(r) = f.route.take() {
+            if !project || r == "auto" || r == self.route { self.route = r; } else {
+                self.notes.push(format!("{}: route = {r:?} ignored: a project config can only set route = \"auto\"; \
+                    change it in ~/.config/elisa/config.toml", p.display()));
+            }
+        }
         if let Some(r) = f.reason.take() {
             if !project || r.is_empty() || r == "off" || r == self.reason { self.reason = r; } else {
                 self.notes.push(format!("{}: reason = {r:?} ignored: a project config can only switch the reasoning tools off (reason = \"off\"); \
                     change it in ~/.config/elisa/config.toml", p.display()));
+            }
+        }
+        // the result cache: a project may switch it off, never on; only the user's config sizes it
+        if let Some(c) = f.cache.take() {
+            if !project || !c || c == self.cache { self.cache = c; } else {
+                self.notes.push(format!("{}: cache = true ignored: a project config can only switch the cache off (cache = false)", p.display()));
+            }
+        }
+        if let Some(mb) = f.cache_max_mb.take() {
+            if !project { self.cache_max_mb = mb.clamp(1, 100_000); } else {
+                self.notes.push(format!("{}: cache_max_mb ignored: only ~/.config/elisa/config.toml sizes the cache", p.display()));
             }
         }
         // the audit log: a project may switch it off, never on (only the user's config)
@@ -689,7 +736,7 @@ impl Config {
         if let Some(d) = f.memory_dir { self.memory_dir = expand(d); }
         overlay!(self, f; base_url, model, api_key, max_output, compact_at, keep_recent_turns,
             tool_output_max_chars, bash_timeout_s, auto_approve, max_steps, think, memory, fold_at, fold_to, fold_max_turns, recall_k, recall_min_score, recall_min_support, recall_max_tokens, character, theme, sleep_after_s, companion,
-            checks, check_rounds, check_timeout_s, check_test_timeout_s, check_output_max_chars, ast, ast_guard, ast_targeted_checks, metrics, warm);
+            checks, check_rounds, check_timeout_s, check_test_timeout_s, check_output_max_chars, ast, ast_guard, ast_targeted_checks, metrics, greet_context, warm);
         if !matches!(self.warm.as_str(), "auto" | "on" | "off") { return Err(format!("{}: warm = {:?}: use \"auto\", \"on\" or \"off\"", p.display(), self.warm)); }
         Ok(())
     }

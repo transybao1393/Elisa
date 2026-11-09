@@ -89,6 +89,8 @@ struct StatusBar: View {
         switch m.phase {
         case .starting: return "starting elisa…"
         case .idle: return m.job.map { $0.done == nil ? "working: \($0.label)" : "ready" } ?? "ready"
+        // the step in plain words when Elisa reports it (Activity.swift), else the bare phase
+        case .thinking where m.liveLine != nil, .tool where m.liveLine != nil: return "\(m.liveLine?.text ?? "") \(dur(Double(s), 0))"
         case .thinking: return "thinking… \(dur(Double(s), 0))"
         case .streaming: return "streaming…"
         case .tool: return "running tool… \(dur(Double(s), 0))"
@@ -125,7 +127,7 @@ struct InputBox: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !m.attachments.isEmpty { AttachmentStrip() }
+            if !m.attachments.isEmpty || !m.documents.isEmpty { AttachmentStrip() }
             if let t = m.pasted { PastedChip(text: t) }
             row
         }
@@ -135,17 +137,19 @@ struct InputBox: View {
         .contentShape(Rectangle())
         .onTapGesture { focus = true }
         .onAppear { focus = true }
-        // dropped image files (a model without vision gets a note saying why, from `attach`)
+        // dropped files: documents for any model, pictures when it can see (else a note saying why, from `attach`)
         .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in drop(providers) }
     }
 
     private var row: some View {
         HStack(alignment: .top, spacing: 10) {
+            AttachButton()
             Text("›").font(Fonts.mono(14)).foregroundStyle(p.acc).frame(height: 22)
             ZStack(alignment: .topLeading) {
                 if m.input.isEmpty {
                     Text(m.phase == .exited ? "Elisa is not running · File > Open Folder…"
                          : m.pasted != nil ? "Say what to do with the pasted text · ⏎ sends"
+                         : !m.documents.isEmpty ? "Ask about the document · ⏎ sends"
                          : m.attachments.isEmpty ? "Message Elisa · / for commands" : "Ask about the image · ⏎ sends")
                         .font(Fonts.mono(13)).foregroundStyle(p.fg2).frame(height: 22).allowsHitTesting(false)
                 }
@@ -171,7 +175,8 @@ struct InputBox: View {
                 Text(m.queued > 0 ? "\(m.queued) queued · sends after this turn" : "queued · sends after this turn")
                     .font(Fonts.mono(11)).foregroundStyle(p.fg2).frame(height: 22, alignment: .bottom)
             }
-            AttachButton()
+            // voice input (Voice.swift): local whisper.cpp speech-to-text into the field, at the right end
+            VoiceButton()
         }
     }
 
@@ -207,6 +212,7 @@ struct InputBox: View {
         switch k.key {
         case .return:
             if k.modifiers.contains(.shift) || k.modifiers.contains(.option) { m.input += "\n"; return .handled }
+            Voice.shared.cancel()
             if !menu.isEmpty { m.runSlash(min(m.slashSel, menu.count - 1)); return .handled }
             let t = m.input
             m.input = ""
@@ -429,7 +435,6 @@ struct ModelChip: View {
         return h == "localhost" || h == "::1" || h.hasPrefix("127.") || h.hasSuffix(".local")
     }
     private var place: String {
-        if m.demo { return "scripted demo, no model" }
         let port = URL(string: m.baseURL)?.port.map { ":\($0)" } ?? ""
         return local ? "this machine\(port)" : (URL(string: m.baseURL)?.host ?? "online")
     }
@@ -437,8 +442,8 @@ struct ModelChip: View {
     var body: some View {
         Button { ConnectionsWindow.shared.show(m) } label: {
             HStack(spacing: 6) {
-                Circle().fill(m.demo ? p.fg2 : local ? p.ok : p.warn).frame(width: 7, height: 7)
-                Text(m.demo ? "demo gateway" : m.model).foregroundStyle(p.tx)
+                Circle().fill(local ? p.ok : p.warn).frame(width: 7, height: 7)
+                Text(m.model).foregroundStyle(p.tx)
                 Text(place).foregroundStyle(p.fg2)
             }
             .padding(.horizontal, 8).padding(.vertical, 2)

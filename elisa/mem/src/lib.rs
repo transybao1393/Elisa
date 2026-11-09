@@ -1135,10 +1135,21 @@ impl Memory {
         }
     }
     /// Current pinned facts of `project` (latest version per key, oldest first), including facts with no project.
-    pub fn pinned_facts(&self, project: &str) -> Vec<String> {
+    pub fn pinned_facts(&self, project: &str) -> Vec<String> { self.facts_where(project, false) }
+
+    /// `pinned_facts` the user pinned (`pin_fact`), without the facts derived from a note's Facts section: those
+    /// belong to the session that wrote the note (Elisa 2026-11-09: a new session starts clean; an earlier session's
+    /// notes reach it only through recall).
+    pub fn user_pinned_facts(&self, project: &str) -> Vec<String> { self.facts_where(project, true) }
+
+    /// A fact made from a note (its source note came first: a pinned fact a later note repeats is still the user's).
+    fn derived_fact(&self, id: u32) -> bool { self.edges(id).iter().any(|&(k, n)| k == E_SRC && n < id) }
+
+    fn facts_where(&self, project: &str, user_only: bool) -> Vec<String> {
         let proj = self.projects.get(project).copied();
         let mut ids: Vec<u32> = self.fact_keys.values().map(|v| v.0)
-            .filter(|&id| { let p = self.meta(id).project; p == NONE || Some(p) == proj }).collect();
+            .filter(|&id| { let p = self.meta(id).project; p == NONE || Some(p) == proj })
+            .filter(|&id| !user_only || !self.derived_fact(id)).collect();
         ids.sort_unstable();
         let mut cache = Cache::new();
         let v = ids.into_iter().map(|id| self.text(id, &mut cache)).filter(|t| !t.starts_with(UNPIN)).collect();
@@ -1287,6 +1298,8 @@ impl Memory {
         self.settle();
         Some((user, rel))
     }
+    /// The id the next memory will get: every memory stored so far (this snapshot) has a smaller id.
+    pub fn next_id(&self) -> u64 { self.next() as u64 }
     pub fn in_project(&self, id: u64, project: &str) -> bool {
         if id >= self.next() as u64 { return false }
         let p = self.meta(id as u32).project;
@@ -1435,7 +1448,9 @@ impl Memory {
         // snippets: highest-idf query term first, shared budget
         let mut order: Vec<&(String, f32)> = qt.iter().filter(|q| df_of.contains_key(&q.0)).collect();
         order.sort_by(|a, b| df_of[&a.0].total_cmp(&df_of[&b.0]));
-        let uniq: Vec<_> = uniq.into_iter().filter(|u| !u.2.starts_with(UNPIN)).collect();
+        // an unpin marker, and a fact whose latest version unpinned it (/forget): the user took it back
+        let unpinned = |d: u32, t: &str| self.meta(d).kind == FACT && self.fact_keys.get(&fkey(t)).is_some_and(|v| v.1.starts_with(UNPIN));
+        let uniq: Vec<_> = uniq.into_iter().filter(|u| !u.2.starts_with(UNPIN) && !unpinned(u.0, &u.2)).collect();
         let (mut budget, kk) = (SNIP_CHARS, uniq.len());
         let hits = uniq.into_iter().enumerate().map(|(i, (d, s, full))| {
             let m = self.meta(d);
@@ -1624,6 +1639,24 @@ mod unicode_recall_tests {
         let _ = fs::remove_dir_all(d);
     }
 
+    /// `user_pinned_facts`: facts pinned with `pin_fact` (also when a later note repeats one), not the facts a note's
+    /// Facts section made (also after a reopen).
+    #[test]
+    fn user_pinned_facts_leave_out_note_facts() {
+        let (d, mut m) = store("userpins");
+        let s = m.begin_session("/p");
+        m.pin_fact(s, "Branch: trunk").unwrap();
+        m.add_note(s, "## Facts to remember\n- Old task: fix the async example\n- Branch: trunk\n", &[]).unwrap();
+        assert_eq!(m.pinned_facts("/p").len(), 2);
+        assert_eq!(m.user_pinned_facts("/p"), ["Branch: trunk"]);
+        drop(m);
+        let mut m = Memory::open(&d).unwrap();
+        (m.use_vectors, m.use_worker, m.auto_index, m.compact_every) = (false, false, false, 0);
+        assert_eq!(m.user_pinned_facts("/p"), ["Branch: trunk"]);
+        drop(m);
+        let _ = fs::remove_dir_all(d);
+    }
+
     /// `unpin_all` drops every current fact of the project from `pinned_facts` (also after a reopen), keeps the
     /// unpin markers out of recall, and a fact pinned again afterwards comes back.
     #[test]
@@ -1636,6 +1669,10 @@ mod unicode_recall_tests {
         assert_eq!(m.unpin_all(s, "/p").unwrap(), 2);
         assert!(m.pinned_facts("/p").is_empty());
         assert!(m.recall("user wants learn coding unpinned", "/p", 5, true).iter().all(|h| !h.text.contains("unpinned")));
+        // the unpinned fact itself is not recalled either (/forget: "my favourite colour is green" came back)
+        assert!(m.recall("user wants learn coding", "/p", 5, true).iter().all(|h| h.kind != HitKind::Fact), "{:?}", m.recall("user wants learn coding", "/p", 5, true));
+        let next = m.next_id();
+        assert!(m.in_project(next - 1, "/p") && !m.in_project(next, "/p"));
         drop(m);
         let mut m = Memory::open(&d).unwrap();
         (m.use_vectors, m.use_worker, m.auto_index, m.compact_every) = (false, false, false, 0);

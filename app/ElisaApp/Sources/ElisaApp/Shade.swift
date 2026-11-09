@@ -142,8 +142,8 @@ final class ShadePace: ObservableObject {
     /// the frame rate for a Shade that would run at `base` showing `state`; 0 = paused (one still frame)
     func fps(_ base: Double, state: String) -> Double {
         if state == "sleeping" { return 0 }
-        // --shots / --frames render the window offscreen and expect it to animate as if in front
-        if Shots.scale != nil || ShadePace.front { return base }
+        // --frames / --selftest render the window offscreen and expect it to animate as if in front
+        if DebugFrame.scale != nil || ShadePace.front { return base }
         if !visible { return 0 }
         return key ? base : min(base, ShadePace.unfocusedFps)
     }
@@ -202,12 +202,12 @@ struct ShadeImage: View {
     /// the paced rate; idle (nothing happening) runs at the calm rate, whose whole loop is cached
     private func rate(_ px: CGFloat) -> Double {
         let r = pace.fps(fps, state: state)
-        guard state == "idle", r > 0, Shots.scale == nil else { return r }
+        guard state == "idle", r > 0, DebugFrame.scale == nil else { return r }
         return min(r, ShadeKit.shared.calmFps(state, pt: size, pad: pad, scale: px))
     }
 
     var body: some View {
-        let px = Shots.scale ?? max(1, scale)
+        let px = DebugFrame.scale ?? max(1, scale)
         let rate = rate(px)
         let run = animate && rate > 0
         let side = size * (1 + 2 * pad)
@@ -223,7 +223,7 @@ struct ShadeImage: View {
 /// bitmap, see ShadeKit.image), never the window's SwiftUI graph. (A SwiftUI TimelineView tick re-ran the window's
 /// SwiftUI update, ~3-5 % CPU for an idle window at the calm rates; this costs a fraction of that.) Paused (fps 0) it
 /// holds one frame and runs no timer; off a window it runs none either. It draws in draw(_:), so cacheDisplay
-/// (--shots, --frames) captures it.
+/// (--frames, --selftest) captures it.
 struct ShadeFrames: NSViewRepresentable {
     struct Cfg: Equatable {
         var state: String, since: Date, size: CGFloat, detail: String, bg: String?, props: Bool, pad: CGFloat
@@ -337,7 +337,6 @@ struct StatusFace: View {
                 }
             }
             .padding(EdgeInsets(top: -2, leading: -3, bottom: -2, trailing: -2))
-            .anchorPreference(key: ShotRects.self, value: .bounds) { ["face": $0] }
             .onChange(of: m.shadeHidden) { _, hidden in
                 cue += 1
                 let n = cue
@@ -369,15 +368,9 @@ struct ReplyMarker: View {
     var body: some View {
         ShadeImage(state: live ? m.shade.state : "idle", since: live ? m.shade.since : .distantPast, size: m.layout.replyMarker,
                    detail: "mini", animate: live && !reduceMotion, pad: 0.15, fps: 16)
-            .anchorPreference(key: ShotRects.self, value: .bounds) { live ? ["mini": $0] : [:] }
     }
 }
 
-/// frames of the small Shades, for the 1:1 crops in --shots
-struct ShotRects: PreferenceKey {
-    static let defaultValue: [String: Anchor<CGRect>] = [:]
-    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) { value.merge(nextValue()) { $1 } }
-}
 
 // MARK: - the dock (layout.json companion: bottom-right of the transcript column)
 
@@ -450,7 +443,6 @@ struct Dock: View {
             }
         }
         .animation(reduceMotion ? nil : .timingCurve(0.34, 1.7, 0.64, 1, duration: 0.35), value: s.pop)
-        .anchorPreference(key: ShotRects.self, value: .bounds) { ["dock": $0] }
     }
 
     /// the activities the kit has no prop for get a small SF Symbol in the kit's prop spot (beside the right paw):
@@ -545,7 +537,6 @@ struct Dock: View {
                 hover = inside ? "size" : (hover == "size" ? nil : hover)
                 if inside { cursor(true) } else if dragFrom == nil { cursor(false) }
             }
-            .anchorPreference(key: ShotRects.self, value: .bounds) { ["handle": $0] }
             .accessibilityElement()
             .accessibilityLabel("Resize Shade")
             .accessibilityValue("\(Int(m.shadeSize)) px")
