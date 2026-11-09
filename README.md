@@ -7,7 +7,6 @@
 
 <p align="center"><b>A personal assistant that lives on your Mac and runs on your models.</b></p>
 
-<p align="center"><a href="https://github.com/transybao1393/Elisa/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/transybao1393/Elisa/actions/workflows/ci.yml/badge.svg?branch=main"></a></p>
 
 Elisa is a chat assistant for your Mac. Talk to it like you would to any assistant: ask questions, think things through,
 look something up on the web, read a PDF or a spreadsheet, describe an image. When you need it, Elisa can also work on
