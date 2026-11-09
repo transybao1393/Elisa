@@ -287,7 +287,7 @@ pub fn claims_file_saved(reply: &str) -> bool {
     const DONE: &[&str] = &["saved", "i've written", "i have written", "has been written", "was written", "i wrote", "written to", "đã lưu", "đã ghi"];
     const NOT: &[&str] = &["not ", "n't", "nothing", "no file", "unable", "cannot", "said no", "declined", "denied", "skipped",
         "cancel", "không", "chưa", "can save", "could save", "will save", "to save", "want to save", "if you"];
-    let lower = reply.to_lowercase();
+    let lower = reply.to_ascii_lowercase();
     lower.split(['!', '?', '\n', ';']).flat_map(|s| s.split(". ")).any(|s| {
         DONE.iter().any(|p| s.contains(p)) && !NOT.iter().any(|p| s.contains(p))
             && (file_name(s).is_some() || s.contains("file") || s.contains("tệp"))
@@ -307,10 +307,37 @@ pub fn file_ask(msg: &str) -> Option<String> {
 /// Text from one of Elisa's request-only notes that a model repeated as its reply (granite3.2-vision:2b replied "The
 /// user asked to save the marketing plan to marketing-plan.md: call write now…"): those sentences removed. A reply that
 /// is only that comes back empty (the empty-reply retry then asks again).
+/// What the history keeps for a reply with no text (BUGS #80): never the stop reason itself. "[end_turn]" there was
+/// copied by moondream:1.8b as its next replies, word for word.
+pub fn no_answer_note(stop_reason: &str) -> &'static str {
+    if stop_reason == "cancelled" { "[cancelled]" } else { NO_ANSWER }
+}
+
+/// the history's stand-in for a reply with no text (`no_answer_note`)
+pub const NO_ANSWER: &str = "[no answer]";
+
+/// Stop reasons and end-of-turn tokens written as reply text (BUGS #80): a small model copies an old "[end_turn]",
+/// or a template token gets through. Never reply text: taken out wherever they stand (`strip_stop_markers`).
+const STOP_MARKERS: &[&str] = &["[end_turn]", "[tool_use]", "[max_tokens]", "[stop_sequence]", "[no output]", "[no answer]",
+    "<|endoftext|>", "<|im_end|>", "<|eot_id|>", "<end_of_turn>", "<|end|>"];
+
+/// `reply` without any `STOP_MARKERS` (case-insensitive), trimmed when one was taken out.
+pub fn strip_stop_markers(reply: &str) -> String {
+    let lower = reply.to_ascii_lowercase();
+    if !STOP_MARKERS.iter().any(|m| lower.contains(m)) { return reply.to_string(); }
+    let mut out = reply.to_string();
+    for m in STOP_MARKERS {
+        while let Some(i) = out.to_ascii_lowercase().find(m) { out.replace_range(i..i + m.len(), ""); }
+    }
+    out.trim().to_string()
+}
+
 pub fn strip_echoed_notes(reply: &str) -> String {
-    // the fixed wording of `repl.rs`'s own notes (`ask_note`, WEB_ASK_NOTE, EMPTY_REPLY_NUDGE, SMALL_TALK_NOTE), not the user's words
+    let stripped = strip_stop_markers(reply);
+    let reply = stripped.as_str();
+    // the fixed wording of `repl.rs`'s own notes (`ask_note`, WEB_ASK_NOTE, EMPTY_REPLY_NUDGE, SMALL_TALK_NOTE, REASONED_OUT_NUDGE), not the user's words
     const MARKS: &[&str] = &["(the user asked ", "the user asked to save", "the user asked to read", "the user asked for a web search", "call write now",
-        "call read on it now", "call web_search now", "had no text for the user", "reply in words; no tools"];
+        "call read on it now", "call web_search now", "had no text for the user", "reply in words; no tools", "ran out of room while reasoning"];
     let hit = |t: &str| { let t = t.to_lowercase(); MARKS.iter().any(|m| t.contains(m)) };
     if !hit(reply) { return reply.to_string(); }
     // sentence by sentence: "The user asked to read a.txt: call read on it now. It says hi." keeps the last one
@@ -559,6 +586,22 @@ mod tests {
     use super::*;
 
     fn route(msg: &str) -> Groups { classify(msg, &Route::default(), &[]).groups }
+
+    #[test]
+    fn a_stop_reason_is_never_reply_text() {
+        // BUGS #80: moondream:1.8b answered "[end_turn]", copied from the history's old stand-in
+        for r in ["[end_turn]", " [END_TURN]\n", "[end_turn][end_turn]", "<|im_end|>", "[no answer]", "[max_tokens]"] {
+            assert_eq!(strip_echoed_notes(r), "", "{r:?}");
+        }
+        assert_eq!(strip_echoed_notes("Hi Linh! [end_turn]"), "Hi Linh!");
+        assert_eq!(strip_echoed_notes("Café <s>old</s> [end_turn]"), "Café <s>old</s>");
+        assert_eq!(strip_echoed_notes("a plain reply"), "a plain reply");
+        assert_eq!(no_answer_note("end_turn"), NO_ANSWER);
+        assert_eq!(no_answer_note(""), NO_ANSWER);
+        assert_eq!(no_answer_note("max_tokens"), NO_ANSWER);
+        assert_eq!(no_answer_note("cancelled"), "[cancelled]");
+        assert!(!NO_ANSWER.contains("end_turn"));
+    }
 
     #[test]
     fn explicit_file_asks() {
