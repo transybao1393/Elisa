@@ -90,4 +90,4 @@ elisa/target/release/elisa               # chat in the terminal
 
 Apache License 2.0. Copyright 2026 TRAN SY BAO. See [LICENSE](LICENSE), [NOTICE](NOTICE) and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The license does not grant use of the Elisa name, logo or Shade.
-Model weights, including the hosted intent router, are not part of this repository and keep their own licenses.
+Models you use with Elisa are not part of this repository and come with their own licenses.
