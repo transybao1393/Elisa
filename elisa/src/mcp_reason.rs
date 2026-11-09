@@ -303,11 +303,27 @@ pub fn decide(mode: Mode, msg: &str, prev: bool) -> bool {
 /// request, in this order, so a flip only changes the tail of the tool list.
 pub const GATED: [&str; 2] = ["docs", "sec"];
 
-/// words that make a turn about documents (the `docs` server reads PDFs and spreadsheets)
+/// words that make a turn about documents (the `docs` server reads PDFs and spreadsheets): the names of the file
+/// kinds it reads
 const DOC_WORDS: &[&str] = &[
-    "pdf", "pdfs", "document", "documents", "spreadsheet", "spreadsheets", "sheet", "sheets", "excel",
-    "workbook", "csv", "tsv", "xlsx", "xls", "ods", "xlsm",
+    "pdf", "pdfs", "spreadsheet", "spreadsheets", "excel", "workbook", "csv", "tsv", "xlsx", "xls", "ods", "xlsm",
 ];
+/// everyday nouns that name a document only when they point at one that exists ("the sheet", "this document", "my
+/// sheets"); "a markdown cheat sheet" or "write a document about X" asks for new text, and the `docs` tools only
+/// read files (BUGS #30: "Show me a markdown cheat sheet." got the documents tools and a `docs_sheet("cheatsheet.md")`)
+const DOC_NOUNS: &[&str] = &["document", "documents", "sheet", "sheets"];
+/// words that point at something that exists (a definite or possessive determiner)
+const POINTING: &[&str] = &["the", "this", "that", "these", "those", "my", "your", "our", "his", "her", "their", "its"];
+/// words that introduce something new (an indefinite determiner)
+const NEW_THING: &[&str] = &["a", "an", "another", "some", "any"];
+
+/// A `DOC_NOUNS` word at `i` that points at an existing document: the nearest determiner in the three words before it
+/// (modifiers may stand between: "the sales sheet", "my monthly budget sheet") is a pointing one.
+fn points_at_doc(w: &[String], i: usize) -> bool {
+    w[i.saturating_sub(3)..i].iter().rev().find_map(|x| {
+        if POINTING.contains(&x.as_str()) { Some(true) } else if NEW_THING.contains(&x.as_str()) { Some(false) } else { None }
+    }).unwrap_or(false)
+}
 /// file extensions the `docs` server reads
 const DOC_EXTS: &[&str] = &["pdf", "xlsx", "xls", "xlsm", "ods", "csv", "tsv"];
 /// words that make a turn about security (the `sec` server: secrets, vulnerable dependencies, binaries, JWTs)
@@ -324,6 +340,7 @@ fn names_tool(words: &[String], server: &str) -> bool { words.iter().any(|w| w.s
 pub fn about_docs(text: &str) -> bool {
     let w = words(text);
     if w.iter().any(|x| DOC_WORDS.contains(&x.as_str())) || names_tool(&w, "docs") { return true; }
+    if w.iter().enumerate().any(|(i, x)| DOC_NOUNS.contains(&x.as_str()) && points_at_doc(&w, i)) { return true; }
     text.split(|c: char| c.is_whitespace() || "`'\"()[]{},;:!?<>".contains(c)).any(|t| {
         t.rsplit_once('.').is_some_and(|(a, e)| !a.is_empty() && DOC_EXTS.contains(&e.trim_end_matches('.').to_lowercase().as_str()))
     })
@@ -400,6 +417,19 @@ mod tests {
         // a follow-up keeps the last choice; off offers both
         assert_eq!(gate(false, "continue", "", (true, true)), (true, true));
         assert_eq!(gate(true, "fix the test", "", none), (true, true));
+    }
+
+    #[test]
+    fn an_everyday_noun_is_a_document_only_when_it_points_at_one() {
+        // BUGS #30: asking for new text that is called a sheet / document
+        for m in ["Show me a markdown cheat sheet.", "write a document about the history of tea", "make me a git cheat sheet",
+            "document how this function works", "give me another cheat sheet, for vim"] {
+            assert!(!about_docs(m), "{m:?}");
+        }
+        for m in ["what does the sheet say?", "summarize this document", "which row of my sales sheet is largest?",
+            "compare these documents", "what's in the attached spreadsheet?", "read report.pdf"] {
+            assert!(about_docs(m), "{m:?}");
+        }
     }
 
     #[test]

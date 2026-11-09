@@ -412,8 +412,8 @@ impl<'f> Session<'f> {
             self.system.push('\n');
         }
         // the model's detected facts, one line (fixed per connection, so the prompt stays byte-stable within a session)
-        let c = self.client.caps();
-        let facts = crate::situation::model_facts(&self.cfg.model, c.vision == Some(true), c.tools == crate::backend::Tools::Native, c.thinking, self.max_ctx);
+        let (m, v, t, th, ctx) = self.facts();
+        let facts = crate::situation::model_facts(&m, v, t, th, ctx);
         if !self.system.ends_with('\n') { self.system.push('\n'); }
         self.system.push_str(&facts);
         self.system.push('\n');

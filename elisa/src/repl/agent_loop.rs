@@ -140,23 +140,12 @@ impl<'f> Session<'f> {
             // current turn's request is the boundary, so every request of a turn has the same prefix
             let short = context::shorten_old_replies(base, base.iter().rposition(is_request).unwrap_or(base.len()), self.max_ctx);
             let base: &[Message] = short.as_deref().unwrap_or(base);
-            // this turn's document text, in the turn's user message for these requests only (`doc_req`)
+            // this turn's document text (`doc_req`) and card (`card_req`), in the turn's user message for these
+            // requests only (`with_turn_extras`: the documents before the user's words, the card after them)
             let with_doc: Vec<Message>;
-            // and this turn's card (`card_req`) before it
-            let extra: Vec<String> = self.card_req.iter().chain(self.doc_req.iter()).cloned().collect();
-            let base: &[Message] = match extra.is_empty() {
-                false if !base.is_empty() => {
-                    // the turn's user message (`turn_cap`; spelled out: `self.fe` is borrowed here)
-                    let at = base.iter().rposition(|m| m.role == Role::User && m.content.iter()
-                        .any(|b| matches!(b, Block::Text { text } if !text.starts_with(context::NUDGE_PREFIX)))).unwrap_or(base.len() - 1);
-                    with_doc = base.iter().enumerate().map(|(i, m)| if i == at {
-                        let mut m = m.clone();
-                        m.content.extend(extra.iter().map(|t| Block::Text { text: t.clone() }));
-                        m
-                    } else { m.clone() }).collect();
-                    &with_doc
-                }
-                _ => base,
+            let base: &[Message] = match (&self.doc_req, &self.card_req) {
+                (None, None) => base,
+                (doc, card) => { with_doc = with_turn_extras(base, doc.as_deref(), card.as_deref()); &with_doc }
             };
             let messages: &[Message] = match empty_retry.take() {
                 Some(n) => { retry_msgs = base.iter().cloned().chain([n]).collect(); &retry_msgs }
@@ -771,6 +760,26 @@ fn with_note(history: &[Message], note: &str) -> Vec<Message> {
     h
 }
 
+/// The history with this turn's request-only blocks in the turn's user message (a copy for one request): the
+/// document text (`doc`) goes with the documents' reference lines, before the user's words and Elisa's notes, and
+/// the card (`card`) after them. The words come last, right after the text they ask about (BUGS #54: mid-chat,
+/// after a web search and a denied write, granite4.2:3b read "what is in these two files?" ahead of the text as
+/// being about deny.txt and said the attachments were "only metadata", 5 of 5 replays; the text first, with
+/// `docs::ATTACHED_NOTE` after it: 5 of 5 right, and gemma3:1b 5 of 5).
+fn with_turn_extras(history: &[Message], doc: Option<&str>, card: Option<&str>) -> Vec<Message> {
+    let mut h = history.to_vec();
+    // the turn's user message (`turn_cap`): the last one with words that are not Elisa's correction
+    let Some(at) = h.iter().rposition(|m| m.role == Role::User && m.content.iter()
+        .any(|b| matches!(b, Block::Text { text } if !text.starts_with(context::NUDGE_PREFIX)))) else { return h };
+    let content = std::mem::take(&mut h[at].content);
+    let (refs, rest): (Vec<Block>, Vec<Block>) = content.into_iter().partition(|b| matches!(b, Block::Text { text } if text.starts_with(crate::attach::MARK)));
+    let mut out = Vec::new();
+    if let Some(d) = doc { out.extend(refs); out.push(Block::Text { text: d.to_string() }); out.extend(rest); } else { out.extend(rest); out.extend(refs); }
+    if let Some(c) = card { out.push(Block::Text { text: c.to_string() }); }
+    h[at].content = out;
+    h
+}
+
 /// The plain line a small-talk turn shows when the reply called a tool even when asked in words, in the user's
 /// language (Vietnamese when the message is: `reply_lang::detect`).
 fn small_talk_fallback(input: &str) -> &'static str {
@@ -832,6 +841,23 @@ mod tests {
             Message::new(Role::Assistant, vec![Block::ToolUse { id: "1".into(), name: "web_search".into(), input: json!({"query": "weather in Hanoi"}) }]),
             Message::new(Role::User, vec![Block::ToolResult { tool_use_id: "1".into(), content: "sunny".into(), is_error: false }]),
         ]
+    }
+
+    #[test]
+    fn document_text_goes_before_the_users_words_and_the_card_after() {
+        // BUGS #54
+        let t = |s: &str| Block::Text { text: s.into() };
+        let text = |m: &Message| m.content.iter().map(|b| match b { Block::Text { text } => text.clone(), _ => String::new() }).collect::<Vec<_>>();
+        let h = vec![Message::user_text("hi"), Message::assistant_text("hello"),
+            Message::new(Role::User, vec![t("what is in these two files?"), t("[Attached: a.xlsx, 2 rows · .elisa/uploads/1/a.xlsx]")])];
+        let r = with_turn_extras(&h, Some("[Attached: a.xlsx, 2 rows]\n<untrusted>x</untrusted>"), Some("[state]\ngoal: g\n[/state]"));
+        assert_eq!(r[..2], h[..2], "the prefix is unchanged");
+        assert_eq!(text(&r[2]), ["[Attached: a.xlsx, 2 rows · .elisa/uploads/1/a.xlsx]", "[Attached: a.xlsx, 2 rows]\n<untrusted>x</untrusted>",
+            "what is in these two files?", "[state]\ngoal: g\n[/state]"]);
+        // a card alone: after the words and references, as before
+        let r = with_turn_extras(&h, None, Some("[state]"));
+        assert_eq!(text(&r[2]), ["what is in these two files?", "[Attached: a.xlsx, 2 rows · .elisa/uploads/1/a.xlsx]", "[state]"]);
+        assert_eq!(with_turn_extras(&[], Some("d"), None), Vec::<Message>::new());
     }
 
     #[test]

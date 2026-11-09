@@ -2,6 +2,9 @@ use super::*;
 use super::agent_loop::{CheckRun, api_error_line};
 use super::memory::{is_request, texts};
 
+/// the line after the text of documents attached with this message (request only)
+const ATTACHED_NOTE: &str = "The text above is the content of the attached files, extracted by Elisa: answer from it.";
+
 impl<'f> Session<'f> {
 
     /// Elisa's answer for a turn about a picture the model cannot see (`context::no_picture_line`): a model without
@@ -183,7 +186,10 @@ impl<'f> Session<'f> {
                 Err(e) => { self.fe.error(&format!("not attached: {e}")); refused.push(e); }
             }
         }
-        if !req.is_empty() { self.set_doc_req(Some(req.join("\n\n"))); }
+        // the text goes before the user's words in the request (`agent_loop::with_turn_extras`), with one line saying
+        // what it is (BUGS #54: replayed mid-chat request, granite4.2:3b 5/5 and gemma3:1b 5/5 answered from it; with
+        // the words first and no line, granite said "only attachment metadata" 5/5)
+        if !req.is_empty() { self.set_doc_req(Some(format!("{}\n{ATTACHED_NOTE}", req.join("\n\n")))); }
         // nothing could be read: the model hears it in this turn's message, so it never answers from an earlier file
         // (measured on qwen3-vl:2b: a locked PDF got "The PDF says the code word is WORD8", from the n8.txt before it)
         else if !refused.is_empty() { self.doc_refused = Some(crate::attach::refused_note(&refused)); }
@@ -309,7 +315,8 @@ impl<'f> Session<'f> {
         let docs: Vec<crate::topics::DocTopic> = self.kept_docs.iter().map(|k| k.topic.clone()).collect();
         let p = if q.starts_with('/') { crate::topics::Pick::default() } else {
             let own = context::own_words(q).unwrap_or(q);
-            crate::topics::pick(own, &docs, &self.topic_cards, &self.topic, self.doc_new.take())
+            let (m, v, t, th, ctx) = self.facts();
+            crate::topics::pick_for(own, &docs, &self.topic_cards, &self.topic, self.doc_new.take(), &crate::situation::model_words(&m, v, t, th, ctx))
         };
         let doc = p.doc.and_then(|d| docs.get(d)).map_or("none".to_string(), |d| d.name.clone());
         let card = p.card.and_then(|c| self.topic_cards.get(c)).map_or("none".to_string(), |c| c.id.map_or("this session's".to_string(), |i| format!("#{i}")));
@@ -344,7 +351,7 @@ impl<'f> Session<'f> {
         self.debug(&format!("[documents in this request: {log} · budget {budget}]"));
         // a follow-up about a document already discussed: answer that question, not the whole document again
         // (measured on qwen3-vl:2b: "what kind of data does it work with?" got its first summary repeated)
-        self.set_doc_req(Some(format!("{block}\nAnswer only the user's new question from the text above, in a few sentences; do not summarize the whole document again.")));
+        self.set_doc_req(Some(format!("{block}\nAnswer only the user's new question below from the text above, in a few sentences; do not summarize the whole document again.")));
     }
 
     /// The safety net: a turn that carried document text and got a reply saying it cannot read the document (and

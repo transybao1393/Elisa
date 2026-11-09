@@ -228,10 +228,18 @@ pub fn follow_up(q: &str) -> bool {
 
 /// This turn's topic (see the module doc). `new_doc`: a document attached with this message; `last`: the last turn's.
 pub fn pick(q: &str, docs: &[DocTopic], cards: &[Card], last: &Pick, new_doc: Option<usize>) -> Pick {
+    pick_for(q, docs, cards, last, new_doc, &HashSet::new())
+}
+
+/// `pick`, with `model`: the content words of the model facts (`situation::model_words`). A message whose content
+/// words are all among them ("What can this model do for me?") is about the model Elisa runs on: its words pick no
+/// document or card (BUGS #47); a document named by file name, by order or by "the paper" still counts.
+pub fn pick_for(q: &str, docs: &[DocTopic], cards: &[Card], last: &Pick, new_doc: Option<usize>, model: &HashSet<String>) -> Pick {
     if let Some(d) = new_doc.filter(|&d| d < docs.len()) { return doc_pick(docs, cards, d, Why::Attached); }
     let q = q.trim();
     let ql = q.to_lowercase();
     let qw = words(q);
+    let qw = if !qw.is_empty() && qw.is_subset(model) { HashSet::new() } else { qw };
     let last_doc = last.doc.filter(|&d| d < docs.len());
     // (a) a document named
     if let Some((d, why)) = ordinal(&ql, docs, last_doc) { return doc_pick(docs, cards, d, why); }
@@ -353,6 +361,23 @@ mod tests {
         assert_eq!((p.doc, p.card), (None, None));
         // "the paper" alone: the last turn's document
         assert_eq!(pick("summarize the paper", &d, &c, &last, None).doc, Some(1));
+    }
+
+    #[test]
+    fn a_question_about_the_model_in_use_picks_no_document() {
+        // BUGS #47: the Kronos paper's title has "model"; the facts' words are the model's, not the paper's
+        let one = vec![docs()[1].clone()];
+        let c = vec![cards()[1].clone()];
+        let last = Pick { doc: Some(0), card: Some(0), why: Why::Attached };
+        let m = crate::situation::model_words("qwen3-vl:2b-instruct", true, true, false, 16384);
+        assert_eq!(pick("What can this model do for me?", &one, &c, &last, None).doc, Some(0), "without the facts' words: the paper");
+        for q in ["What can this model do for me?", "does this model have vision?", "which model is this?"] {
+            assert_eq!(pick_for(q, &one, &c, &last, None, &m), Pick::default(), "{q}");
+        }
+        // the paper's own words, or the paper named, still pick it
+        for q in ["what can the Kronos model do?", "how does the model tokenize candlesticks?", "what does the paper say about this model?"] {
+            assert_eq!(pick_for(q, &one, &c, &last, None, &m).doc, Some(0), "{q}");
+        }
     }
 
     #[test]
