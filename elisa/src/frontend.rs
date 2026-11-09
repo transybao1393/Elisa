@@ -194,7 +194,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/copy", "copy the last reply to the clipboard"),
     ("/stats", "metrics: the last request's model calls and the session totals"),
     ("/cache", "Elisa's result cache: entries, size, hit rate per kind · /cache clear [web_fetch|web_search|docs]"),
-    ("/model", "the model connection in use, and the saved ones"),
+    ("/model", "the model connection in use, and the saved ones · /model NAME switches to that installed model"),
     ("/yolo", "toggle approve-all for tools"),
     ("/water", "give Elisa water (F2)"),
     ("/feed", "give Elisa a snack (F3)"),
