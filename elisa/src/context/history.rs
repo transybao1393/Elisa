@@ -532,7 +532,28 @@ pub fn drop_repeated_replies(msgs: &[Message]) -> Option<Vec<Message>> {
 /// recorded), so stamping on the next save (`stamp_model`) never claims it for this run's model.
 pub fn loaded(mut h: Vec<Message>) -> Vec<Message> {
     for m in h.iter_mut().filter(|m| m.role == Role::Assistant && m.model.is_none()) { m.model = Some(String::new()); }
-    h
+    drop_cancelled_turns(h)
+}
+
+/// A saved session's cancelled turns (an older Elisa ended them with a "[cancelled]" stand-in reply), each from its
+/// user message to that line, so a resumed chat never shows the model the stand-in to copy (BUGS #27). The first turn
+/// stays (its message carries the conversation's header); there only the stand-in goes.
+pub fn drop_cancelled_turns(h: Vec<Message>) -> Vec<Message> {
+    let stand_in = |m: &Message| m.role == Role::Assistant && m.content.iter().all(|b| matches!(b, Block::Text { text } if text.trim() == "[cancelled]"));
+    if !h.iter().any(|m| !m.content.is_empty() && stand_in(m)) { return h; }
+    let mut out: Vec<Message> = Vec::with_capacity(h.len());
+    for m in h {
+        if m.content.is_empty() || !stand_in(&m) { out.push(m); continue; }
+        match out.iter().rposition(is_request_msg) {
+            Some(0) | None => {
+                // the first turn: its words stay, with the no-answer stand-in (`route::NO_ANSWER`) so roles alternate
+                while out.last().is_some_and(|x| !is_request_msg(x)) { out.pop(); }
+                out.push(Message::assistant_text(crate::route::NO_ANSWER));
+            }
+            Some(at) => out.truncate(at),
+        }
+    }
+    out
 }
 
 /// The assistant messages written in this run (no model recorded yet) get `model` (bug #66).

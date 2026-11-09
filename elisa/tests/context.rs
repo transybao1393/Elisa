@@ -1389,6 +1389,13 @@ fn replies_that_claim_the_users_facts() {
     assert!(c("I'm glad you're from Hanoi, Linh!").is_empty());
     assert!(c("Your name is Linh, you live in Hanoi, and your meeting code is ORCHID-42.").is_empty());
     assert!(c("I can't find Hanoifood.").is_empty(), "whole words only");
+    // 2026-11-10: "I'm Linh, from Hanoi": the second clause has the first one's subject, so Hanoi is a fact too
+    let v = context::user_fact_values("I'm Linh, from Hanoi");
+    assert_eq!(v, vec!["Linh", "Hanoi"]);
+    assert_eq!(context::claimed_user_facts("I'm Elisa from Hanoi", &v), vec!["Hanoi"]);
+    assert_eq!(context::user_facts("I'm Linh, from Hanoi, 30 years old"), vec!["The user's name is Linh", "The user is from Hanoi", "The user is 30 years old"]);
+    assert_eq!(context::user_fact_values("I'm Linh, nice to meet you"), vec!["Linh"]);
+    assert!(context::user_fact_values("I'm tired, from work").is_empty(), "carried only after a stated fact");
 }
 
 #[test]
@@ -1396,4 +1403,24 @@ fn claimed_user_facts_vietnamese() {
     let v = vec!["Linh".to_string(), "Hà Nội".to_string()];
     assert_eq!(context::claimed_user_facts("Chào, tôi là Linh, tôi sống ở Hà Nội.", &v), vec!["Linh", "Hà Nội"]);
     assert!(context::claimed_user_facts("Chào Linh, bạn sống ở Hà Nội nhé.", &v).is_empty());
+}
+
+#[test]
+fn a_saved_cancelled_turn_leaves_the_resumed_history() {
+    // BUGS #27: an older Elisa kept "[cancelled]" as the reply; granite3.2-vision:2b copied it into later replies
+    let tool = |id: &str| Message::new(Role::Assistant, vec![Block::ToolUse { id: id.into(), name: "web_fetch".into(), input: json!({"url": "https://example.com"}) }]);
+    let res = |id: &str| Message::new(Role::User, vec![Block::ToolResult { tool_use_id: id.into(), content: "cancelled by user".into(), is_error: true }]);
+    let h = vec![
+        Message::user_text("hi"), Message::assistant_text("Hello!"),
+        Message::user_text("fetch https://example.com"), tool("1"), res("1"), Message::assistant_text("[cancelled]"),
+        Message::user_text("what is 2+2?"), Message::assistant_text("4"),
+    ];
+    let v = context::loaded(h);
+    let words: Vec<String> = v.iter().flat_map(|m| &m.content).filter_map(|b| match b { Block::Text { text } => Some(text.clone()), _ => None }).collect();
+    assert_eq!(words, vec!["hi", "Hello!", "what is 2+2?", "4"]);
+    // the first turn keeps its words (its message carries the header), with the no-answer stand-in
+    let v = context::loaded(vec![Message::user_text("fetch it"), tool("2"), res("2"), Message::assistant_text("[cancelled]"), Message::user_text("ok"), Message::assistant_text("Sure.")]);
+    assert_eq!(v.len(), 4);
+    assert!(v.windows(2).all(|w| w[0].role != w[1].role), "roles still alternate");
+    assert!(matches!(&v[1].content[0], Block::Text { text } if text == elisa::route::NO_ANSWER));
 }

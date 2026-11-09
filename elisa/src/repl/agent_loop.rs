@@ -87,7 +87,7 @@ impl<'f> Session<'f> {
         let mut final_ask: Option<String> = None;
         // a reply with no visible text (only its state card): asked once more, with this nudge after the history for
         // that one request (it never enters the history, so the next requests' prefix is unchanged)
-        let mut empty_retry: Option<Message> = None;
+        let mut empty_retry: Option<&'static str> = None;
         let mut retried = false;
         let mut stashed_card: Option<String> = None;
         // a simple turn's reply that used its whole small budget with no text for the user: sent once more without
@@ -143,7 +143,9 @@ impl<'f> Session<'f> {
             // this turn's document text, in the turn's user message for these requests only (`doc_req`)
             let with_doc: Vec<Message>;
             // and this turn's card (`card_req`) before it
-            let extra: Vec<String> = self.card_req.iter().chain(self.doc_req.iter()).cloned().collect();
+            // (a follow-up's picked parts before the user's words: `doc_first`)
+            let first_doc = self.doc_req.clone().filter(|_| self.doc_first);
+            let extra: Vec<String> = self.card_req.iter().chain(self.doc_req.iter().filter(|_| !self.doc_first)).cloned().collect();
             let base: &[Message] = match extra.is_empty() {
                 false if !base.is_empty() => {
                     // the turn's user message (`turn_cap`; spelled out: `self.fe` is borrowed here)
@@ -159,9 +161,24 @@ impl<'f> Session<'f> {
                 _ => base,
             };
             let messages: &[Message] = match empty_retry.take() {
-                Some(n) => { retry_msgs = base.iter().cloned().chain([n]).collect(); &retry_msgs }
+                Some(n) => { retry_msgs = with_note(base, n); &retry_msgs }
                 None if in_words => { retry_msgs = with_note(base, if final_ask.is_some() { FINAL_ANSWER_NOTE } else { self.retry_note.as_deref().unwrap_or(SMALL_TALK_NOTE) }); &retry_msgs }
                 None => base,
+            };
+            // after any note (`with_note` adds it to the first text, the user's words)
+            let doc_first: Vec<Message>;
+            let messages: &[Message] = match &first_doc {
+                Some(d) if !messages.is_empty() => {
+                    let at = messages.iter().rposition(|m| m.role == Role::User && m.content.iter()
+                        .any(|b| matches!(b, Block::Text { text } if !text.starts_with(context::NUDGE_PREFIX)))).unwrap_or(messages.len() - 1);
+                    doc_first = messages.iter().enumerate().map(|(i, m)| {
+                        let mut m = m.clone();
+                        if i == at { m.content.insert(0, Block::Text { text: d.clone() }); }
+                        m
+                    }).collect();
+                    &doc_first
+                }
+                _ => messages,
             };
             let no_tools: [crate::types::ToolDef; 0] = [];
             let req = Request { system: &self.system, tools: if in_words { &no_tools } else { &self.tools }, messages, max_tokens };
@@ -248,7 +265,8 @@ impl<'f> Session<'f> {
                 let (vis, card, broken) = context::split_state(&raw);
                 // one of Elisa's request-only notes repeated as the reply: never shown (`route::strip_echoed_notes`)
                 // picture text copied into the reply too (`context::strip_picture_echo`, BUGS #57)
-                let clean = crate::route::strip_echoed_notes(&context::strip_picture_echo(&vis));
+                // and a line that only restates the user's message (`route::strip_echoed_ask`, BUGS #38)
+                let clean = crate::route::strip_echoed_ask(&crate::route::strip_echoed_notes(&context::strip_picture_echo(&vis)), &self.input);
                 let vis = if clean != vis.trim() && clean != vis {
                     self.fe.reply_retracted();
                     if self.interactive && !clean.is_empty() { self.fe.text_delta(&clean); }
@@ -265,7 +283,7 @@ impl<'f> Session<'f> {
                 if !wrote && normal_end && !retried {
                     retried = true;
                     stashed_card = self.new_card.take();
-                    empty_retry = Some(Message::user_text(EMPTY_REPLY_NUDGE));
+                    empty_retry = Some(EMPTY_REPLY_NUDGE);
                     self.fe.info("[the reply had no text for you, only its state card; asking the model once more]");
                     continue;
                 }
@@ -279,12 +297,17 @@ impl<'f> Session<'f> {
                 // reasoned through its whole budget, no answer (BUGS #78): once more without reasoning, full budget
                 if !wrote && cut.is_none() && stop_reason == "max_tokens" && reasoning > 0 && self.client.stop_reasoning() {
                     stashed_card = self.new_card.take().or(stashed_card);
-                    empty_retry = Some(Message::user_text(REASONED_OUT_NUDGE));
+                    empty_retry = Some(REASONED_OUT_NUDGE);
                     self.fe.info("[the model spent its whole budget reasoning and wrote no answer; asking once more without reasoning]");
                     continue;
                 }
                 if !wrote && normal_end {
                     self.fe.info("[no answer: the model wrote no text for you twice; ask again or rephrase]");
+                }
+                // cancelled before any words: the turn did not happen (`drop_cancelled_turn`)
+                if !wrote && cut.is_none() && stop_reason == "cancelled" {
+                    self.drop_cancelled_turn();
+                    return TurnEnd::Stopped;
                 }
                 let mut content: Vec<Block> = if vis.is_empty() { Vec::new() } else { vec![Block::Text { text: vis }] };
                 if let Some(c) = &cut { content.push(Block::Text { text: format!("[cut off at the {max_tokens}-token output limit: `{c}` did not run]") }); }
@@ -499,8 +522,7 @@ impl<'f> Session<'f> {
             }
             self.history.push(Message::new(Role::User, results));
             if CANCEL.load(Ordering::SeqCst) {
-                self.history.push(Message::assistant_text("[cancelled]"));
-                self.fe.info("[cancelled]");
+                self.drop_cancelled_turn();
                 return TurnEnd::Stopped;
             }
             // the same call and the same result again (Test 2026-11-01 ran one failing command ~15 times until the
@@ -527,6 +549,20 @@ impl<'f> Session<'f> {
         self.history.push(Message::assistant_text("[step limit reached]"));
         self.fe.info(&format!("[stopped after {} steps; say \"continue\" to go on]", self.cfg.max_steps));
         TurnEnd::Stopped
+    }
+
+    /// A turn the user cancelled (Esc) with no words of a reply: it leaves the history whole, from the user's message
+    /// on (its tool calls and their "cancelled by user" results too), and is not recorded in memory (`unsent`). Never
+    /// a "[cancelled]" stand-in reply (BUGS #27: granite3.2-vision:2b answered the next three unrelated asks with
+    /// "[cancelled]", and the /clear notes kept the cancelled fetch as the next step). The chat on screen keeps it.
+    fn drop_cancelled_turn(&mut self) {
+        let at = self.turn_cap(&self.history).min(self.history.len());
+        self.history.truncate(at);
+        (self.real, self.unsent) = (None, true);
+        // nor its words as the session goal
+        (self.goal, self.goal_misses, self.goal_stated) = std::mem::take(&mut self.goal_before);
+        (self.new_card, self.card_broken) = (None, false);
+        self.fe.info("[cancelled]");
     }
 
     // ----- check before done (src/checks.rs) -----
@@ -726,15 +762,13 @@ pub(super) fn api_error_line(e: &str) -> String {
 
 /// The error a call to a tool this request did not offer gets: what to do instead and a few names that exist (those
 /// that look like it first: `sec_malware` → `sec_secrets`, …). `reason` = a reasoning tool the gate left out this turn.
-/// The one-time retry after a reply with no visible text (`agent_loop`); sent for that request only.
-/// The one request after a reply that reasoned through its whole budget (BUGS #78): sent with reasoning off, after
-/// the history for that request only. Without it qwen3-vl:2b answered a long pasted "just reply OK" message with a
-/// copy of its earlier greeting (2 of 2 retries).
-const REASONED_OUT_NUDGE: &str = "[elisa] Your last reply ran out of room while reasoning and wrote nothing. Answer \
-    the user's last message above now, directly, doing what it asks.";
-
-const EMPTY_REPLY_NUDGE: &str ="[elisa] Your last reply had no text for the user, only the <state> card. Answer the user's \
-    message in one plain sentence first; the <state> card goes after it.";
+/// The one-time retry after a reply with no visible text (`agent_loop`), and the one request after a reply that
+/// reasoned through its whole budget (BUGS #78, sent with reasoning off; without it qwen3-vl:2b answered a long pasted
+/// "just reply OK" message with a copy of its earlier greeting, 2 of 2 retries): request-only notes (`with_note`),
+/// after the user's words or in the last tool result. Never a user message of their own, and never "the user" in
+/// the third person (BUGS #52: gemma3:1b mirrored that wording back: "Please provide the user's question.").
+const REASONED_OUT_NUDGE: &str = "(Answer this message now, directly, doing what it asks; no long reasoning first.)";
+const EMPTY_REPLY_NUDGE: &str = "(Answer this message in one plain sentence first; a <state> card, if any, goes after it.)";
 
 /// The note of the one-time words-only retry of a small-talk turn whose reply called a tool (`agent_loop`): after
 /// the user's words, in that request only (it never enters the history).

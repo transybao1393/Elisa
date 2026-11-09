@@ -163,6 +163,7 @@ impl<'f> Session<'f> {
     pub(super) fn req_begin(&mut self, prompt: &str) {
         // the user's own words: the session goal and `current request:` come from it
         self.user_req = context::one_line(prompt, 240);
+        self.goal_before = (self.goal.clone(), self.goal_misses, self.goal_stated);
         let mut goal = context::next_goal(self.goal.as_deref(), prompt);
         // the conversation moved to another task (GOAL_DRIFT unrelated requests in a row): the goal follows it
         // (a goal the user stated in so many words stays until they state another)

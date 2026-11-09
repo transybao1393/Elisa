@@ -248,13 +248,28 @@ pub fn strip_ask(text: &str) -> &str {
 }
 
 /// The user explicitly asks to save or write something to a named file ("save that plan to plan.md", "write it into
-/// notes.txt", "export the list as list.csv"): that file name.
+/// notes.txt", "export the list as list.csv"): that file name. The save target is the file named after the saving
+/// word, not the first one in the message (BUGS #88: "read notes.txt and budget.py … then save a short trip summary
+/// to summary.md" got a note to save to notes.txt); only when none comes after it, the first one.
 pub fn save_ask(msg: &str) -> Option<String> {
+    const VERBS: [&str; 5] = ["save", "write", "put", "export", "store"];
     let lower = msg.to_lowercase();
-    let verb = ["save", "write", "put", "export", "store"].iter().any(|v| lower.split_whitespace().any(|w| w == *v));
+    let verb = VERBS.iter().any(|v| lower.split_whitespace().any(|w| w == *v));
     let to = [" to ", " into ", " in ", " as "].iter().any(|p| lower.contains(p));
     if !verb || !to { return None; }
-    file_name(msg)
+    // after the last saving word that has a file name after it: the one right after "to" / "into" / "in" / "as"
+    // ("write a summary of notes.txt to summary.md"), else the first one after the word
+    let words: Vec<&str> = msg.split_whitespace().collect();
+    let bare = |w: &str| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    let mut target = None;
+    for (i, w) in words.iter().enumerate() {
+        if !VERBS.contains(&bare(w).as_str()) { continue; }
+        let rest = &words[i + 1..];
+        let after_to = rest.windows(2).find(|p| matches!(bare(p[0]).as_str(), "to" | "into" | "in" | "as") && file_name(p[1]).is_some())
+            .and_then(|p| file_name(p[1]));
+        if let Some(f) = after_to.or_else(|| file_name(&rest.join(" "))) { target = Some(f); }
+    }
+    target.or_else(|| file_name(msg))
 }
 
 /// the first file name in the message ("notes.txt", "src/main.rs"; not "3.14")
@@ -312,16 +327,15 @@ pub fn file_ask(msg: &str) -> Option<String> {
 /// is only that comes back empty (the empty-reply retry then asks again).
 /// What the history keeps for a reply with no text (BUGS #80): never the stop reason itself. "[end_turn]" there was
 /// copied by moondream:1.8b as its next replies, word for word.
-pub fn no_answer_note(stop_reason: &str) -> &'static str {
-    if stop_reason == "cancelled" { "[cancelled]" } else { NO_ANSWER }
-}
+/// (A cancelled reply with no text never gets one: that turn leaves the history, BUGS #27.)
+pub fn no_answer_note(_stop_reason: &str) -> &'static str { NO_ANSWER }
 
 /// the history's stand-in for a reply with no text (`no_answer_note`)
 pub const NO_ANSWER: &str = "[no answer]";
 
 /// Stop reasons and end-of-turn tokens written as reply text (BUGS #80): a small model copies an old "[end_turn]",
 /// or a template token gets through. Never reply text: taken out wherever they stand (`strip_stop_markers`).
-const STOP_MARKERS: &[&str] = &["[end_turn]", "[tool_use]", "[max_tokens]", "[stop_sequence]", "[no output]", "[no answer]",
+const STOP_MARKERS: &[&str] = &["[end_turn]", "[tool_use]", "[max_tokens]", "[stop_sequence]", "[no output]", "[no answer]", "[cancelled]",
     "<|endoftext|>", "<|im_end|>", "<|eot_id|>", "<end_of_turn>", "<|end|>"];
 
 /// `reply` without any `STOP_MARKERS` (case-insensitive), trimmed when one was taken out.
@@ -342,7 +356,7 @@ pub fn strip_echoed_notes(reply: &str) -> String {
     // REASONED_OUT_NUDGE, and the "… for this reply: …" ones: FINAL_ANSWER_NOTE, `retry_note`), not the user's words
     const MARKS: &[&str] = &["(the user asked ", "the user asked to save", "the user asked to read", "the user asked for a web search", "call write now",
         "call read on it now", "call web_search now", "had no text for the user", "reply in words; no tools", "ran out of room while reasoning",
-        "for this reply:"];
+        "for this reply:", "answer this message in one plain sentence", "no long reasoning first", "the message below asks about", "about the person writing to you"];
     let hit = |t: &str| { let t = t.to_lowercase(); MARKS.iter().any(|m| t.contains(m)) };
     if !hit(reply) { return reply.to_string(); }
     // sentence by sentence: "The user asked to read a.txt: call read on it now. It says hi." keeps the last one
@@ -362,6 +376,48 @@ pub fn strip_echoed_notes(reply: &str) -> String {
         }
         let kept = kept.trim();
         if !kept.is_empty() { out.push(kept.to_string()); }
+    }
+    out.join("\n").trim().to_string()
+}
+
+/// A reply's lines that only restate the user's own message, removed (BUGS #38: granite3.2-vision:2b began a
+/// document follow-up's reply with "1. What is the main contribution of the paper?", or "The user's new question
+/// is: '…'", and the next replies copied it). A line goes when it holds the start of the message, word for word (at
+/// least 4 words and 80% of them), and little else (at most 8 more words); a message under 4 words is never looked
+/// for. No wording of a reply is fixed here: only the user's own words are matched.
+pub fn strip_echoed_ask(reply: &str, ask: &str) -> String {
+    let words = |s: &str| s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect::<Vec<_>>();
+    let a = words(ask);
+    if a.len() < 4 { return reply.to_string(); }
+    let k = (a.len() * 4).div_ceil(5).max(4);
+    let head = format!(" {} ", a[..k].join(" "));
+    let echo = |line: &str| {
+        let w = words(line);
+        w.len() <= a.len() + 8 && format!(" {} ", w.join(" ")).contains(&head)
+    };
+    let sentences = |line: &str| -> Vec<String> {
+        let mut out = Vec::new();
+        let mut start = 0;
+        let b = line.as_bytes();
+        for (i, ch) in line.char_indices() {
+            let end = matches!(ch, '.' | '!' | '?') && (i + 1 == line.len() || b.get(i + 1) == Some(&b' '));
+            if end || i + ch.len_utf8() == line.len() {
+                out.push(line[start..i + ch.len_utf8()].to_string());
+                start = i + ch.len_utf8();
+            }
+        }
+        out
+    };
+    // sentence by sentence: "You asked what my name is. It is Linh." keeps the answer
+    if !reply.lines().any(|l| sentences(l).iter().any(|s| echo(s))) { return reply.to_string(); }
+    let mut out: Vec<String> = Vec::new();
+    for line in reply.lines() {
+        let all = sentences(line);
+        if !all.iter().any(|s| echo(s)) { out.push(line.to_string()); continue; }
+        // (a list number left alone, "1.", goes with it)
+        let kept: String = all.into_iter().filter(|s| !echo(s)).collect();
+        let kept = if kept.chars().any(char::is_alphabetic) { kept } else { String::new() };
+        if !kept.trim().is_empty() { out.push(kept.trim().to_string()); }
     }
     out.join("\n").trim().to_string()
 }
@@ -604,8 +660,26 @@ mod tests {
         assert_eq!(no_answer_note("end_turn"), NO_ANSWER);
         assert_eq!(no_answer_note(""), NO_ANSWER);
         assert_eq!(no_answer_note("max_tokens"), NO_ANSWER);
-        assert_eq!(no_answer_note("cancelled"), "[cancelled]");
+        assert_eq!(no_answer_note("cancelled"), NO_ANSWER);
+        assert_eq!(strip_stop_markers("[cancelled]"), "");
         assert!(!NO_ANSWER.contains("end_turn"));
+    }
+
+    #[test]
+    fn a_reply_that_restates_the_message_loses_that_part() {
+        // BUGS #38, granite3.2-vision:2b on a document follow-up
+        let ask = "What is the main contribution of the paper?";
+        assert_eq!(strip_echoed_ask("1. What is the main contribution of the paper?\nThe main contribution is Kronos, a foundation model.", ask),
+            "The main contribution is Kronos, a foundation model.");
+        assert_eq!(strip_echoed_ask("The user's new question is: 'What is the main contribution of the paper?'", ask), "");
+        assert_eq!(strip_echoed_ask("You asked what is the main contribution of the paper. It is Kronos.", ask), "It is Kronos.");
+        // an answer that uses some of the words stays; so does any reply to a short message
+        let a = "The main contribution of the paper is Kronos, a family of decoder-only models pre-trained on K-line data.";
+        assert_eq!(strip_echoed_ask(a, ask), a);
+        assert_eq!(strip_echoed_ask("who am I?", "who am I?"), "who am I?");
+        // one sentence that holds the question and an answer stays
+        let long = "The answer to what is the main contribution of the paper is a tokenizer and an autoregressive model trained on twelve billion records";
+        assert_eq!(strip_echoed_ask(long, ask), long);
     }
 
     #[test]
@@ -618,6 +692,10 @@ mod tests {
         }
         assert_eq!(save_ask("save that plan to marketing-plan.md").as_deref(), Some("marketing-plan.md"));
         assert_eq!(save_ask("write it into notes.txt please").as_deref(), Some("notes.txt"));
+        // BUGS #88: the file after the saving word, not the first one in the message
+        assert_eq!(save_ask("step by step: read notes.txt and budget.py, add up the budget, then save a short trip summary to summary.md").as_deref(), Some("summary.md"));
+        assert_eq!(save_ask("write a summary of notes.txt to summary.md").as_deref(), Some("summary.md"));
+        assert_eq!(save_ask("save the plan to plan.md and write a short note in the chat").as_deref(), Some("plan.md"));
         for m in ["read notes.txt", "I saved notes.txt yesterday", "save me some time", "what is 3.14?"] { assert_eq!(save_ask(m), None, "{m}"); }
     }
 

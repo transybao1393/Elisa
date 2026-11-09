@@ -2553,10 +2553,11 @@ fn an_empty_visible_reply_is_retried_once_then_noted() {
     let reqs = f.messages();
     assert_eq!(reqs.len(), 2);
     let (m0, m1) = (reqs[0]["messages"].as_array().unwrap(), reqs[1]["messages"].as_array().unwrap());
-    // the same history, plus the nudge as the last message
-    assert_eq!(m1.len(), m0.len() + 1);
-    assert_eq!(m0[..], m1[..m0.len()]);
-    assert!(m1.last().unwrap().to_string().contains("one plain sentence"), "{}", m1.last().unwrap());
+    // the same history, the nudge after the user's words in that one request (never a user message of its own)
+    assert_eq!(m1.len(), m0.len());
+    assert_eq!(m0[..m0.len() - 1], m1[..m0.len() - 1]);
+    let last = m1.last().unwrap().to_string();
+    assert!(last.contains("thanks") && last.contains("one plain sentence") && !last.contains("the user"), "{last}");
     let sess = written_files(&d).into_iter().find(|p| p.to_string_lossy().contains("sessions") && p.extension().is_some_and(|e| e == "json")).unwrap();
     let s = std::fs::read_to_string(sess).unwrap();
     assert!(s.contains("You're welcome!") && !s.contains("one plain sentence"), "{s}");
@@ -2640,6 +2641,33 @@ fn jsonl_clear_shrinks_the_context_and_keeps_clean_notes() {
     assert_eq!(m.len(), 1);
     let t = m[0]["content"][0]["text"].as_str().unwrap();
     assert!(t.contains(elisa::context::NOTES_BACKGROUND) && t.contains("REAL-NOTE-1") && t.ends_with("## Request\nnext one"), "{t}");
+    s.quit();
+}
+
+/// BUGS #27: Esc at a tool's approval ends the turn with nothing kept: no "[cancelled]" stand-in reply, no cancelled
+/// call, so the next request is that next message alone (granite3.2-vision:2b answered "[cancelled]" to the next asks).
+#[test]
+fn jsonl_a_cancelled_tool_turn_leaves_no_trace_in_the_next_request() {
+    let dir = tmpdir("jsonl-esc-tool");
+    let f = Fake::start(vec![
+        Sse::new(100, 0).tool_input("t1", "write", json!({"path": "out.txt", "content": "hi"})).end("tool_use", 9),
+        text_reply("4"),
+    ]);
+    let mut s = Serve::start(&f.url(), &dir);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "save hi to out.txt"}));
+    s.until("approve");
+    s.cmd(json!({"type": "interrupt"}));
+    let evs = s.until("turn_done");
+    assert!(evs.iter().any(|e| e["type"] == "info" && e["text"] == "[cancelled]"), "{:?}", kinds(&evs));
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "what is 2+2?"}));
+    s.until("turn_done");
+    let reqs = f.messages();
+    let m = reqs[1]["messages"].as_array().unwrap();
+    let all = serde_json::to_string(m).unwrap();
+    assert_eq!(m.len(), 1, "only the new message: {all}");
+    assert!(!all.contains("[cancelled]") && !all.contains("out.txt"), "{all}");
     s.quit();
 }
 
