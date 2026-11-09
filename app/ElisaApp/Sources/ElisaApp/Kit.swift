@@ -13,11 +13,13 @@ struct Kit {
     static let v1 = "Elisa Brand Kit"
     static let v2 = "Elisa Brand Kit v2 update"
 
-    /// ELISA_KIT_DIR, else $STREAMDENSE_ROOT/elisa/design, else the repo this source file lives in
+    /// ELISA_KIT_DIR, else the copy inside Elisa.app (Contents/Resources/design, scripts/package.sh), else
+    /// $STREAMDENSE_ROOT/elisa/design, else the repo this source file lives in
     static func locate() -> Kit? {
         let env = ProcessInfo.processInfo.environment
         var c: [URL] = []
         if let d = env["ELISA_KIT_DIR"], !d.isEmpty { c.append(URL(fileURLWithPath: d)) }
+        if Bundle.main.bundleURL.pathExtension == "app", let r = Bundle.main.resourceURL { c.append(r.appendingPathComponent("design")) }
         if let r = env["STREAMDENSE_ROOT"], !r.isEmpty { c.append(URL(fileURLWithPath: r).appendingPathComponent("elisa/design")) }
         c.append(Kit.repoRoot.appendingPathComponent("elisa/design"))
         let fm = FileManager.default

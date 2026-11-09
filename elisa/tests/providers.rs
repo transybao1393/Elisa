@@ -2,7 +2,7 @@
 //! a throwaway HTTP server or a real stdio MCP server (a small sh script).
 use elisa::api::{Client, Request};
 use elisa::config::Config;
-use elisa::provider::{from_json, path_in, test as probe, Profile, Providers, Transport};
+use elisa::provider::{find_model, from_json, path_in, test as probe, use_model, Profile, Providers, Transport};
 use elisa::types::{Block, Message, Role, ToolDef};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -498,4 +498,37 @@ fn usage_without_cache_fields_is_the_whole_prompt() {
     assert!(s.feed(r#"{"message":{"role":"assistant","content":"hi"},"done":true,"done_reason":"stop","prompt_eval_count":2280,"eval_count":84}"#, &mut on).unwrap());
     let (_, _, u) = s.finish(false);
     assert_eq!((u.input_tokens, u.cache_read_input_tokens, u.output_tokens), (2280, 0, 84));
+}
+
+// BUGS #85: `/model NAME` switches the active connection to that installed model; only the typed name counts
+#[test]
+fn model_name_switches_the_active_connection_to_that_installed_model() {
+    let names: Vec<String> = ["granite4.2:3b", "gemma3:1b", "llama3.2:latest"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(find_model("granite4.2:3b", &names), Some("granite4.2:3b"));
+    assert_eq!(find_model(" gemma3:1b ", &names), Some("gemma3:1b"));
+    assert_eq!(find_model("llama3.2", &names), Some("llama3.2:latest"), "a bare name is its :latest tag");
+    assert_eq!(find_model("granite4.2", &names), None, "no closest match: Elisa never picks");
+    assert_eq!(find_model("gemma3:4b", &names), None);
+    assert_eq!(find_model("", &names), None);
+
+    let (url, _) = serve(|p, _| match p {
+        "/api/tags" => (200, "application/json", r#"{"models":[{"name":"qwen3-vl:2b-instruct"},{"name":"granite4.2:3b"}]}"#.into()),
+        _ => (404, "text/plain", "no".into()),
+    });
+    let home = tmp();
+    write_providers(&home, &format!("active = \"ollama\"\n[providers.ollama]\ntype = \"openai\"\nbase_url = \"{url}/v1\"\nmodel = \"qwen3-vl:2b-instruct\"\nmax_ctx = 8192\n[providers.other]\ntype = \"openai\"\nbase_url = \"{url}/v1\"\nmodel = \"x\"\n"));
+    assert_eq!(use_model(&home, "granite4.2:3b", &|_| None).unwrap(), ("ollama".into(), "granite4.2:3b".into(), true));
+    let f = Providers::load(&home).unwrap();
+    assert_eq!(f.active, "ollama");
+    assert_eq!(f.providers["ollama"].model, "granite4.2:3b");
+    assert_eq!(f.providers["ollama"].max_ctx, Some(8192), "the rest of the connection is kept");
+    assert_eq!(f.providers["other"].model, "x", "other connections are untouched");
+    assert!(!use_model(&home, "granite4.2:3b", &|_| None).unwrap().2, "already on it: nothing to change");
+    let (why, installed) = use_model(&home, "gemma3:1b", &|_| None).unwrap_err();
+    assert!(why.contains("no model named \"gemma3:1b\""), "{why}");
+    assert_eq!(installed, vec!["qwen3-vl:2b-instruct".to_string(), "granite4.2:3b".to_string()]);
+    assert_eq!(Providers::load(&home).unwrap().providers["ollama"].model, "granite4.2:3b", "an unknown name changes nothing");
+
+    let none = tmp();
+    assert!(use_model(&none, "granite4.2:3b", &|_| None).unwrap_err().0.contains("no saved connection"));
 }

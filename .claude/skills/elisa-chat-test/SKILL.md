@@ -5,7 +5,7 @@ description: Elisa's real-use test runner, a real conversation with the user's r
 
 # Elisa real-model chat test
 
-This is Elisa's runner for the general **real-use-test** method (`~/.claude/skills/real-use-test`). The method, report format and rules come from there; this file has only the Elisa-specific parts.
+The method in short: run the real app against a real model in a visible window, read every reply yourself (a passed pattern check is not proof), and report each step as passed, failed or could not be tested, never "partly".
 
 Unit tests passing does not mean Elisa works. "Working" means a real conversation with the user's real model behaves the way a person expects. This skill runs that conversation where the user can watch it, then reports what actually happened.
 

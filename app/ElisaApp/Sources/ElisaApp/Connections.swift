@@ -273,7 +273,7 @@ final class ConnectionStore: ObservableObject {
         }
     }
 
-    nonisolated private static func call(_ bin: URL, _ args: [String], _ data: Data?) -> [String: Any] {
+    nonisolated static func call(_ bin: URL, _ args: [String], _ data: Data?) -> [String: Any] {
         let p = Process()
         p.executableURL = bin
         p.arguments = args

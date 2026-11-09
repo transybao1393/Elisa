@@ -6,6 +6,8 @@ target-dev/
 xcuserdata/
 DerivedData/
 *.profraw
+# scripts/package.sh output (Elisa.app, the .dmg)
+dist/
 
 # live run logs (protocol logs hold chat content) and self-test output
 run-logs/
@@ -34,3 +36,6 @@ providers.toml
 
 # the paid intent router (model weights + spec): served from our server, never in the repo or the app
 decision_models/
+
+# local self-test inputs (a PDF the self-test reads; not redistributed)
+.selftest/

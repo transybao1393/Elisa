@@ -10,7 +10,7 @@
 //!   asked, no reasoning tools on simple prompts, small tasks done right, no made-up facts, speed).
 //!
 //! Elisa never picks or recommends a model: with no model chosen, model cases do not run (`api::NO_MODEL`). The JSON
-//! report (`--json`, schema `elisa-eval/1`, documented in README.md) holds facts per case and per model, for the user
+//! report (`--json`, schema `elisa-eval/1`, documented in docs/reference/eval.md) holds facts per case and per model, for the user
 //! to compare.
 //!
 //! Isolation: each case gets `<tmp>/elisa-eval-…/{project,home,outside}`; only `~/.config/elisa/providers.toml` is
@@ -1059,7 +1059,7 @@ pub fn case_json(r: &CaseResult) -> Value {
     })
 }
 
-/// The whole report (schema `elisa-eval/1`, README "elisa eval").
+/// The whole report (schema `elisa-eval/1`, docs/reference/eval.md).
 pub fn report(results: &[CaseResult], opts: &Options, started: u64, model: Option<&ModelInfo>) -> Value {
     json!({
         "schema": SCHEMA,

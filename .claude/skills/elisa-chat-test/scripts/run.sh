@@ -9,7 +9,7 @@
 # Prints the results file when done. Never touches ~/.elisa, ~/.config/elisa or the user's own Elisa window.
 set -u
 MODE=${1:-chat}
-ROOT=/Users/johnathan/Development/Elisa
+ROOT=${0:A:h:h:h:h:h}   # the repo root, from this script's own place (.claude/skills/elisa-chat-test/scripts)
 APP=$ROOT/app/ElisaApp
 OUT=${TMPDIR:-/tmp}/elisa-chat-test/$MODE-$(date +%H%M%S)
 H=$OUT/home
@@ -46,6 +46,8 @@ case $MODE in
   *)    ARGS+=(--selftest-image "$IMG/elisa-shade-thinking-512.png") ;;
 esac
 # ELISA_DEV=1: the window comes to the front like a normal launch, so the person can watch
+# a PDF for the pdf steps: ELISA_SELFTEST_PDF, else .selftest/kronos.pdf in the repo (git-ignored; the steps are skipped without it)
+export ELISA_SELFTEST_PDF=${ELISA_SELFTEST_PDF:-$ROOT/.selftest/kronos.pdf}
 HOME=$H ELISA_DEV=1 $APP/.build/debug/ElisaApp "${ARGS[@]}" > $OUT/app.log 2>&1 &
 PID=$!
 echo $PID > $PIDFILE

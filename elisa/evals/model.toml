@@ -1,5 +1,5 @@
 # elisa eval · model: the user's model and Elisa together, on small tasks with one right answer. These measure; they
-# never choose. Run with the configured connection (or --model M). Format: README "elisa eval".
+# never choose. Run with the configured connection (or --model M). Format: docs/reference/eval.md.
 suite = "model"
 kind = "model"
 

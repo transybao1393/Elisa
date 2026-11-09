@@ -1,0 +1,98 @@
+# Release: on a version tag (v1.2.3), build Elisa.app into a .dmg with scripts/package.sh and attach it to a GitHub
+# Release. Signing and notarisation run only when their secrets exist; without them the .dmg is ad-hoc signed (it
+# runs after right-click > Open / `xattr -d com.apple.quarantine`, Gatekeeper blocks a double-click). See docs/release.md.
+#
+# Secrets (all optional):
+#   MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD   a "Developer ID Application" certificate (.p12, base64) and its password
+#   MACOS_SIGN_IDENTITY                          the identity name, e.g. "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD  notarisation (an app-specific password); needs the signing secrets too
+# Actions are pinned to full commit SHAs (version in the comment), as in ci.yml.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "existing tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write # create the release and upload the .dmg
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dmg:
+    name: package (macOS)
+    runs-on: macos-14 # arm64
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      CERT_P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+      CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      SIGN_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (master, 2026-11)
+        with:
+          toolchain: stable
+
+      # the newest Xcode on the image (the app needs the macOS 15 SDK; it runs on macOS 14+)
+      - name: Xcode
+        run: |
+          X=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          echo "DEVELOPER_DIR=$X/Contents/Developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$X/Contents/Developer" xcodebuild -version
+          rustc --version
+
+      - name: Import signing certificate
+        if: env.CERT_P12 != '' && env.SIGN_ID != ''
+        run: |
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KC_PW="$(uuidgen)"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KC_PW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "SIGN_IDENTITY=$SIGN_ID" >> "$GITHUB_ENV"
+
+      - name: Notarisation credentials
+        if: env.CERT_P12 != '' && env.SIGN_ID != '' && env.APPLE_ID != '' && env.APPLE_TEAM_ID != '' && env.APPLE_APP_PASSWORD != ''
+        run: |
+          xcrun notarytool store-credentials elisa-notary --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          echo "NOTARY_PROFILE=elisa-notary" >> "$GITHUB_ENV"
+
+      - name: Package
+        run: VERSION="${TAG#v}" scripts/package.sh
+
+      - name: Checksum
+        run: cd dist && shasum -a 256 Elisa-*.dmg | tee "Elisa-${TAG#v}.dmg.sha256"
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/Elisa-*.dmg dist/Elisa-*.dmg.sha256 --clobber
+          else
+            gh release create "$TAG" dist/Elisa-*.dmg dist/Elisa-*.dmg.sha256 --title "Elisa ${TAG#v}" --generate-notes --verify-tag
+          fi
+
+      - name: Clean up the keychain
+        if: always() && env.CERT_P12 != ''
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true

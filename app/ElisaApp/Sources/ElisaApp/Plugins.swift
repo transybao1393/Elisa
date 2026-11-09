@@ -1,4 +1,4 @@
-// Plugins (elisa/README.md "Plugins", events in elisa/src/jsonl.rs): the Plugins window (Elisa › Plugins…) lists what
+// Plugins (docs/reference/mcp-and-plugins.md "Plugins", events in elisa/src/jsonl.rs): the Plugins window (Elisa › Plugins…) lists what
 // is installed and sends the session's `{"type":"plugin","op":…}` requests; the Plugin Setup window shows a
 // `plugin_preview` (what an add / update / trust would install and allow) or a `project_trust` (what a repository
 // wants to add) and answers the yes / no `approve` (question) that follows.

@@ -1,5 +1,5 @@
 // The model scorecard: facts about models measured on this Mac by `elisa eval --suite model` (elisa/src/eval.rs,
-// README "elisa eval", schema `elisa-eval/1`). Elisa never picks, defaults to or recommends a model: this shows what
+// docs/reference/eval.md, schema `elisa-eval/1`). Elisa never picks, defaults to or recommends a model: this shows what
 // was measured, sorted the way the user asks (by name until then), and the user chooses.
 //
 // Runs come from ~/.elisa/evals/history.jsonl (one line per run); a run started here also passes `--save`, so its

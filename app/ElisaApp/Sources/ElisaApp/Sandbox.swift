@@ -1,4 +1,4 @@
-// Sandbox images (elisa/README.md "Sandbox images", events in elisa/src/jsonl.rs): the Sandbox Images window
+// Sandbox images (docs/reference/mcp-and-plugins.md "Sandbox images", events in elisa/src/jsonl.rs): the Sandbox Images window
 // (Elisa › Sandbox Images…) lists Elisa's pinned images (src/images.rs) with present / missing, stable and "this
 // project", and downloads missing ones. Every download is the user's yes: with a session open the session asks its
 // yes / no question in the chat (or in the Plugin Setup window); with none, the window's own confirm row is the yes and

@@ -561,11 +561,20 @@ pub(crate) struct Shell {
 pub(crate) fn shell(cmd: &str, cwd: &Path, timeout_s: u64, buf_max: usize) -> Result<Shell, String> {
     // under the shell sandbox (src/sandbox.rs, config `shell_sandbox`) unless it is off
     let mode = crate::sandbox::mode();
-    let mut c = crate::sandbox::Policy::new(mode, cwd).command(cmd)?;
+    // ("colima": a `docker run`, whose container is stopped by name on a timeout / Ctrl-C and cleaned up after)
+    let prep = crate::sandbox::Policy::new(mode, cwd).prepare(cmd, timeout_s)?;
+    let container = prep.container;
+    let mut c = prep.cmd;
     c.current_dir(cwd)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { c.pre_exec(|| if libc::setpgid(0, 0) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }); }
-    let mut child = c.spawn().map_err(|e| format!("cannot start zsh: {e}"))?;
+    let mut child = match c.spawn() {
+        Ok(ch) => ch,
+        Err(e) => {
+            if let Some(k) = &container { k.finish(); }
+            return Err(format!("cannot start {}: {e}", if container.is_some() { "docker" } else { "zsh" }));
+        }
+    };
     let pid = child.id() as libc::pid_t;
     let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
     let (tx, rx) = mpsc::channel::<()>();
@@ -596,11 +605,13 @@ pub(crate) fn shell(cmd: &str, cwd: &Path, timeout_s: u64, buf_max: usize) -> Re
             Ok(Some(st)) => break Some(st),
             Ok(None) if crate::repl::CANCEL.load(std::sync::atomic::Ordering::SeqCst) => {
                 cancelled = true;
+                if let Some(k) = &container { k.stop(); }
                 unsafe { libc::kill(-pid, libc::SIGKILL); }
                 break child.wait().ok();
             }
             Ok(None) if Instant::now() >= deadline => {
                 timed_out = true;
+                if let Some(k) = &container { k.stop(); }
                 unsafe { libc::kill(-pid, libc::SIGKILL); }
                 break child.wait().ok();
             }
@@ -613,6 +624,7 @@ pub(crate) fn shell(cmd: &str, cwd: &Path, timeout_s: u64, buf_max: usize) -> Re
         let left = grace.saturating_duration_since(Instant::now());
         if rx.recv_timeout(left).is_err() { break; }
     }
+    if let Some(k) = &container { k.finish(); }
     let bytes = buf.lock().map(|b| b.clone()).unwrap_or_default();
     let mut out = String::from_utf8_lossy(&bytes).into_owned();
     if !out.is_empty() && !out.ends_with('\n') { out.push('\n'); }
