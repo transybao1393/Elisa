@@ -4,8 +4,22 @@ use super::startup::help_text;
 
 impl<'f> Session<'f> {
 
-    fn model_command(&mut self) {
+    /// `/model`: the connection in use and the saved ones. `/model NAME` (BUGS #85): the active connection set to that
+    /// installed model (`provider::use_model`); the app restarts its session on it, a terminal session on its next start.
+    fn model_command(&mut self, name: &str) {
         use crate::provider::{path_in, summary, Providers};
+        if !name.is_empty() {
+            let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
+            match crate::provider::use_model(&home, name, &|k| std::env::var(k).ok()) {
+                Ok((c, m, false)) => self.fe.info(&format!("connection {c} already uses {m}")),
+                Ok((c, m, true)) => self.fe.info(&format!("connection {c} now uses {m}: it takes effect when Elisa starts again (elisa --continue-open keeps this conversation)")),
+                Err((e, installed)) => {
+                    self.fe.error(&e);
+                    if !installed.is_empty() { self.fe.info(&format!("installed: {}", installed.join(", "))); }
+                }
+            }
+            return;
+        }
         self.fe.info(&format!("model {} @ {} · connection {}", self.cfg.model, self.cfg.base_url, if self.cfg.provider.is_empty() { "none (config.toml)" } else { &self.cfg.provider }));
         let mut caps = self.client.caps().clone();
         if self.client.text_tools() { caps.tools = crate::backend::Tools::Text; }
@@ -837,7 +851,7 @@ impl<'f> Session<'f> {
             }
             "/full" => self.full(),
             "/copy" => self.copy_last(),
-            "/model" => self.model_command(),
+            "/model" => self.model_command(line[cmd.len()..].trim()),
             "/chat" | "/code" | "/mode" => self.fe.info("modes were removed: each turn gets the tools its words call for (config route = \"auto\"; /context shows the last turn's groups)"),
             "/water" | "/feed" | "/food" | "/play" | "/toy" | "/poke" => self.fe.info("Elisa's character lives in the full-screen view (not in plain mode)"),
             "/stats" => {
