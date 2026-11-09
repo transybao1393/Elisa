@@ -2788,7 +2788,7 @@ fn jsonl_a_panic_in_a_turn_is_an_error_and_the_session_goes_on() {
     let evs = s.until("turn_done");
     let err = evs.iter().find(|e| e["type"] == "error").unwrap_or_else(|| panic!("no error event: {evs:?}"));
     let t = err["text"].as_str().unwrap();
-    assert!(t.starts_with("internal error: injected test panic at src/repl.rs:"), "{t}");
+    assert!(t.starts_with("internal error: injected test panic at src/repl/turn.rs:"), "{t}");
     assert!(t.contains("the session goes on"), "{t}");
     assert_eq!(evs.iter().filter(|e| e["type"] == "turn_done").count(), 1);
     s.until("ready");
