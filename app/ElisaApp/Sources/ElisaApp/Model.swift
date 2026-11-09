@@ -323,6 +323,33 @@ final class AppModel: ObservableObject {
         extraArgs = extra
     }
 
+    /// `/model NAME` (BUGS #85): the active connection set to that installed model (`--provider-use-model`, the same file
+    /// change as clicking it in Model Connections), then the picker's restart on the open conversation (`reconnect`).
+    /// Only the typed name counts; an unknown one is said plainly, with the installed models.
+    func useModel(_ name: String) {
+        guard let bin = ElisaProcess.binary() else {
+            blocks.append(Block(kind: .info("elisa binary not found: build it (cd elisa && cargo build --release) or set ELISA_BIN", .err))); return
+        }
+        blocks.append(Block(kind: .info("/model \(name)", .plain)))
+        DispatchQueue.global(qos: .userInitiated).async {
+            let j = ConnectionStore.call(bin, ["--provider-use-model", name], nil)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let model = j["model"] as? String ?? name
+                if j["ok"] as? Bool == true {
+                    let changed = j["changed"] as? Bool == true
+                    if changed && !self.welcome { self.reconnect() }
+                    else if changed { self.blocks.append(Block(kind: .info("\(model) is saved: the next folder opened uses it", .ok))) }
+                    else { self.blocks.append(Block(kind: .info("Already on \(model).", .plain))) }
+                    return
+                }
+                self.blocks.append(Block(kind: .info(j["detail"] as? String ?? "could not switch to \(name)", .err)))
+                let installed = j["installed"] as? [String] ?? []
+                if !installed.isEmpty { self.blocks.append(Block(kind: .info("Installed: " + installed.joined(separator: ", "), .plain))) }
+            }
+        }
+    }
+
     func open(folder f: String) {
         folder = f
         UserDefaults.standard.set(f, forKey: "lastFolder")
@@ -359,6 +386,7 @@ final class AppModel: ObservableObject {
         guard !t.isEmpty || !imgs.isEmpty || !docs.isEmpty || refusedImages > 0, phase != .exited else { return }
         if t == "/exit" || t == "/quit" { NSApp.terminate(nil); return }
         if t == "/model" { ConnectionsWindow.shared.show(self); return }
+        if t.hasPrefix("/model ") { useModel(String(t.dropFirst("/model ".count)).trimmingCharacters(in: .whitespaces)); return }
         var f: [String: Any] = [:]
         if !imgs.isEmpty && !t.hasPrefix("/") {
             // a picture on its own still needs a question

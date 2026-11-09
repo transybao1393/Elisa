@@ -404,6 +404,36 @@ pub fn test(name: &str, p: &Profile, getenv: &dyn Fn(&str) -> Option<String>) ->
     }
 }
 
+/// The installed model the person typed: its exact name, or `NAME:latest` for a bare name (Ollama's default tag).
+/// Nothing else counts (no closest match): Elisa never picks a model itself.
+pub fn find_model<'a>(typed: &str, installed: &'a [String]) -> Option<&'a str> {
+    let t = typed.trim();
+    if t.is_empty() { return None; }
+    installed.iter().find(|n| n.as_str() == t)
+        .or_else(|| if t.contains(':') { None } else { installed.iter().find(|n| **n == format!("{t}:latest")) })
+        .map(String::as_str)
+}
+
+/// `/model NAME` (`--provider-use-model NAME`): the active connection set to the installed model NAME and saved, the
+/// same file change the Model Connections window makes when a model is clicked. Ok((connection, model, changed));
+/// Err((why, the installed names)) when there is no active connection, the server cannot list, or it lacks NAME.
+pub fn use_model(home: &Path, typed: &str, getenv: &dyn Fn(&str) -> Option<String>) -> Result<(String, String, bool), (String, Vec<String>)> {
+    let mut f = Providers::load(home).map_err(|e| (e, vec![]))?;
+    let name = f.active.clone();
+    let Some(p) = f.providers.get(&name).cloned() else {
+        return Err(("no saved connection is in use, so there is no model list to switch in: open Model Connections".into(), vec![]));
+    };
+    let (_, ms) = list_models(&p, getenv).map_err(|e| (format!("connection {name}: {e}"), vec![]))?;
+    let installed: Vec<String> = ms.into_iter().map(|m| m.name).collect();
+    let Some(model) = find_model(typed, &installed).map(String::from) else {
+        return Err((format!("no model named {:?} on connection {name}", typed.trim()), installed));
+    };
+    if p.model == model { return Ok((name, model, false)); }
+    if let Some(e) = f.providers.get_mut(&name) { e.model = model.clone(); }
+    f.save(home).map_err(|e| (e, installed))?;
+    Ok((name, model, true))
+}
+
 /// The lines of `/model`.
 pub fn summary(active: &str, f: &Providers, path: &Path) -> Vec<String> {
     let mut out = Vec::new();
@@ -418,10 +448,11 @@ pub fn summary(active: &str, f: &Providers, path: &Path) -> Vec<String> {
     out
 }
 
-/// `--providers-json`, `--providers-save`, `--provider-test`, `--provider-models` (the draft on stdin): None = not one of these, Some(exit code) = done.
+/// `--providers-json`, `--providers-save`, `--provider-test`, `--provider-models` (the draft on stdin),
+/// `--provider-use-model NAME`: None = not one of these, Some(exit code) = done.
 pub fn cli(args: &[String]) -> Option<i32> {
     let (cmd, val) = (args.first()?.as_str(), args.get(1).map(String::as_str));
-    if !matches!(cmd, "--providers-json" | "--providers-save" | "--provider-test" | "--provider-models") { return None; }
+    if !matches!(cmd, "--providers-json" | "--providers-save" | "--provider-test" | "--provider-models" | "--provider-use-model") { return None; }
     let fail = |e: String| { println!("{}", json!({"ok": false, "detail": e})); Some(1) };
     let Some(home) = home() else { return fail("HOME is not set, so there is no ~/.config/elisa/providers.toml".into()) };
     let env = |k: &str| std::env::var(k).ok();
@@ -431,6 +462,10 @@ pub fn cli(args: &[String]) -> Option<i32> {
     };
     match cmd {
         "--providers-json" => { println!("{}", to_json(&old, &path_in(&home), &env)); Some(0) }
+        "--provider-use-model" => match use_model(&home, val.unwrap_or(""), &env) {
+            Ok((c, m, changed)) => { println!("{}", json!({"ok": true, "connection": c, "model": m, "changed": changed})); Some(0) }
+            Err((e, installed)) => { println!("{}", json!({"ok": false, "detail": e, "installed": installed})); Some(1) }
+        },
         "--providers-save" => match stdin().and_then(|v| from_json(&v, &old)).and_then(|f| f.save(&home)) {
             Ok(p) => { println!("{}", json!({"ok": true, "detail": format!("saved {}", p.display())})); Some(0) }
             Err(e) => fail(e),
