@@ -9,16 +9,25 @@ final class ElisaProcess {
     var onEvent: ([String: Any]) -> Void = { _ in }
     var onExit: (Int32) -> Void = { _ in }
 
-    /// $ELISA_BIN, else elisa/target/release/elisa, else elisa/target/debug/elisa (repo root from STREAMDENSE_ROOT or
-    /// this source file)
+    /// $ELISA_BIN, else the core inside Elisa.app (Contents/MacOS/elisa, scripts/package.sh), else
+    /// elisa/target/release/elisa, else elisa/target/debug/elisa (repo root from STREAMDENSE_ROOT or this source file)
     static func binary() -> URL? {
         let fm = FileManager.default
         if let b = ProcessInfo.processInfo.environment["ELISA_BIN"], !b.isEmpty, fm.isExecutableFile(atPath: b) { return URL(fileURLWithPath: b) }
+        if let b = bundled() { return b }
         for c in ["elisa/target/release/elisa", "elisa/target/debug/elisa"] {
             let u = Kit.repoRoot.appendingPathComponent(c)
             if fm.isExecutableFile(atPath: u.path) { return u }
         }
         return nil
+    }
+
+    /// the core next to the app's own executable when it runs from an .app bundle (nil for `swift run` / run.sh)
+    static func bundled() -> URL? {
+        guard Bundle.main.bundleURL.pathExtension == "app",
+              let dir = Bundle.main.executableURL?.resolvingSymlinksInPath().deletingLastPathComponent() else { return nil }
+        let u = dir.appendingPathComponent("elisa")
+        return FileManager.default.isExecutableFile(atPath: u.path) ? u : nil
     }
 
     func start(cwd: String?, extra: [String]) throws {

@@ -301,16 +301,16 @@ pub fn find_daemon(docker_host: Option<&str>, home: Option<&Path>) -> Result<Dae
     Err(NOT_RUNNING.into())
 }
 
-/// the docker CLI: on PATH, else where Homebrew puts it
-fn docker_bin() -> Option<PathBuf> {
+/// the docker CLI: on PATH, else where Homebrew puts it (shared with the shell sandbox's "colima" mode)
+pub fn docker_bin() -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path).map(|d| d.join("docker"))
         .chain(["/opt/homebrew/bin/docker", "/usr/local/bin/docker"].map(PathBuf::from))
         .find(|p| p.is_file())
 }
 
-/// a name no other container has: `elisa-run-PID-N-NANOS` (or `elisa-fetch-…`)
-fn unique_name(kind: &str) -> String {
+/// a name no other container has: `elisa-run-PID-N-NANOS` (or `elisa-fetch-…`, `elisa-shell-…`)
+pub fn unique_name(kind: &str) -> String {
     static N: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
     format!("elisa-{kind}-{}-{}-{nanos}", std::process::id(), N.fetch_add(1, Ordering::Relaxed))
@@ -426,7 +426,7 @@ fn head_tail(mut head: Vec<u8>, last: &[u8], n: usize, tail: bool) -> Vec<u8> {
 }
 
 /// `docker kill NAME`, given a few seconds
-fn kill(docker: &Path, host: &str, name: &str) {
+pub fn kill(docker: &Path, host: &str, name: &str) {
     let Ok(mut c) = Command::new(docker).args(["kill", name]).env("DOCKER_HOST", host).env_remove("DOCKER_CONTEXT")
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { return };
     let t0 = Instant::now();
@@ -582,6 +582,18 @@ static PRESENT: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(No
 
 fn forget_present() { if let Ok(mut p) = PRESENT.lock() { *p = None; } }
 
+/// The listed images on the daemon: the last list read in this process, read again (`docker image ls`) when there is
+/// none yet or `want` is not in it (so an image downloaded meanwhile is seen at once). Shared with the shell sandbox.
+pub fn present_images(docker: &Path, d: &Daemon, want: &str) -> Vec<String> {
+    let mut seen = PRESENT.lock().map(|p| p.clone()).unwrap_or(None);
+    if !seen.as_ref().is_some_and(|s| s.iter().any(|i| i == want)) {
+        let now = present_now(docker, d);
+        if let Ok(mut p) = PRESENT.lock() { *p = Some(now.clone()); }
+        seen = Some(now);
+    }
+    seen.unwrap_or_default()
+}
+
 /// `docker image ls`: REPO:TAG of every image (empty when it cannot be read: the run then says what is wrong)
 fn present_now(docker: &Path, d: &Daemon) -> Vec<String> {
     let mut c = std::process::Command::new(docker);
@@ -596,13 +608,7 @@ fn present_now(docker: &Path, d: &Daemon) -> Vec<String> {
 /// call would take with everything present is not in it (so an image downloaded meanwhile is seen at once).
 fn choose(lname: &str, c: &Call, docker: &Path, d: &Daemon) -> Result<crate::images::Choice, String> {
     let ideal = crate::images::resolve(lname, c.version, c.root, &|_| true)?.img.image;
-    let mut seen = PRESENT.lock().map(|p| p.clone()).unwrap_or(None);
-    if !seen.as_ref().is_some_and(|s| s.iter().any(|i| i == ideal)) {
-        let now = present_now(docker, d);
-        if let Ok(mut p) = PRESENT.lock() { *p = Some(now.clone()); }
-        seen = Some(now);
-    }
-    let have = seen.unwrap_or_default();
+    let have = present_images(docker, d, ideal);
     crate::images::resolve(lname, c.version, c.root, &|i| have.iter().any(|h| h == i.image))
 }
 

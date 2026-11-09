@@ -6,6 +6,8 @@ target-dev/
 xcuserdata/
 DerivedData/
 *.profraw
+# scripts/package.sh output (Elisa.app, the .dmg)
+dist/
 
 # live run logs (protocol logs hold chat content) and self-test output
 run-logs/
