@@ -7,6 +7,8 @@
 
 <p align="center"><b>A personal assistant that lives on your Mac and runs on your models.</b></p>
 
+<p align="center"><b>English</b> · <a href="README.vi.md">Tiếng Việt</a> · <a href="README.ja.md">日本語</a></p>
+
 <p align="center">
   <a href="https://github.com/transybao1393/Elisa/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/transybao1393/Elisa?style=flat&logo=github"></a>
   <a href="https://github.com/transybao1393/Elisa/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/transybao1393/Elisa?include_prereleases&sort=semver"></a>
