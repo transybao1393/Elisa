@@ -26,6 +26,8 @@
 Elisa is a small chat assistant for your Mac. It runs on a model you choose, in a native macOS app or the terminal,
 with Shade, a small companion who shows what Elisa is doing. With a local model nothing leaves your Mac.
 
+<p align="center"><img alt="Elisa demo: chat, memory, pictures, web, documents, saving files and switching models" src="docs/demo.gif" width="900"></p>
+
 ## Features
 
 - **Chat** in any language: questions, writing, plans, jokes. Plain questions get plain answers, with no tools.

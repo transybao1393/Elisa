@@ -27,6 +27,8 @@ Elisa là một trợ lý trò chuyện nhỏ gọn cho máy Mac. Elisa chạy b
 terminal, cùng với Shade, người bạn nhỏ cho bạn thấy Elisa đang làm gì. Với model chạy trên máy, không có gì rời khỏi
 máy Mac của bạn.
 
+<p align="center"><img alt="Demo Elisa: trò chuyện, ghi nhớ, hình ảnh, web, tài liệu, lưu tệp và đổi model" src="docs/demo.gif" width="900"></p>
+
 ## Tính năng
 
 - **Trò chuyện** bằng mọi ngôn ngữ: hỏi đáp, viết lách, lập kế hoạch, kể chuyện cười. Câu hỏi đơn giản được trả lời
