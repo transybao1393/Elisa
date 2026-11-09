@@ -1,7 +1,7 @@
 # cargo-deny: the licence guard CI runs (.github/workflows/ci.yml, job "licenses") for both workspaces:
 #   cargo deny --manifest-path elisa/Cargo.toml --locked check --config elisa/deny.toml licenses
 #   cargo deny --manifest-path elisa/mem/Cargo.toml --locked check --config elisa/deny.toml licenses
-# Elisa is proprietary (../LICENSE), so every dependency must be under a permissive licence. Anything not listed
+# Elisa is MIT (../LICENSE), so every dependency must be under a permissive licence (a copyleft one would force its terms on Elisa). Anything not listed
 # below fails the check, which includes GPL, LGPL and AGPL (evalexpr is pinned to 11.3.1, its last MIT release, because
 # 12.x and later are AGPL-3.0). A dual licence like "MIT OR Apache-2.0" passes when one side is allowed.
 # Before adding a licence here, check that it is permissive and record the crate in ../THIRD_PARTY_NOTICES.md.
@@ -29,6 +29,6 @@ allow = [
 ]
 confidence-threshold = 0.8
 
-# elisa and elisa-mem themselves (publish = false, no licence field)
+# elisa and elisa-mem themselves (publish = false, MIT)
 [licenses.private]
 ignore = true

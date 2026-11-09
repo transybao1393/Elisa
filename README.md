@@ -19,7 +19,7 @@
   <img alt="SwiftUI" src="https://img.shields.io/badge/SwiftUI-app-F05138?logo=swift&logoColor=white">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-plugins-6E56CF">
   <img alt="Local first" src="https://img.shields.io/badge/local--first-private-2EA44F">
-  <a href="LICENSE"><img alt="License: proprietary" src="https://img.shields.io/badge/license-proprietary-lightgrey"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
 
@@ -88,5 +88,5 @@ elisa/target/release/elisa               # chat in the terminal
 
 ## License
 
-Proprietary. Copyright (c) 2026 Johnny. All rights reserved. See [LICENSE](LICENSE) and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT. Copyright (c) 2026 Johnny. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Model weights, including the hosted intent router, are not part of this repository and keep their own licenses.

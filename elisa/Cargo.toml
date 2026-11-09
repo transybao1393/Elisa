@@ -3,7 +3,8 @@ name = "elisa"
 version = "0.1.0"
 edition = "2021"
 description = "Elisa: a small terminal coding agent for local models (Anthropic Messages API)"
-# proprietary (../LICENSE): never published; cargo-deny (deny.toml) treats unpublished crates as private
+license = "MIT"
+# MIT (../LICENSE); not published to crates.io
 publish = false
 
 [dependencies]

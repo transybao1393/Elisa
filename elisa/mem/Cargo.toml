@@ -3,7 +3,8 @@ name = "elisa-mem"
 version = "0.1.0"
 edition = "2021"
 description = "Disk-only graph memory store for Elisa (prototype)"
-# proprietary (../../LICENSE): never published; cargo-deny (../deny.toml) treats unpublished crates as private
+license = "MIT"
+# MIT (../../LICENSE); not published to crates.io
 publish = false
 
 # standalone: not part of Elisa's package

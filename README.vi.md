@@ -19,7 +19,7 @@
   <img alt="SwiftUI" src="https://img.shields.io/badge/SwiftUI-app-F05138?logo=swift&logoColor=white">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-plugins-6E56CF">
   <img alt="Local first" src="https://img.shields.io/badge/local--first-private-2EA44F">
-  <a href="LICENSE"><img alt="License: proprietary" src="https://img.shields.io/badge/license-proprietary-lightgrey"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
 
@@ -89,5 +89,5 @@ elisa/target/release/elisa               # trò chuyện trên terminal
 
 ## Giấy phép
 
-Độc quyền. Copyright (c) 2026 Johnny. Bảo lưu mọi quyền. Xem [LICENSE](LICENSE) và
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT. Copyright (c) 2026 Johnny. Xem [LICENSE](LICENSE) và [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Trọng số model, kể cả bộ định tuyến ý định trên máy chủ, không nằm trong kho mã này và theo giấy phép riêng của chúng.
