@@ -89,6 +89,6 @@ elisa/target/release/elisa               # trò chuyện trên terminal
 
 ## Giấy phép
 
-Apache License 2.0. Copyright 2026 Johnny. Xem [LICENSE](LICENSE), [NOTICE](NOTICE) và
+Apache License 2.0. Copyright 2026 TRAN SY BAO. Xem [LICENSE](LICENSE), [NOTICE](NOTICE) và
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Giấy phép không cho phép dùng tên, logo Elisa hay nhân vật Shade.
 Trọng số model, kể cả bộ định tuyến ý định trên máy chủ, không nằm trong kho mã này và theo giấy phép riêng của chúng.

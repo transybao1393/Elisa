@@ -88,6 +88,6 @@ elisa/target/release/elisa               # ターミナルでチャット
 
 ## ライセンス
 
-Apache License 2.0。Copyright 2026 Johnny. [LICENSE](LICENSE)、[NOTICE](NOTICE)、
+Apache License 2.0。Copyright 2026 TRAN SY BAO. [LICENSE](LICENSE)、[NOTICE](NOTICE)、
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。このライセンスは Elisa の名称、ロゴ、Shade の使用を許可しません。
 モデルの重み（サーバー上のインテントルーターを含む）はこのリポジトリに含まれず、それぞれのライセンスに従います。
