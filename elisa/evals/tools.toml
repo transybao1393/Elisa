@@ -1,4 +1,4 @@
-# elisa eval · tools: Elisa's own tools, approvals and prechecks with a scripted model. Format: README "elisa eval".
+# elisa eval · tools: Elisa's own tools, approvals and prechecks with a scripted model. Format: docs/reference/eval.md.
 suite = "tools"
 kind = "fake"
 

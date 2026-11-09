@@ -1,4 +1,4 @@
-# elisa eval · core: the turn loop with a scripted model (no real model). Format: README "elisa eval".
+# elisa eval · core: the turn loop with a scripted model (no real model). Format: docs/reference/eval.md.
 suite = "core"
 kind = "fake"
 
