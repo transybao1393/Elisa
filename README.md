@@ -8,22 +8,27 @@
 <p align="center"><b>A personal assistant that lives on your Mac and runs on your models.</b></p>
 
 
-Elisa is a chat assistant for your Mac. Talk to it like you would to any assistant: ask questions, think things through,
-look something up on the web, read a PDF or a spreadsheet, describe an image. When you need it, Elisa can also work on
-code with you. It runs on a model you choose, and with a local model nothing leaves your Mac.
+Elisa is a small chat assistant for your Mac. It runs on a model you choose, in a native macOS app or the terminal,
+with Shade, a small companion who shows what Elisa is doing. With a local model nothing leaves your Mac.
 
-It comes as a native macOS app and a terminal app, with Shade, a small companion who shows what Elisa is doing.
+## Features
 
-## What you can do with Elisa
-
-- **Chat.** Everyday conversation, questions, explanations, writing help, brainstorming. Plain questions get plain
-  answers, quickly.
-- **Look things up.** Elisa searches the web and reads pages when a question needs fresh information.
-- **Read documents and images.** PDFs, spreadsheets and pictures (pictures need a vision-capable model).
-- **Work out problems step by step.** Built-in reasoning tools (think, steps, calc) help small models with harder
-  questions, used only when a question needs them.
-- **Get coding help.** One feature among the rest: Elisa can read a project, explain code, make changes with your
-  approval, run its tests, and try snippets in an offline sandbox (Python, JavaScript, Rust, Go, Bash).
+- **Chat** in any language: questions, writing, plans, jokes. Plain questions get plain answers, with no tools.
+- **Fits the model you pick.** At start Elisa detects what the model can do (vision, tools, thinking, context window)
+  and adapts. Models without native tool calling get tools through the prompt. Small windows are handled for you.
+- **Switch models mid-chat.** The conversation carries over, and the new model answers as itself.
+- **Web.** Searches and reads pages when a question needs fresh facts. Results are cached for an hour.
+- **Files and documents.** Reads and saves files in the project folder. Understands attached PDFs, spreadsheets and
+  Word files.
+- **Pictures** on vision models, with follow-up questions. Models without vision say so plainly instead of guessing.
+- **Memory.** Remembers what you tell it. `/pin` keeps a fact, `/notes` shows what's kept, `/forget` clears it. Long
+  chats are compacted automatically (or with `/compact`). Continue your last conversation when you choose to.
+- **Time and dates** answered from your clock.
+- **Step-by-step reasoning** tools (think, steps, calc), used only when a question needs them.
+- **Coding help**, as one feature among the rest: read and edit a project with your approval, run commands, and try
+  snippets in an offline sandbox (Python, JavaScript, Rust, Go, Bash).
+- **Optional intent router.** A hosted model (paid) that decides which tools each message needs. Without it, Elisa
+  routes on her own.
 
 ## Private and in your control
 
@@ -51,17 +56,11 @@ plugins.
 ```sh
 # macOS app (builds everything it needs)
 app/ElisaApp/run.sh                      # choose a model, then start chatting
-app/ElisaApp/run.sh --demo               # try the app without a model
 
 # terminal app
 cd elisa && cargo build --release        # binary: elisa/target/release/elisa
 elisa/target/release/elisa               # chat in the terminal
 ```
-
-<p align="center">
-  <img src="docs/demo.gif" alt="Elisa's coding feature: reading a file, fixing a failing test after asking permission, and running the tests" width="960">
-</p>
-<p align="center"><sub>Elisa's coding feature, in the app's built-in demo session (scripted, no model needed).</sub></p>
 
 ## Repository
 
