@@ -2068,6 +2068,21 @@ impl Ledger {
         Some(s.trim_end().to_string())
     }
 
+    /// Whether a sentence saying a file was saved is about a file Elisa's tools really wrote this session: the file it
+    /// names (`named`, as `route::file_name` found it) changed, or, naming none, it says a changed file's name or
+    /// stem ("I saved the poem to the file" after `write poem.md`). A recall turn's true "I saved the poem to
+    /// poem.md" is then no false claim (BUGS #87).
+    pub fn backs(&self, sentence: &str, named: Option<&str>) -> bool {
+        if let Some(n) = named { return !self.matching(n).is_empty(); }
+        let s = sentence.to_lowercase();
+        let words = claim_words(&s);
+        self.files.iter().filter(|f| f.writes + f.edits > 0).any(|f| {
+            let name = f.path.rsplit(['/', '\\']).next().unwrap_or(&f.path).to_lowercase();
+            let stem = name.rsplit_once('.').map_or(name.as_str(), |(st, _)| st);
+            s.contains(&name) || (stem.chars().count() >= 3 && words.iter().any(|w| w == stem))
+        })
+    }
+
     /// The changed files `path` (as a summary wrote it) may mean: the same path, or one ends with the other.
     fn matching(&self, path: &str) -> Vec<&LedgerFile> {
         let p = path.trim_start_matches("./").to_lowercase();

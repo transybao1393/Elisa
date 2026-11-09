@@ -146,7 +146,10 @@ or a listing can differ a little every time):
   not run; the model gets `[elisa: not run: this exact call already ran 2 times …]`. A real change resets it: an edit
   or write to a file resets the count of that file's reads and of `bash` / `grep` / `glob`, and a new shell command
   resets the reads, so read → edit → read and edit → test → fix → test never trip it (an edit whose old and new text
-  are the same is no change). A second step with such a call stops the turn.
+  are the same is no change). An MCP server's tool (`web_search`, `web_fetch`: nothing Elisa edits changes what it
+  returns) does not run a second time with the same input: `[elisa: not run: this exact call already ran in this
+  turn; its result is above …]`. A second step with such a call stops the turn. The guard is one per user turn, shared
+  by that turn's retries (a reply asked again in words), so a retry never runs the same calls afresh.
 - a window of 2–4 calls repeated back to back (outline → glob → read → read, grep → read → think) gets one note to use
   what it has; if the cycle comes round again the turn stops.
 - after 10 tool steps without a change, one soft note: answer with what you have, or say what blocks you.

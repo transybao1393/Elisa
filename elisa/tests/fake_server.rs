@@ -600,8 +600,12 @@ fn a_saved_claim_after_a_denied_write_is_not_shown() {
     let reqs = f.messages();
     assert_eq!(reqs.len(), 3, "{}", o.stderr);
     assert!(!has_tools(&reqs[2]), "the retry offers no tools");
-    let last = reqs[2]["messages"].as_array().unwrap().last().unwrap().to_string();
-    assert!(last.contains("Nothing was saved: the user said no"), "{last}");
+    // the note is Elisa's line inside the last tool result, never a user text of its own after it (BUGS #86: there it
+    // read as the user speaking and was answered "You're right, …")
+    let (c, _) = last_tool_result(&reqs[2]);
+    assert!(c.contains("[elisa: For this reply: nothing was saved in this message (the user said no)"), "{c}");
+    let last = reqs[2]["messages"].as_array().unwrap().last().unwrap();
+    assert!(last["content"].as_array().unwrap().iter().all(|b| b["type"] == "tool_result"), "{last}");
     assert!(o.stdout.contains("Okay, I did not save it: you said no, so nothing was written."), "{}", o.stdout);
     // the retry says it was not saved: that reply stands
     let d = tmpdir("deny-claim2");
@@ -3733,6 +3737,36 @@ fn a_saved_claim_with_no_write_is_corrected() {
     let reqs = f.messages();
     assert_eq!(reqs.len(), 3);
     assert!(reqs[1].get("tools").is_none_or(|t| t.as_array().is_some_and(|a| a.is_empty())), "the retry has no tools");
-    assert!(reqs[1]["messages"].to_string().contains("Nothing was saved: no write was made"), "{}", reqs[1]["messages"]);
+    assert!(reqs[1]["messages"].to_string().contains("nothing was saved in this message (no write was made)"), "{}", reqs[1]["messages"]);
     assert!(!dir.join("marketing-plan.md").exists());
+}
+
+/// BUGS #87: a later turn's reply that recalls a save Elisa's tools really made this session ("I also saved the poem
+/// to poem.md") is no false claim: it stays, with no retry and no "nothing was saved" note.
+#[test]
+fn a_recalled_save_from_an_earlier_turn_stands() {
+    let dir = tmpdir("jsonl-recall-save");
+    let f = Fake::start(vec![
+        Sse::new(10, 0).tool_input("w1", "write", json!({"path": "poem.md", "content": "rain on the lake\n"})).end("tool_use", 5),
+        text_reply("The poem is saved to poem.md."),
+        text_reply("You're Linh. I also saved the poem to `poem.md` for you."),
+        text_reply("I saved the poem to the file."),
+        text_reply("Okay, the plan is saved to `plan.md`."),
+        text_reply("Still saved to plan.md."),
+    ]);
+    let mut s = Serve::start(&f.url(), &dir);
+    s.until("ready");
+    for (msg, retracted) in [("write a poem to poem.md", false), ("what do you remember about me?", false),
+        ("and the poem?", false), ("and the plan?", true)] {
+        s.cmd(json!({"type": "send", "text": msg}));
+        if msg.starts_with("write") { s.until("approve"); s.cmd(json!({"type": "approve", "answer": "yes"})); }
+        let evs = s.until("turn_done");
+        assert_eq!(evs.iter().any(|e| e["type"] == "reply_retracted"), retracted, "{msg}: {evs:?}");
+    }
+    s.quit();
+    assert!(dir.join("poem.md").exists());
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 6, "a retry only for the file never written");
+    assert!(!reqs[..5].iter().any(|r| r["messages"].to_string().contains("nothing was saved")));
+    assert!(reqs[5]["messages"].to_string().contains("nothing was saved"));
 }

@@ -1,8 +1,8 @@
 //! The tool-loop guard of one user turn: cheap, deterministic checks on the CALLS a model makes (not their results,
 //! which can differ slightly every time: a web search, a directory listing with a timestamp).
 //!
-//! - **Repeated call.** The same tool with the same normalized input a third time in a turn does not run; the model
-//!   gets "you already ran this" instead. A successful edit / write to a file resets the count of that file's reads and
+//! - **Repeated call.** The same tool with the same normalized input a third time in a turn does not run (an MCP
+//!   tool's, such as `web_search`: a second time); the model gets "you already ran this" instead. A successful edit / write to a file resets the count of that file's reads and
 //!   of the commands that can see any file (bash, grep, glob), so read → edit → read and edit → test → fix → test are
 //!   never blocked.
 //! - **Short cycle.** A window of 2–4 calls repeated back to back (A B A B, A B C A B C, …) with no successful change in
@@ -22,6 +22,9 @@ use std::collections::HashMap;
 
 /// the call that would be the Nth identical one in a turn does not run
 pub const SAME_CALL_MAX: usize = 3;
+/// the same for a tool that is not Elisa's own (an MCP server's: `web_search`, `web_fetch`): its second identical call
+/// in a turn does not run, the first result is already in the context (BUGS #86: web_search ×4 with one query)
+pub const SAME_REMOTE_CALL_MAX: usize = 2;
 /// steps in a turn whose calls were blocked as repeats, before the turn stops
 pub const BLOCKED_STEPS_MAX: usize = 2;
 /// tool steps without a successful change before the soft "answer now" note
@@ -116,8 +119,13 @@ impl Guard {
         let e = self.counts.entry(k.clone()).or_insert((0, path_of(input), local));
         e.0 += 1;
         self.seq.push(k);
-        if e.0 < SAME_CALL_MAX { return Verdict::Run; }
+        // an MCP tool (a web search, a page fetch) reads nothing Elisa's edits change: its earlier result stands
+        if e.0 < if local { SAME_CALL_MAX } else { SAME_REMOTE_CALL_MAX } { return Verdict::Run; }
         self.blocked_now = true;
+        if !local {
+            return Verdict::Block("[elisa: not run: this exact call already ran in this turn; its result is above and would be \
+                the same. Answer from that result, or try a different call.]".into());
+        }
         Verdict::Block(format!("[elisa: not run: this exact call already ran {} times in this turn and nothing it reads has changed since. \
             Use the earlier result, change the approach, or answer with what you have.]", e.0 - 1))
     }
@@ -240,6 +248,20 @@ mod tests {
         assert_eq!(a, After::Fine);
         // still at it: the turn stops
         assert!(matches!(step(&mut g, "web_search", q, false).1, After::Stop(_)));
+    }
+
+    #[test]
+    fn an_mcp_call_repeated_does_not_run_the_second_time() {
+        // BUGS #86: qwen3-vl:2b-instruct ran web_search 4 times with one query
+        let mut g = Guard::default();
+        let q = json!({"query": "what's the weather in Hanoi today"});
+        assert_eq!(g.check("web_search", &q, false), Verdict::Run);
+        g.step_done();
+        let v = g.check("web_search", &json!({"query": "What's the weather in  Hanoi today"}), false);
+        assert!(matches!(v, Verdict::Block(ref m) if m.contains("result is above")), "{v:?}");
+        assert_eq!(g.step_done(), After::Fine);
+        // another query still runs
+        assert_eq!(g.check("web_search", &json!({"query": "Hanoi forecast"}), false), Verdict::Run);
     }
 
     #[test]

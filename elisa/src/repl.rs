@@ -525,6 +525,9 @@ struct Session<'f> {
     /// what Elisa's own tools changed this session (`context::Ledger`): the notes' file list and the check of a
     /// summary's "done" claims
     ledger: context::Ledger,
+    /// the loop guard of the user turn in progress (`loop_guard.rs`): one per turn, shared by the turn's retries
+    /// (`denied_claim_retry`, `claimed_facts_retry`), so a retry never runs the same calls afresh (BUGS #86)
+    turn_guard: crate::loop_guard::Guard,
     /// the audit log (`audit.rs`; config `audit`): off = records nothing
     audit: crate::audit::Log,
     /// how the user answered the approval of the call in progress (None: no one was asked), for the audit log
@@ -682,7 +685,7 @@ impl<'f> Session<'f> {
             card: None, card_id: None, card_ex: None, exchanges: 0, new_card: None, card_broken: false, pic_refused: false, checks_off: false, outside_mode: outside::Mode::Ask, outside_ok: Vec::new(), ast_stats: AstStats::default(), cards: 0,
             req: None, stats: metrics::Stats::default(),
             card_log: Vec::new(), goal: None, goal_misses: 0, goal_stated: false, facts_ok: Default::default(), user_req: String::new(), warm: Arc::new(AtomicU8::new(WARM_UNKNOWN)),
-            reason_on: false, route: crate::route::Route::default(), router, routed: None, pic_refused_seen: false, gate: (false, false), ledger: context::Ledger::default(), audit, answer: None,
+            reason_on: false, route: crate::route::Route::default(), router, routed: None, pic_refused_seen: false, gate: (false, false), ledger: context::Ledger::default(), turn_guard: Default::default(), audit, answer: None,
             home, file_cmds: Vec::new(), cmd_user: Vec::new(), cmd_plugins: pl.commands, cmd_project: Vec::new(),
             plugin_stamp, plugin_gone_tools: Vec::new(), plugin_infos: pl.infos, plugin_servers, proj_pending: None, proj_infos: Vec::new(), proj_declined: false,
         };
@@ -1277,13 +1280,22 @@ impl<'f> Session<'f> {
         let claim = move |t: &str| if none { crate::route::claims_file_saved(t) } else { crate::route::claims_saved(t) };
         let claims = |h: &[Message]| h.last().is_some_and(|m| m.role == Role::Assistant && claim(&texts(m)));
         if !claims(&self.history) { return None; }
+        // no write this turn, but every file the reply says is saved was written earlier in this session (the
+        // ledger): a true recall, not a claim to correct (BUGS #87: "what do you remember about me?" after `write
+        // poem.md` got "…I saved the poem to poem.md", was retried with "nothing was saved", and answered "we
+        // couldn't write to it")
+        if none {
+            let said = self.history.last().map(texts).unwrap_or_default();
+            let backed = crate::route::file_claims(&said).iter().all(|s| self.ledger.backs(s, crate::route::file_name(s).as_deref()));
+            if backed { return None; }
+        }
         let said_no = failed.iter().any(|l| l.contains("→ denied by user"));
         let why = if none { "no write was made" } else if said_no { "the user said no" } else { "the write did not go through" };
         self.history.pop();
         self.fe.reply_retracted();
         self.debug(&format!("[retry: the reply said the file was saved, but {why}; asked again in words]"));
-        self.retry_note = Some(format!("(Nothing was saved: {why}, so no file was written or changed. Tell the user plainly, \
-            in one or two sentences, that it was not saved and why ({why}), giving no other reason; never say it was saved.)"));
+        self.retry_note = Some(format!("(For this reply: nothing was saved in this message ({why}), so no file was written or \
+            changed. Say so plainly in one or two sentences, giving no other reason; never say it was saved.)"));
         let end = self.agent_loop(CheckRun::default(), false);
         self.retry_note = None;
         if !matches!(end, TurnEnd::Done) || !claims(&self.history) { return Some(end); }
@@ -1322,13 +1334,26 @@ impl<'f> Session<'f> {
         }
         if values.is_empty() { return None; }
         let last = self.history.last().filter(|m| m.role == Role::Assistant && m.content.iter().all(|b| matches!(b, Block::Text { .. })))?;
-        let claimed = context::claimed_user_facts(&texts(last), &values);
+        let mut claimed = context::claimed_user_facts(&texts(last), &values);
+        // a value this turn's tool calls or results carry is what the tools searched, wrote or found, not the user's
+        // fact taken as Elisa's own ("I found some weather information for Hanoi" after a web search for Hanoi,
+        // "I wrote a poem about Hanoi" after that write; BUGS #86)
+        let from = self.history.iter().rposition(is_request).unwrap_or(0);
+        let found: String = self.history[from..].iter().flat_map(|m| &m.content).filter_map(|b| match b {
+            Block::ToolResult { content, is_error: false, .. } => Some(content.to_lowercase()),
+            Block::ToolUse { input, .. } => Some(input.to_string().to_lowercase()),
+            _ => None,
+        }).collect();
+        claimed.retain(|v| !found.contains(&v.to_lowercase()));
         if claimed.is_empty() { return None; }
         self.history.pop();
         self.fe.reply_retracted();
         self.debug(&format!("[retry: the reply said the user's facts as Elisa's own ({}); asked again in words]", claimed.join(", ")));
-        self.retry_note = Some(format!("(Your reply was not sent: it spoke of the user's facts ({}) as if they were yours. They are \
-            the user's, not yours: write the reply again, saying them as \"you\" and \"your\", never \"I\" or \"my\".)", claimed.join(", ")));
+        // worded as how to write this reply, never as a verdict on one the model cannot see (it was taken back):
+        // "Your reply was not sent…" got "You're right, I should…" as the answer (BUGS #86)
+        let (are, them) = if claimed.len() == 1 { ("is", "it") } else { ("are", "them") };
+        self.retry_note = Some(format!("(For this reply: {} {are} the user's own, not yours. Say {them} with \"you\" and \"your\", \
+            never \"I\" or \"my\".)", claimed.join(", ")));
         let end = self.agent_loop(CheckRun::default(), false);
         self.retry_note = None;
         Some(end)
@@ -2737,6 +2762,7 @@ impl<'f> Session<'f> {
         }
         self.reason_turn(&input);
         self.tool_lines.clear();
+        self.turn_guard = Default::default();
         self.unsent = false;
         (self.new_card, self.card_broken) = (None, false);
         self.in_turn = true;
@@ -3086,12 +3112,19 @@ impl<'f> Session<'f> {
 
     /// The agent loop of a turn: the history ends with a user message. `first` = that message is the turn's first
     /// (a failed send drops it again).
-    fn agent_loop(&mut self, mut checks: CheckRun, mut first: bool) -> TurnEnd {
+    fn agent_loop(&mut self, checks: CheckRun, first: bool) -> TurnEnd {
+        // repeated identical calls, short cycles, steps without progress (`loop_guard.rs`): the turn's one guard, so
+        // a retry of this turn counts the calls its first try made
+        let mut guard = std::mem::take(&mut self.turn_guard);
+        let end = self.agent_loop_with(checks, first, &mut guard);
+        self.turn_guard = guard;
+        end
+    }
+
+    fn agent_loop_with(&mut self, mut checks: CheckRun, mut first: bool, guard: &mut crate::loop_guard::Guard) -> TurnEnd {
         // one correction per turn when a reply writes a tool call as text
         let mut nudged = false;
         let mut repeat = Repeat::default();
-        // repeated identical calls, short cycles, steps without progress (`loop_guard.rs`)
-        let mut guard = crate::loop_guard::Guard::default();
         // a document whose text is in this turn's message is not opened with a file tool (BUGS #54)
         if self.doc_req.is_some() { guard.attached(self.kept_docs.iter().map(|k| k.doc.name.clone()).collect()); }
         // a loop stop asks the model once for an answer with no tools before the turn stops (BUGS #54): its reason
@@ -3141,6 +3174,10 @@ impl<'f> Session<'f> {
             // turns another model answered (a model switch): out of the assistant role (`context::other_model_view`)
             let switched = context::other_model_view(&self.history, &self.cfg.model, &now_line, context::tiny_window(self.max_ctx));
             let base: &[Message] = switched.as_deref().unwrap_or(&self.history);
+            // earlier turns' corrections ("nothing ran", "nothing was saved") and the attempts they corrected: left
+            // out, so a later turn never takes a fixed failure for the outcome (`drop_old_nudges`, BUGS #87)
+            let fresh = drop_old_nudges(base);
+            let base: &[Message] = fresh.as_deref().unwrap_or(base);
             let dedup = context::drop_repeated_replies(base);
             let base: &[Message] = dedup.as_deref().unwrap_or(base);
             // a long history: old answers shortened, for this request only (`context::shorten_old_replies`); the
@@ -4583,8 +4620,9 @@ const EMPTY_REPLY_NUDGE: &str = "[elisa] Your last reply had no text for the use
 /// The note of the one-time words-only retry of a small-talk turn whose reply called a tool (`agent_loop`): after
 /// the user's words, in that request only (it never enters the history).
 const SMALL_TALK_NOTE: &str = "(Reply in words; no tools for this message.)";
-/// the request-only note of the no-tools request after a loop stop (`agent_loop`)
-const FINAL_ANSWER_NOTE: &str = "(No more tool calls. Answer the user now, in words, from what you already have: the tool results above and any document text in the user's message. If something is still missing, say what.)";
+/// the request-only note of the no-tools request after a loop stop (`agent_loop`), in the last tool result
+/// (`with_note`); worded as how to answer, never as a reaction to what the model did
+const FINAL_ANSWER_NOTE: &str = "(No more tool calls for this reply: answer the user's message in words from the tool results and any document text in the conversation; if something is still missing, say what.)";
 /// The note of a turn whose user explicitly asked to search the web (`route::web_ask`; `agent_loop`): after the user's
 /// words, in the requests before a tool runs only. Measured on qwen3-vl:2b with the web tools offered: "search the web:
 /// what is the capital of Australia?" was answered from memory 3/3 without it (a system-prompt rule alone: 0/3), a
@@ -4595,9 +4633,20 @@ const CONTINUE_NOTE: &str = "Continue exactly where you stopped.";
 /// continuations of one cut reply at most
 const CONTINUE_MAX: usize = 2;
 
-/// The history with `note` after the last user message's words (a copy for one request; the history is unchanged).
+/// The history with `note` added for one request (a copy; the history is unchanged), always to the last message so
+/// the prefix stays the same: after a tool step, inside the last tool result, as Elisa's `[elisa: …]` line like the
+/// loop guard's; otherwise after the user's words. Never a user message of its own after the tool results: there it
+/// read as the user speaking, and the model answered it ("You're right, I should reframe my response…", BUGS #86).
 fn with_note(history: &[Message], note: &str) -> Vec<Message> {
     let mut h = history.to_vec();
+    let last_result = h.last_mut().filter(|m| m.role == Role::User).and_then(|m| m.content.iter_mut().rev().find_map(|b| match b {
+        Block::ToolResult { content, .. } => Some(content),
+        _ => None,
+    }));
+    if let Some(c) = last_result {
+        c.push_str(&format!("\n[elisa: {}]", note.trim_start_matches('(').trim_end_matches(')')));
+        return h;
+    }
     if let Some(m) = h.iter_mut().rev().find(|m| m.role == Role::User) {
         match m.content.iter_mut().find_map(|b| match b { Block::Text { text } => Some(text), _ => None }) {
             Some(t) => { t.push_str("\n\n"); t.push_str(note); }
@@ -4643,6 +4692,20 @@ fn tool_line(summary: &str, output: &str, is_error: bool) -> String {
     if is_error { format!("[{s} → {}]", context::one_line(output, 60)) } else { format!("[{s}]") }
 }
 
+/// The history for one request without the corrections of earlier turns: each `[elisa] …` note before the current
+/// request (a tool call cut by the output limit, one written as text, a failed check) together with the reply it
+/// corrected. The turn that followed holds the real outcome (the write that then succeeded); left in, the old "so no
+/// tool in it ran and nothing was saved" read as the outcome in later turns. None when there is none.
+fn drop_old_nudges(msgs: &[Message]) -> Option<Vec<Message>> {
+    let cur = msgs.iter().rposition(is_request)?;
+    let nudge = |m: &Message| m.role == Role::User && !m.content.is_empty()
+        && m.content.iter().all(|b| matches!(b, Block::Text { text } if text.starts_with(context::NUDGE_PREFIX)));
+    let attempt = |m: &Message| m.role == Role::Assistant && !m.content.iter().any(|b| matches!(b, Block::ToolUse { .. }));
+    let drop: Vec<usize> = (1..cur).filter(|&i| nudge(&msgs[i]) && attempt(&msgs[i - 1])).flat_map(|i| [i - 1, i]).collect();
+    if drop.is_empty() { return None; }
+    Some(msgs.iter().enumerate().filter(|(i, _)| !drop.contains(i)).map(|(_, m)| m.clone()).collect())
+}
+
 /// A user message with the user's own text (not one of Elisa's `[elisa] …` notes).
 fn is_request(m: &Message) -> bool {
     m.role == Role::User && m.content.iter().any(|b| matches!(b, Block::Text { text } if !text.starts_with(context::NUDGE_PREFIX)))
@@ -4663,6 +4726,48 @@ fn summary_text(content: Vec<Block>) -> String {
 mod tests {
     use super::*;
     use crate::frontend::{SessionInfo, Status};
+
+    fn tool_turn() -> Vec<Message> {
+        vec![
+            Message::user_text("search the web: weather in Hanoi?"),
+            Message::new(Role::Assistant, vec![Block::ToolUse { id: "1".into(), name: "web_search".into(), input: json!({"query": "weather in Hanoi"}) }]),
+            Message::new(Role::User, vec![Block::ToolResult { tool_use_id: "1".into(), content: "sunny".into(), is_error: false }]),
+        ]
+    }
+
+    #[test]
+    fn a_request_note_goes_in_the_last_tool_result_never_a_user_message_after_it() {
+        // BUGS #86: a note as its own user message after the results was answered "You're right, I should…"
+        let h = tool_turn();
+        let n = with_note(&h, FINAL_ANSWER_NOTE);
+        assert_eq!(n.len(), h.len());
+        assert_eq!(n[..2], h[..2], "the prefix is unchanged");
+        assert!(matches!(&n[2].content[..], [Block::ToolResult { content, .. }] if content.starts_with("sunny\n[elisa: No more tool calls") && content.ends_with("say what.]")), "{:?}", n[2]);
+        // no tool turn: after the user's words, as before
+        let n = with_note(&[Message::user_text("hey")], SMALL_TALK_NOTE);
+        assert!(matches!(&n[0].content[0], Block::Text { text } if text == &format!("hey\n\n{SMALL_TALK_NOTE}")));
+    }
+
+    #[test]
+    fn earlier_turns_corrections_are_left_out_of_later_requests() {
+        // BUGS #87: a cut write, its "[elisa] … nothing was saved" note, then the write that worked
+        let mut h = vec![
+            Message::user_text("write a poem to poem.md"),
+            Message::assistant_text("[cut off at the 2048-token output limit: `write poem.md` did not run]"),
+            Message::user_text(context::cut_call_nudge("write poem.md", 2048)),
+            Message::new(Role::Assistant, vec![Block::ToolUse { id: "w".into(), name: "write".into(), input: json!({"path": "poem.md", "content": "x"}) }]),
+            Message::new(Role::User, vec![Block::ToolResult { tool_use_id: "w".into(), content: "wrote 1 lines to poem.md".into(), is_error: false }]),
+            Message::assistant_text("Saved."),
+        ];
+        // still in the turn: the correction stays
+        assert!(drop_old_nudges(&h).is_none());
+        h.push(Message::user_text("what do you remember?"));
+        let v = drop_old_nudges(&h).expect("dropped");
+        assert_eq!(v.len(), h.len() - 2);
+        assert!(!v.iter().flat_map(|m| &m.content).any(|b| matches!(b, Block::Text { text } if text.contains("nothing was saved") || text.contains("did not run"))));
+        assert!(v.windows(2).all(|w| w[0].role != w[1].role), "roles still alternate");
+        assert!(drop_old_nudges(&tool_turn()).is_none());
+    }
 
     /// records progress calls: Some(label) / None (cleared)
     #[derive(Default)]

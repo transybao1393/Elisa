@@ -258,7 +258,7 @@ pub fn save_ask(msg: &str) -> Option<String> {
 }
 
 /// the first file name in the message ("notes.txt", "src/main.rs"; not "3.14")
-fn file_name(msg: &str) -> Option<String> {
+pub fn file_name(msg: &str) -> Option<String> {
     msg.split(|c: char| c.is_whitespace() || matches!(c, ',' | '?' | '!' | '"' | '\'' | '`' | '(' | ')'))
         .map(|t| t.trim_end_matches(['.', ':', ';']))
         .find(|t| {
@@ -283,15 +283,18 @@ pub fn claims_saved(reply: &str) -> bool {
 /// "I've written it to notes.txt", "the file has been saved"), in a sentence that does not say it was not: the check
 /// on a turn where no write / edit was made at all (`repl.rs` `denied_claim_retry`, BUGS #60). Narrower than
 /// `claims_saved` (a saving word next to a file name or "file"), so a plan that says "keep your menu updated" is no claim.
-pub fn claims_file_saved(reply: &str) -> bool {
+pub fn claims_file_saved(reply: &str) -> bool { !file_claims(reply).is_empty() }
+
+/// The sentences of `reply` (lowercased) that `claims_file_saved` takes as saying a file was saved.
+pub fn file_claims(reply: &str) -> Vec<String> {
     const DONE: &[&str] = &["saved", "i've written", "i have written", "has been written", "was written", "i wrote", "written to", "đã lưu", "đã ghi"];
     const NOT: &[&str] = &["not ", "n't", "nothing", "no file", "unable", "cannot", "said no", "declined", "denied", "skipped",
         "cancel", "không", "chưa", "can save", "could save", "will save", "to save", "want to save", "if you"];
     let lower = reply.to_lowercase();
-    lower.split(['!', '?', '\n', ';']).flat_map(|s| s.split(". ")).any(|s| {
+    lower.split(['!', '?', '\n', ';']).flat_map(|s| s.split(". ")).filter(|s| {
         DONE.iter().any(|p| s.contains(p)) && !NOT.iter().any(|p| s.contains(p))
             && (file_name(s).is_some() || s.contains("file") || s.contains("tệp"))
-    })
+    }).map(String::from).collect()
 }
 
 /// The user explicitly asks to read a named file ("read notes.txt","open report.md and …", "what's in config.toml?"):
@@ -308,9 +311,10 @@ pub fn file_ask(msg: &str) -> Option<String> {
 /// user asked to save the marketing plan to marketing-plan.md: call write now…"): those sentences removed. A reply that
 /// is only that comes back empty (the empty-reply retry then asks again).
 pub fn strip_echoed_notes(reply: &str) -> String {
-    // the fixed wording of `repl.rs`'s own notes (`ask_note`, WEB_ASK_NOTE, EMPTY_REPLY_NUDGE, SMALL_TALK_NOTE), not the user's words
+    // the fixed wording of `repl.rs`'s own notes (`ask_note`, WEB_ASK_NOTE, EMPTY_REPLY_NUDGE, SMALL_TALK_NOTE,
+    // and the "… for this reply: …" ones: FINAL_ANSWER_NOTE, `retry_note`), not the user's words
     const MARKS: &[&str] = &["(the user asked ", "the user asked to save", "the user asked to read", "the user asked for a web search", "call write now",
-        "call read on it now", "call web_search now", "had no text for the user", "reply in words; no tools"];
+        "call read on it now", "call web_search now", "had no text for the user", "reply in words; no tools", "for this reply:"];
     let hit = |t: &str| { let t = t.to_lowercase(); MARKS.iter().any(|m| t.contains(m)) };
     if !hit(reply) { return reply.to_string(); }
     // sentence by sentence: "The user asked to read a.txt: call read on it now. It says hi." keeps the last one
