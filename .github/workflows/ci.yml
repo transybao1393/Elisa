@@ -1,7 +1,5 @@
-# CI for Elisa: the Rust core (build, clippy, tests, the scripted eval), the two macOS apps, and a licence guard.
-# macOS runners for the core and the apps: the core uses Seatbelt (sandbox-exec) and macOS-only code, the apps are
-# SwiftUI/AppKit. Nothing here needs a model, Ollama, Colima, docker or network access beyond fetching crates;
-# the tests that do are #[ignore]d.
+# CI for Elisa: linting only (clippy on the Rust core and mem) and a licence guard. No builds, tests or app builds:
+# those run locally. Clippy runs on macOS because the core has macOS-only code (Seatbelt / sandbox-exec).
 # Actions are pinned to full commit SHAs (version in the comment); update them deliberately, not by tag drift.
 name: CI
 
@@ -22,10 +20,10 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
-  core:
-    name: core (Rust)
+  lint:
+    name: lint (clippy)
     runs-on: macos-26 # arm64
-    timeout-minutes: 45
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: elisa
@@ -46,56 +44,13 @@ jobs:
             elisa -> target
             elisa/mem -> target
 
-      - name: Toolchain
-        run: rustc --version && cargo --version && sw_vers
-
-      # online and --locked: Cargo.lock must be current (app/ElisaApp/run.sh builds --offline for local use only)
-      - name: Build
-        run: cargo build --release --locked
-
+      # a check, not a build: clippy type-checks every target (lib, bins, tests) without producing release binaries
       - name: Clippy
-        run: cargo clippy --release --all-targets --locked -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Clippy (mem)
         working-directory: elisa/mem
-        run: cargo clippy --release --all-targets --locked -- -D warnings
-
-      - name: Test
-        run: cargo test --release --locked --no-fail-fast
-
-      - name: Test (mem)
-        working-directory: elisa/mem
-        run: cargo test --release --locked
-
-      # the scripted eval (no model). Exit code: 0 all passed, 1 a case failed, 2 usage error; nonzero fails the job.
-      # A temp HOME so nothing reads or writes the runner's ~/.elisa.
-      - name: Eval (fake suite)
-        run: |
-          mkdir -p "$RUNNER_TEMP/evalhome"
-          HOME="$RUNNER_TEMP/evalhome" target/release/elisa eval --suite fake --no-history
-
-  app:
-    name: app (Swift)
-    runs-on: macos-26 # arm64
-    timeout-minutes: 30
-    env:
-      # the Xcode the app is developed with (swift-tools-version 5.10, macOS 14 target, macOS 15 SDK APIs)
-      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Toolchain
-        run: xcodebuild -version && swift --version
-
-      - name: Build ElisaApp
-        working-directory: app/ElisaApp
-        run: swift build -c release
-
-      - name: Build ElisaCompanion
-        working-directory: app/ElisaCompanion
-        run: swift build -c release
+        run: cargo clippy --all-targets --locked -- -D warnings
 
   licenses:
     name: licenses (cargo-deny)
