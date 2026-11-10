@@ -33,8 +33,7 @@ __pycache__/
 # patch leftovers and local agent tooling (personal settings, temporary worktrees)
 *.orig
 *.rej
-.claude/settings.local.json
-.claude/worktrees/
+.claude/
 
 # the paid intent router (model weights + spec): served from our server, never in the repo or the app
 decision_models/
