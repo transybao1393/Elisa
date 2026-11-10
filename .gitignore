@@ -27,6 +27,8 @@ providers.toml
 *.swp
 .idea/
 .vscode/
+__pycache__/
+*.pyc
 
 # patch leftovers and local agent tooling (personal settings, temporary worktrees)
 *.orig
@@ -36,6 +38,9 @@ providers.toml
 
 # the paid intent router (model weights + spec): served from our server, never in the repo or the app
 decision_models/
+# model weights anywhere else (router tests, local models)
+*.gguf
+*.safetensors
 
 # local self-test inputs (a PDF the self-test reads; not redistributed)
 .selftest/
