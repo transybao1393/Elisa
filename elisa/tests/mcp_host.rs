@@ -103,7 +103,10 @@ fn mcp_tools_never_take_elisas_names_or_each_others() {
 fn servers_start_in_parallel_and_one_that_never_answers_is_left_out() {
     let d = dir("parallel");
     let cfgs = [server(&d.0, "slow", "x", "hang"), server(&d.0, "slow2", "y", "hang"), server(&d.0, "good", "good_tool", "ok")];
-    let limit = Duration::from_millis(1500);
+    // python3's first start on a fresh machine (the macOS shim setting itself up) can take longer than the limit:
+    // start it once before timing, so only the servers' own start is measured
+    let _ = std::process::Command::new("python3").args(["-c", "pass"]).status();
+    let limit = Duration::from_millis(3000);
     let t0 = Instant::now();
     let (mut h, notes) = Host::start_with_timeout(&cfgs, &taken, limit);
     let took = t0.elapsed();
