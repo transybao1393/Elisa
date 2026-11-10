@@ -490,8 +490,10 @@ impl<'f> Session<'f> {
                 Err(e) => { self.debug(&format!("[continuing the reply failed: {e}]")); break; }
             };
             let (pc, estimated) = crate::backend::ctx_from(r.usage.input_tokens + r.usage.cache_read_input_tokens, self.fixed() + estimate_messages(&msgs));
-            st = ui::status(&r, pc + r.usage.output_tokens, self.max_ctx);
-            st.estimated = estimated;
+            // the reply's status counts all of its parts' output, not the last part's alone
+            let mut part = ui::status(&r, pc + r.usage.output_tokens, self.max_ctx);
+            part.estimated = estimated;
+            st = ui::joined(&st, &part);
             let more = texts(&Message::new(Role::Assistant, r.content.into_iter().filter(|b| matches!(b, Block::Text { .. })).collect()));
             stop = r.stop_reason;
             text.push_str(&more);

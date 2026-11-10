@@ -70,6 +70,8 @@ pub mod loop_guard;
 pub mod route;
 /// reply in the user's language: a hint on an English / Vietnamese switch
 pub mod reply_lang;
+/// reply checks for any model: garbled scripts, a copied prompt, another language, an unfinished last sentence
+pub mod reply_check;
 /// the situation line of a small-talk turn: what context there is, so "hey" is answered from it
 pub mod situation;
 pub mod topics;

@@ -59,6 +59,15 @@ pub fn system_prompt(cwd: &Path, override_file: Option<&Path>, project: Option<&
     s
 }
 
+/// Elisa's own part of a system prompt: `system` less the user's project instructions (ELISA.md), which a reply may
+/// quote (`reply_check::Echo`).
+pub fn own_prompt(system: &str, project: Option<&str>) -> String {
+    match project.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => system.replacen(&capped(p, PROJECT_CAP), "", 1),
+        None => system.to_string(),
+    }
+}
+
 /// First user message of a history: cwd, OS, date and notes go here, not in the system prompt, so the system turn
 /// (system + tools) is byte-identical across projects, days and sessions and the gateway restores one stable snapshot.
 pub fn first_message(cwd: &Path, notes: Option<&str>, input: &str) -> String { first_message_with(cwd, notes, None, input) }

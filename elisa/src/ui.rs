@@ -38,6 +38,16 @@ pub fn status(r: &Reply, ctx_used: usize, max_ctx: usize) -> Status {
     Status { tok_s, ttft_s, ctx_used, max_ctx, reused: r.usage.cache_read_input_tokens, output_tokens: r.usage.output_tokens, estimated: false }
 }
 
+/// The status of one reply made of two parts (a reply continued after the output limit): the later part's context,
+/// both parts' output tokens, and the rate over the parts that had a decode window (with the first part's time to
+/// first token); none had one: no rate, and both parts' request time.
+pub fn joined(first: &Status, next: &Status) -> Status {
+    let timed = |s: &Status| s.tok_s.filter(|t| *t > 0.0).map(|t| (s.output_tokens as f64, s.output_tokens as f64 / t));
+    let (n, secs) = [timed(first), timed(next)].into_iter().flatten().fold((0.0, 0.0), |(n, t), (a, b)| (n + a, t + b));
+    let tok_s = (secs > 0.0).then(|| n / secs);
+    Status { tok_s, ttft_s: if tok_s.is_some() { first.ttft_s } else { first.ttft_s + next.ttft_s }, output_tokens: first.output_tokens + next.output_tokens, ..*next }
+}
+
 /// `23.4 tok/s · ttft 0.6s`; with no decode window (a tool-call-only reply, or under 0.2 s of decode) there is no honest
 /// rate: `— tok/s · 2.0s total` (the request time).
 pub fn speed(st: &Status) -> String {
@@ -284,5 +294,26 @@ mod dur_tests {
         assert_eq!(dur(59.97, 1), "1m 0s");
         assert_eq!(dur(59.0, 0), "59s");
         assert_eq!(dur(4.7, 1), "4.7s");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_continued_reply_counts_all_of_its_output() {
+        let first = Status { tok_s: Some(100.0), ttft_s: 0.5, ctx_used: 1500, max_ctx: 2048, output_tokens: 1000, ..Default::default() };
+        // the part after the limit got one token, with no decode window of its own
+        let next = Status { tok_s: None, ttft_s: 0.6, ctx_used: 2040, max_ctx: 2048, output_tokens: 1, ..Default::default() };
+        let j = joined(&first, &next);
+        assert_eq!((j.output_tokens, j.ctx_used, j.tok_s), (1001, 2040, Some(100.0)));
+        let none = joined(&Status { tok_s: None, ..first }, &next);
+        assert_eq!((none.output_tokens, none.tok_s), (1001, None));
+        assert!((none.ttft_s - 1.1).abs() < 1e-9);
+        let next = Status { tok_s: Some(50.0), ttft_s: 0.2, output_tokens: 500, ..next };
+        let j = joined(&first, &next);
+        assert_eq!(j.output_tokens, 1500);
+        assert!((j.tok_s.unwrap() - 75.0).abs() < 1e-9 && (j.ttft_s - 0.5).abs() < 1e-9);
     }
 }

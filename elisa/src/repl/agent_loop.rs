@@ -11,15 +11,17 @@ impl<'f> Session<'f> {
         let mut text = context::request_body(&self.input).trim().to_string();
         if text.is_empty() { return None; }
         if let Some(p) = &self.turn_pic { text = format!("{text}\n{}", context::picture_block(p)); }
-        let msgs = [Message::user_text(text)];
+        let msgs = [Message::user_text(text.clone())];
         let no_tools: [crate::types::ToolDef; 0] = [];
         let req = Request { system: &self.system, tools: &no_tools, messages: &msgs, max_tokens };
         self.client.set_kind("agent");
         let r = self.client.send(&req, &CANCEL, &mut |_| {}).ok().filter(|r| r.stop_reason != "cancelled")?;
         let raw = texts(&Message::new(Role::Assistant, r.content));
-        let t = crate::route::strip_echoed_notes(&context::strip_picture_echo(context::split_state(&raw).0.trim()));
+        let echo = crate::reply_check::Echo::new(&context::own_prompt(&self.system, self.project.as_deref()), &text);
+        let t = echo.strip(&crate::route::strip_echoed_notes(&context::strip_picture_echo(context::split_state(&raw).0.trim())));
         let off = self.turn_pic.as_deref().is_some_and(|p| context::off_picture(&t, p));
-        (!t.trim().is_empty() && guard.broken(&t).is_none() && !off).then(|| t.trim().to_string())
+        let garbled = crate::reply_check::garbled(&t, &text);
+        (!t.trim().is_empty() && guard.broken(&t).is_none() && !off && !garbled).then(|| t.trim().to_string())
     }
 
     /// One step's tool results against what the window has left (the limit minus the request so far): over it, the
@@ -106,7 +108,7 @@ impl<'f> Session<'f> {
         let mut final_ask: Option<String> = None;
         // a reply with no visible text (only its state card): asked once more, with this nudge after the history for
         // that one request (it never enters the history, so the next requests' prefix is unchanged)
-        let mut empty_retry: Option<&'static str> = None;
+        let mut empty_retry: Option<std::borrow::Cow<'static, str>> = None;
         let mut retried = false;
         let mut stashed_card: Option<String> = None;
         // a simple turn's reply that used its whole small budget with no text for the user: sent once more without
@@ -116,6 +118,9 @@ impl<'f> Session<'f> {
         // (or a turn asked again in words with its own note: `retry_note`)
         let mut words_retry = self.retry_note.is_some();
         let mut words_retried = words_retry;
+        // a reply in another language than the user's message: asked once more with a note naming it
+        let mut lang_retried = false;
+        let ask = context::request_body(&self.input).trim().to_string();
         // one step past the limit: only for the no-tools final answer after the last tool step
         let max_steps = self.cfg.max_steps.max(1);
         for step in 0..=max_steps {
@@ -167,7 +172,7 @@ impl<'f> Session<'f> {
                 (doc, card) => { with_doc = with_turn_extras(base, doc.as_deref(), card.as_deref()); &with_doc }
             };
             let messages: &[Message] = match empty_retry.take() {
-                Some(n) => { retry_msgs = with_note(base, n); &retry_msgs }
+                Some(n) => { retry_msgs = with_note(base, &n); &retry_msgs }
                 None if in_words => { retry_msgs = with_note(base, if final_ask.is_some() { FINAL_ANSWER_NOTE } else { self.retry_note.as_deref().unwrap_or(SMALL_TALK_NOTE) }); &retry_msgs }
                 None => base,
             };
@@ -183,10 +188,17 @@ impl<'f> Session<'f> {
                 }
             };
             first = false;
-            // a reply cut by the output limit is continued from this same request (`continue_reply`)
-            let sent: Option<Vec<Message>> = (reply.stop_reason == "max_tokens").then(|| messages.to_vec());
+            // a reply cut by the output limit is continued from this same request (`continue_reply`), and so is a
+            // finished one whose last sentence stopped after its first words (`reply_check::ends_mid_sentence`), on a turn
+            // that ran no tools (a task's report may end on a name or a label)
+            let mid = reply.stop_reason == "end_turn" && self.tool_lines.is_empty() && !reply.content.iter().any(|b| matches!(b, Block::ToolUse { .. }))
+                && crate::reply_check::ends_mid_sentence(context::split_state(&texts(&Message::new(Role::Assistant, reply.content.clone()))).0.trim());
+            let sent: Option<Vec<Message>> = (reply.stop_reason == "max_tokens" || mid).then(|| messages.to_vec());
             // what a reply to this request must not be (`context::ReplyGuard`)
             let reply_guard = context::ReplyGuard::new(&self.input, messages);
+            // sentences copied from Elisa's own system prompt (`reply_check::Echo`)
+            let echo = crate::reply_check::Echo::new(&context::own_prompt(&self.system, self.project.as_deref()),
+                &messages.iter().rev().find(|m| m.role == Role::User).map(texts).unwrap_or_default());
             let prompt_real = reply.usage.input_tokens + reply.usage.cache_read_input_tokens;
             // a cancelled (Esc) or unreported reply has no usage: the partial output's estimate stands in for it
             if prompt_real == 0 && reply.usage.output_tokens == 0 {
@@ -250,8 +262,13 @@ impl<'f> Session<'f> {
                 let mut stop_reason = stop_reason;
                 let mut continued = false;
                 if let (Some(sent), Some(st), None) = (sent, pending_done.take(), &cut) {
-                    if !context::split_state(&raw).0.trim().is_empty() {
+                    // (garbled text is not continued: more of it would only take longer, `reply_check::garbled`)
+                    let so_far = context::split_state(&raw).0;
+                    if !so_far.trim().is_empty() && !crate::reply_check::garbled(&so_far, &ask) {
+                        let before = (raw.len(), stop_reason.clone());
                         (raw, stop_reason) = self.continue_reply(sent, raw, max_tokens, in_words, st);
+                        // an unfinished sentence that got nothing more keeps its own end
+                        if mid && raw.len() == before.0 { stop_reason = before.1; }
                         continued = true;
                     } else { self.fe.reply_done(&st); }
                 }
@@ -259,7 +276,8 @@ impl<'f> Session<'f> {
                 // one of Elisa's request-only notes repeated as the reply: never shown (`route::strip_echoed_notes`)
                 // picture text copied into the reply too (`context::strip_picture_echo`)
                 // and a line that only restates the user's message (`route::strip_echoed_ask`)
-                let clean = crate::route::strip_echoed_ask(&crate::route::strip_echoed_notes(&context::strip_picture_echo(&vis)), &self.input);
+                // and sentences copied from Elisa's system prompt (`reply_check::Echo`)
+                let clean = echo.strip(&crate::route::strip_echoed_ask(&crate::route::strip_echoed_notes(&context::strip_picture_echo(&vis)), &self.input));
                 let vis = if clean != vis.trim() && clean != vis {
                     self.fe.reply_retracted();
                     if self.interactive && !clean.is_empty() { self.fe.text_delta(&clean); }
@@ -276,7 +294,7 @@ impl<'f> Session<'f> {
                 if !wrote && normal_end && !retried {
                     retried = true;
                     stashed_card = self.new_card.take();
-                    empty_retry = Some(EMPTY_REPLY_NUDGE);
+                    empty_retry = Some(EMPTY_REPLY_NUDGE.into());
                     self.fe.info(EMPTY_REPLY_LINE);
                     continue;
                 }
@@ -290,8 +308,18 @@ impl<'f> Session<'f> {
                 // reasoned through its whole budget, no answer: once more without reasoning, full budget
                 if !wrote && cut.is_none() && stop_reason == "max_tokens" && reasoning > 0 && self.client.stop_reasoning() {
                     stashed_card = self.new_card.take().or(stashed_card);
-                    empty_retry = Some(REASONED_OUT_NUDGE);
+                    empty_retry = Some(REASONED_OUT_NUDGE.into());
                     self.fe.info("[the model spent its whole budget reasoning and wrote no answer; asking once more without reasoning]");
+                    continue;
+                }
+                // a reply in another language than the user's message (`reply_check::lang_mismatch`): asked once
+                // more with a note saying which, in that request only
+                if wrote && normal_end && !lang_retried && self.tool_lines.is_empty() && crate::reply_check::lang_mismatch(&ask, &vis) {
+                    lang_retried = true;
+                    stashed_card = self.new_card.take().or(stashed_card);
+                    self.fe.reply_retracted();
+                    empty_retry = Some(crate::reply_check::lang_note(&ask));
+                    self.debug("[the reply was not in the language of the user's message; asking once more with a note]");
                     continue;
                 }
                 // a reply that copies an earlier one, has no words or repeats Elisa's headings (`context::ReplyGuard`),
@@ -300,7 +328,7 @@ impl<'f> Session<'f> {
                 let off_pic = |t: &str| self.turn_pic.as_deref().is_some_and(|p| context::off_picture(t, p));
                 let why = if !wrote { Some("empty") }
                     else if context::looks_like_text_tool_call(&vis) { None }
-                    else { reply_guard.broken(&vis).or_else(|| off_pic(&vis).then_some("off the picture")) };
+                    else { reply_guard.broken(&vis).or_else(|| crate::reply_check::garbled(&vis, &ask).then_some("garbled")).or_else(|| off_pic(&vis).then_some("off the picture")) };
                 // (a copy may run to the output limit: moondream:1.8b's 1,024-token "I hope this email finds you well…")
                 let vis = match why.filter(|_| self.tool_lines.is_empty()).filter(|_| if wrote { cut.is_none() && stop_reason != "cancelled" } else { normal_end }) {
                     Some(why) => match self.isolated_reply(max_tokens, &reply_guard) {
@@ -321,6 +349,17 @@ impl<'f> Session<'f> {
                                 if self.interactive { self.fe.text_delta(&p); }
                                 stop_reason = "end_turn".into();
                                 p
+                            }
+                            // garbled twice: its garbled words and runs taken out (`reply_check::repair`)
+                            None if why == "garbled" => {
+                                let fixed = crate::reply_check::repair(&vis, &ask);
+                                self.fe.reply_retracted();
+                                if fixed.is_empty() { self.fe.info("[the model's reply was garbled text twice (mixed writing systems or one piece repeated); ask again or rephrase]"); }
+                                else if self.interactive { self.fe.text_delta(&fixed); }
+                                self.debug("[the reply was garbled twice; its garbled parts were taken out]");
+                                // (not "continue" after a cut: more would be garbled too)
+                                stop_reason = "end_turn".into();
+                                fixed
                             }
                             None => {
                                 if !wrote { self.fe.info("[no answer: the model wrote no text for you twice; ask again or rephrase]"); }
