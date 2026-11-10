@@ -36,8 +36,8 @@ impl Store {
     pub fn new(cwd: &Path) -> Store { Store { dir: cwd.join(".elisa") } }
 
     /// This session's notes: `.elisa/notes/<session id>.md`, one file per session, so a new session never overwrites
-    /// or loses an earlier one's (2026-11-09: one shared `notes.md` was carried into every new session and a 2B model
-    /// answered "hey" with the earlier session's task).
+    /// or loses an earlier one's (one shared `notes.md` was carried into every new session, and a small model could
+    /// answer "hey" with the earlier session's task).
     fn notes_path(&self) -> PathBuf { self.notes_path_of(run_id()) }
     fn notes_path_of(&self, id: u64) -> PathBuf { self.dir.join("notes").join(format!("{id}.md")) }
     fn allow_path(&self) -> PathBuf { self.dir.join("allow") }
@@ -66,8 +66,8 @@ impl Store {
 
     /// The notes of saved session `id` (for `--continue` / `/resume`): only that session's own
     /// `.elisa/notes/<id>.md`. The shared `.elisa/notes.md` of Elisa before per-session notes is never read
-    /// (2026-11-09: it came back with `--continue`, and an old Python-async task's facts and a "hey" session goal were
-    /// merged forward into a PDF conversation's notes by every fold).
+    /// (otherwise it comes back with `--continue`, and an unrelated old task's facts get
+    /// merged forward into the conversation's notes by every fold).
     pub fn session_notes(&self, id: u64) -> Option<String> {
         fs::read_to_string(self.notes_path_of(id)).ok().and_then(non_empty)
     }

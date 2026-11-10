@@ -61,9 +61,9 @@ pub fn system_prompt(cwd: &Path, override_file: Option<&Path>, project: Option<&
 /// (system + tools) is byte-identical across projects, days and sessions and the gateway restores one stable snapshot.
 pub fn first_message(cwd: &Path, notes: Option<&str>, input: &str) -> String { first_message_with(cwd, notes, None, input) }
 
-/// Heading of the notes block in a first message: says who wrote them (Test 2026-11-01: after a reset the model
-/// treated invented note lines as things the user had said). They are this conversation's own notes (a continued
-/// session's notes are its own: 2026-11-09 the old "from earlier sessions" heading went with notes of another task).
+/// Heading of the notes block in a first message: says who wrote them (otherwise, after a reset, the model can
+/// treat invented note lines as things the user had said). They are this conversation's own notes (a continued
+/// session's notes are its own: the old "from earlier sessions" heading went with notes of another task).
 pub const NOTES_HEADING: &str = "## Notes from this conversation (written by Elisa, not the user; may be wrong: check files before relying on them)";
 /// The heading when the notes are background from before /clear or /reset (`background_notes`)
 pub const NOTES_BG_HEADING: &str = "## Notes from an earlier conversation (written by Elisa, not the user; may be wrong: check files before relying on them)";
@@ -97,7 +97,7 @@ pub fn first_message_bare(notes: Option<&str>, state: Option<&str>, memory: &[St
     s + input
 }
 
-/// A reply that writes a tool call as plain text instead of calling the tool (Test 2026-11-01 after a reset:
+/// A reply that writes a tool call as plain text instead of calling the tool (e.g. after a reset:
 /// `<tool><tool_name>read_file</tool_name><path>…</path></tool>`, so nothing ran). Markup only, any language:
 /// tool-call-like XML tags (`<tool>`, `<tool_call>`, `<tool_name>`, `<function=…>`, `<invoke …>`, `<parameter=…>`)
 /// or a JSON `{"name": …, "arguments"|"input"|"parameters": …}` object, outside fenced code blocks.
@@ -138,10 +138,10 @@ pub fn cut_call_nudge(calls: &str, limit: usize) -> String {
 }
 
 /// Whether a recalled hit goes into the request. `lex`: elisa-mem's keyword/graph score without the vector part (a hit
-/// only an embedding found never qualifies: Test 2026-11-01 attached a sea-water answer to "how's it going?");
+/// only an embedding found never qualifies: it can attach an unrelated answer to small talk);
 /// `support`: the idf-weighted share of the query's terms the hit has (common words weigh little, so a query made of
 /// them alone finds nothing that covers it). Mid-session (the window already holds the conversation) the keyword bar
-/// doubles: lex >= 2x min_score. Calibrated 2026-11-01 on a copy of the user's store (no vectors): relevant hits had
+/// doubles: lex >= 2x min_score. Calibrated on a copy of the user's store (no vectors): relevant hits had
 /// support 0.45..1.0, the off-topic ones 0.09..0.42.
 pub fn recall_passes(lex: f32, support: f32, mid_session: bool, min_score: f32, min_support: f32) -> bool {
     let l = if mid_session { 2.0 * min_score } else { min_score };
@@ -151,8 +151,8 @@ pub fn recall_passes(lex: f32, support: f32, mid_session: bool, min_score: f32, 
 /// A remembered exchange that recorded a lookup (the `[read notes.txt]` / `[web_search “…”]` tool line memory keeps
 /// after a reply) is an old copy of what a lookup turn should fetch now: on a turn that carries the file tools
 /// (`code`) a hit with a file lookup is skipped, on one that carries the web tools (`web`) a hit with a web lookup.
-/// App test 2026-11-09: "read notes.txt and tell me the meeting code" recalled an earlier run's "I found the meeting
-/// code in the file: ORCHID-42 … [read notes.txt]" and the model answered from it with no read (the file could have
+/// Otherwise "read notes.txt and tell me the meeting code" can recall an earlier answer that read the file, and
+/// the model answers from it with no read (the file could have
 /// changed; the user asked for a read and saw none); "search the web: …" the same with an old search answer.
 pub fn stale_lookup(text: &str, code: bool, web: bool) -> bool {
     static RE: OnceLock<regex::Regex> = OnceLock::new();

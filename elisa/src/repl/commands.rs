@@ -795,7 +795,7 @@ impl<'f> Session<'f> {
                 self.drop_card();
                 let n = self.mem.as_mut().map(|m| m.db.unpin_all(m.session, &m.project));
                 // what earlier chats in this project left in memory (their turns, notes, cards) is not recalled again:
-                // a new chat asked "what's my favourite colour?" and memory still said green (2026-11-09)
+                // otherwise a new chat asked "what's my favourite colour?" still gets the old answer from memory
                 let next = self.mem.as_mut().map(|m| { let _ = m.db.refresh(); m.db.next_id() });
                 let recalled = match next.map(|id| self.store.save_forgot(id)) {
                     Some(Ok(())) => " · memories of earlier chats in this project forgotten (saved conversations kept)",

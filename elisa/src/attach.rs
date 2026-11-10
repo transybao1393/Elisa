@@ -6,8 +6,8 @@
 //!    only project files) and `read` reach it, and nothing outside the project is opened again later.
 //! 2. Its text is extracted here: PDF and spreadsheets with the documents server's own parsers (`mcp_docs::pdf_pages`,
 //!    `mcp_docs::sheet_rows`), Word .docx from its `word/document.xml`, anything else that is text as it is.
-//! 3. Elisa does the document work itself, never relying on a small model choosing to call a tool (2026-11-09: a 2B
-//!    model given a header and "use docs_pdf" answered "I can't process the PDF"). The budget comes from the context
+//! 3. Elisa does the document work itself, never relying on a small model choosing to call a tool (a small model
+//!    given a header and "use docs_pdf" can still say it cannot process the PDF). The budget comes from the context
 //!    window (`budget`: ~45% of it less the conversation so far). A document that fits goes into the turn whole, as
 //!    `[Attached: name.pdf, 2 pages]` + its text. A larger one: for a vague request ("read this", "summarise", no
 //!    text) an `overview` (title, abstract, every section heading with its first sentences, the conclusion;

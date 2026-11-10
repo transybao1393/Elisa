@@ -375,7 +375,7 @@ fn an_edit_that_defines_a_route_twice_gets_a_warning() {
     assert!(!later.content.contains("warning"), "{}", later.content);
 }
 
-/// The shape of a cut-off write (2026-11-05 mario.html): code, then a table of rows that are quoted strings of
+/// The shape of a cut-off write (a long HTML page): code, then a table of rows that are quoted strings of
 /// spaces, a stray quote as the last line, no final newline.
 fn padded_html() -> String {
     let mut s: String = (1..=98).map(|i| if i % 30 == 0 { "\n".to_string() } else { format!("const code{i} = {i};\n") }).collect();

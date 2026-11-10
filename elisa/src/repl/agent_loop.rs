@@ -40,7 +40,7 @@ impl<'f> Session<'f> {
         };
         if need <= allowed(self) { return; }
         // every result keeps a useful slice (head + tail, RESULT_MIN_CHARS): older history makes room first, never
-        // a result cut to nothing (soak 2026-11-08: 47 results "trimmed to fit (0 tokens left)" were re-requested or
+        // a result cut to nothing (results "trimmed to fit (0 tokens left)" get re-requested or
         // answered with invented numbers)
         let min = context::min_step_tokens(results);
         if allowed(self) < min && self.history.len() >= 2 && !self.folded_this_turn {
@@ -246,7 +246,7 @@ impl<'f> Session<'f> {
                 // the state card never enters history (append-only, prefix stays valid): only the visible text is kept
                 let mut raw = texts(&Message { role: Role::Assistant, content, ..Default::default() });
                 // a text reply cut by the output limit mid-answer is continued, into the same reply, up to
-                // CONTINUE_MAX times (2026-11-09: three "continue" turns in a row stopped mid-sentence at 1024 tokens)
+                // CONTINUE_MAX times (so the user need not type "continue" turn after turn)
                 let mut stop_reason = stop_reason;
                 let mut continued = false;
                 if let (Some(sent), Some(st), None) = (sent, pending_done.take(), &cut) {
@@ -747,8 +747,8 @@ impl Repeat {
         self.n
     }
 
-    /// Records one call's result as fitted to the context (run 2026-11-05: 2-4 lines per read, new offset each time,
-    /// so `see` never fired until the context was full).
+    /// Records one call's result as fitted to the context (reads cut to a few lines, a new offset each time, would
+    /// otherwise never fire `see` before the context is full).
     fn page(&mut self, name: &str, input: &serde_json::Value, content: &str, is_error: bool) {
         let path = small_page(name, input, content, is_error);
         self.pages = if path.is_some() && path == self.page { self.pages + 1 } else { usize::from(path.is_some()) };

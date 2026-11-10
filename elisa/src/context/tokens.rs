@@ -73,7 +73,7 @@ pub fn min_step_tokens(results: &[Block]) -> usize {
     overhead + tokens_for_chars(chars) * 10 / 9 + 1
 }
 
-// ----- the context budget at small windows (soak 2026-11-08: 8K, 40 folds in 40 turns) -----
+// ----- the context budget at small windows (at 8K the old rule folded before nearly every turn) -----
 
 /// Prompt tokens where a between-turns fold starts: the fixed cost (system + tools) plus `fold_at` of the room left
 /// after it. A share of the whole limit (the old rule) sat barely above the fixed cost at 8K (fold at 3.8K with 2.8K

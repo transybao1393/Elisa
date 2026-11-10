@@ -18,8 +18,8 @@ pub fn has_tool_line(text: &str) -> bool {
     re.is_match(text)
 }
 
-/// Summary notes as they are stored: the summarizer's instructions and template text never are (uitest 2026-11-08:
-/// a 2B model quoted "The conversation above will be erased. Write notes…" as the user's goal and kept
+/// Summary notes as they are stored: the summarizer's instructions and template text never are (a small model can
+/// copy the summary instructions in as the user's goal and keep the template's own lines, such as
 /// "Finished steps and decisions, with their reasons." and "Also known as: name = other words; …"). Drops lines that
 /// repeat (part of) prompts/compact.md, placeholder values, template items of the `Also known as:` line, and
 /// headings left with nothing under them.
@@ -53,8 +53,8 @@ pub fn clean_notes(notes: &str) -> String {
             continue;
         }
         if is_placeholder(body) || is_placeholder(body.trim_matches(['[', ']', '(', ')'])) || body.trim_matches(['[', ']', '(', ')']).eq_ignore_ascii_case("none") || echo(t) { continue; }
-        // a raw tool call or result copied from a transcript is no note (2026-11-09: "[tool glob …]" and "[result: no
-        // files found]" sat under "## Files touched" and were carried forward)
+        // a raw tool call or result copied from a transcript is no note (lines like "[tool glob …]" would sit under
+        // "## Files touched" and be carried forward)
         if raw_tool_line(body) { continue; }
         lines.push(l.trim_end().to_string());
     }
@@ -71,7 +71,7 @@ pub fn clean_notes(notes: &str) -> String {
     out.join("\n").trim().to_string()
 }
 
-/// names an `Also known as:` item may not have: the parties of every conversation, the OS, dates (retest 2026-11-08:
+/// names an `Also known as:` item may not have: the parties of every conversation, the OS, dates (e.g.
 /// `Also known as: user, Elisa, system, macos, 2026-11-08, <path>`)
 const TRIVIAL_ALIAS: &[&str] = &["user", "the user", "elisa", "system", "assistant", "macos", "os", "linux", "model", "project", "the project", "today", "date", "me", "you", "i"];
 
@@ -101,8 +101,8 @@ pub fn cap_notes(notes: &str, max_tokens: usize) -> String {
 }
 
 /// The line in front of the notes after `/clear` or `/reset` (a new session carries no earlier notes at all): they
-/// are background, not the task (uitest 2026-11-08: an old goal carried into a new
-/// session sent a 2B model on 30 web steps the user never asked for).
+/// are background, not the task (otherwise an old goal carried into a new
+/// session sends a small model on work the user never asked for).
 pub const NOTES_BACKGROUND: &str = "(Background from an earlier session; the user has not asked to continue it. Do not pursue its goal or next step unless the request asks.)";
 
 /// Notes as the first message carries them after `/clear` or `/reset` (a new session carries none: repl starts it
@@ -225,7 +225,7 @@ pub fn with_session_goal(notes: &str, goal: &str) -> String {
         }
         None => notes.to_string(),
     };
-    // a small-talk goal is no goal: the section goes (2026-11-09: "hey" was stored and carried forward)
+    // a small-talk goal is no goal: the section goes (otherwise a greeting like "hey" is stored and carried forward)
     if small_talk_goal(goal) { return rest; }
     let sec = format!("{GOAL_NOTES}\n{}", users_words(&one_line(goal, 240)));
     if rest.is_empty() { sec } else { format!("{sec}\n\n{rest}") }
@@ -412,7 +412,7 @@ pub fn tidy_notes(notes: &str) -> String {
         aliases.extend(take_aliases(&mut s.1));
         s.1 = dedupe(&s.1);
     }
-    // a session goal that is only small talk is no goal (2026-11-09: "## Session goal\nhey" was carried forward)
+    // a session goal that is only small talk is no goal (otherwise "## Session goal\nhey" is carried forward)
     for s in &mut secs {
         if heading_key(&s.0).starts_with("session goal") { s.1.retain(|l| !small_talk_goal(l)); }
     }

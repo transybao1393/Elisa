@@ -561,8 +561,8 @@ fn long_session_context_and_memory() {
     both.extend(a2.iter());
     assert_stable_prefix(&both);
     assert_budget(&log2);
-    // the new session starts clean (2026-11-09: a 2B model answered "hey" with the earlier session's task): none of
-    // run 1's notes, nor run 1's last card (its goal / next step were that session's task: uitest 2026-11-08), nor
+    // the new session starts clean (a small model can answer "hey" with the earlier session's task): none of
+    // run 1's notes, nor run 1's last card (its goal / next step were that session's task), nor
     // run 1's raw history. Run 1's notes stay in their own file, unchanged.
     let w01 = whole(r01);
     assert!(!w01.contains(elisa::context::NOTES_HEADING) && !w01.contains(elisa::context::NOTES_BACKGROUND), "run 1's notes reached a new session: {w01}");

@@ -489,7 +489,7 @@ impl<'f> Session<'f> {
         if answered { if let Some(h) = crate::followup::pick_option(input, &texts(last)) { return Some(h.to_string()); } }
         let k = self.router_kind().unwrap_or_else(|| crate::followup::kind(input)).filter(|_| answered)?;
         let chat = self.route.groups.tool_free() && self.route.others.is_empty();
-        // about an attached document: the hint keeps to what it says (2026-11-09: "go deeper" got content not in the paper)
+        // about an attached document: the hint keeps to what it says (otherwise "go deeper" can get content that is not in it)
         let doc = !self.kept_docs.is_empty() || self.doc_req.is_some() || self.route.groups.has(crate::route::DOCS)
             || self.history.iter().any(|m| m.role == Role::User && m.content.iter().any(|b| matches!(b, Block::Text { text } if text.contains(crate::attach::MARK))));
         if k == crate::followup::Kind::More && !chat && !doc { return None; }

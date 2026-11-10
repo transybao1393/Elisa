@@ -279,7 +279,7 @@ impl<'f> Session<'f> {
     /// A resumed conversation that names no document by reference (folded before references were kept): the files
     /// in that session's own upload folder, else the one upload whose whole title (or file name) its words or notes
     /// contain (`attach::named_in`). Never "the latest upload": with no match, or more than one, nothing is attached
-    /// and nothing is said (2026-11-09: a TradingAgents chat got a newer, unrelated paper's pages).
+    /// and nothing is said (the latest upload can be an unrelated document).
     fn recover_docs(&mut self, root: &Path, mode: crate::secrets::Mode, session: Option<u64>) {
         let own = session.map(|s| crate::attach::uploads_of(root, s)).unwrap_or_default();
         let mut got: Vec<(crate::attach::Doc, &str)> = own.iter().filter_map(|rel| crate::attach::open(root, rel).ok().map(|d| (d, "its own upload"))).collect();
@@ -324,7 +324,7 @@ impl<'f> Session<'f> {
 
     /// This turn's topic (`topics::pick`: a document named, its words, a card's goal words, a follow-up of the last
     /// turn's, else none) and its card as this turn's `[state]` block (requests only). A card of another topic is
-    /// never sent (2026-11-09: card #647 of an earlier PDF steered every turn after the user moved to another paper).
+    /// never sent (an earlier document's card would steer every turn after the user moves to another one).
     pub(super) fn pick_topic(&mut self, input: &str) {
         self.card_req = None;
         let q = context::request_body(input).trim();

@@ -153,7 +153,7 @@ fn tag_partial(s: &str, tags: &[&str]) -> usize {
 /// The fields of the system prompt's card template.
 pub(super) const CARD_KEYS: &[&str] = &["goal", "done", "now", "keep", "next", "open"];
 /// The template's own values (`goal: …`, `keep: must-not-lose facts`): a small model copies them into its card
-/// (uitest 2026-11-08: card #9 kept `keep: must-not-lose facts` and was carried into every later session).
+/// (otherwise a card's placeholder lines get carried into later sessions).
 const CARD_PLACEHOLDERS: &[&str] = &["must-not-lose facts", "must not lose facts", "must-not-lose", "n/a", "tbd", "todo", "none yet"];
 
 /// A value that says nothing: empty, only dots / dashes / ellipses, or one of the template's placeholders.

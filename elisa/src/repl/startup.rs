@@ -220,8 +220,8 @@ pub fn run_session(args: Args, fe: &mut dyn Frontend) -> i32 {
         }
     }
     // only a continued session carries the last state card and works on its notes. A new one starts clean: no earlier
-    // notes at all; its goal comes from what the user asks in this conversation (2026-11-09: a 2B model answered
-    // "hey" with an earlier session's task when the old notes were carried, even marked as background). Earlier
+    // notes at all; its goal comes from what the user asks in this conversation (a small model can answer
+    // "hey" with an earlier session's task when the old notes are carried, even marked as background). Earlier
     // facts reach a new session only through memory recall, when the request calls for them. Notes are per session
     // (`.elisa/notes/<id>.md`): a new session has none of its own, and an earlier session's stay as they were.
     if resumed.is_some() { s.carry_card(); s.notes_bg = false; } else { s.notes = None; }

@@ -533,7 +533,7 @@ fn repl_clear_writes_notes_reset_does_not() {
     assert!(newest_notes(&d).contains("NOTES-CLR"));
     // after /clear: same system prompt, notes in the first (only) message
     assert_eq!(system(&reqs[0]), system(&reqs[2]));
-    // ... and the same tools: a reset never drops them (2026-11-01: after a reset the model typed tool calls as text)
+    // ... and the same tools: a reset never drops them (without them, after a reset the model types tool calls as text)
     assert!(reqs.iter().all(has_tools));
     assert_eq!(reqs[0]["tools"].to_string(), reqs[2]["tools"].to_string());
     let m2 = reqs[2]["messages"].as_array().unwrap();
@@ -737,7 +737,7 @@ fn tool_names(req: &Value) -> Vec<String> {
     req["tools"].as_array().map(|a| a.iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()).unwrap_or_default()
 }
 
-/// One mode (2026-11-01): every agent request carries the same code system prompt and the full tool list, across a
+/// One mode: every agent request carries the same code system prompt and the full tool list, across a
 /// plain question, a code request, a fold and a resume. Only the fold's transcript summary has its own small system.
 #[test]
 fn one_mode_same_system_and_tools_everywhere() {
@@ -2574,8 +2574,8 @@ fn an_empty_visible_reply_is_retried_once_then_noted() {
 
 // ---------- session memory: state card carry-over, /clear, ctx after Esc, tok/s null ----------
 
-/// A new session does not take over the last session's state card (uitest 2026-11-08: "continuing from state card
-/// #9" with an old goal sent a 2B model on 30 web steps); `--continue` loads the continued session's cards (cleaned of
+/// A new session does not take over the last session's state card (its old goal can send a small model on work
+/// nobody asked for); `--continue` loads the continued session's cards (cleaned of
 /// template text), and sends one only when a message's topic picks it (`topics.rs`).
 #[test]
 fn state_card_is_carried_only_into_a_continued_session() {
@@ -2700,9 +2700,9 @@ fn jsonl_interrupt_keeps_the_context_and_short_replies_have_no_rate() {
     s.quit();
 }
 
-/// soak 2026-11-08: /clear summarised one turn, replaced the notes and said "No files were touched" after 4 edits,
-/// and the notes kept a "done" item no edit made. Now: merged with the earlier notes, the file list from Elisa's own
-/// edit records, the invented claim dropped. Notes are per session (2026-11-09): the earlier facts are this session's
+/// /clear must not replace the notes with one turn's summary, say "No files were touched" after edits, or keep a
+/// "done" item no edit made. Now: merged with the earlier notes, the file list from Elisa's own
+/// edit records, the invented claim dropped. Notes are per session: the earlier facts are this session's
 /// own (it continues a saved one with `--continue`), and the continued session's notes file stays as it was.
 #[test]
 fn jsonl_clear_merges_notes_and_lists_the_files_really_changed() {

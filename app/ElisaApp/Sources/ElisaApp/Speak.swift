@@ -116,7 +116,7 @@ final class Speak {
     static func voice(_ lang: String) -> AVSpeechSynthesisVoice? {
         let all = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == lang }
         // installed = listed by speechVoices(): AVSpeechSynthesisVoice(language: "vi-VN") returns Linh even when it is
-        // not downloaded (measured 2026-11-09); en-US always has its default
+        // not downloaded; en-US always has its default
         let base = AVSpeechSynthesisVoice(language: lang).flatMap { v in
             v.language == lang && (lang == SpeakText.en || all.contains { $0.identifier == v.identifier }) ? v : nil
         }

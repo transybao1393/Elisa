@@ -95,7 +95,7 @@ impl<'f> Session<'f> {
     pub(super) fn limit(&self) -> usize { self.max_ctx.saturating_sub(self.reserve() + context::ctx_margin(self.max_ctx)) }
 
     /// Once at startup: a warning when system + tools take more than FIXED_WARN_PCT of the usable context on a plain
-    /// turn, naming the biggest servers (soak 2026-11-08: 2.8K of 5.9K at 8K, so the conversation had ~3K and folded
+    /// turn, naming the biggest servers (at a small window the conversation is left so little room that it folds
     /// before nearly every turn).
     pub(super) fn budget_warning(&mut self) {
         let (fixed, limit) = (self.fixed(), self.limit());
@@ -363,7 +363,7 @@ impl<'f> Session<'f> {
     /// The turn-boundary fold (after a reply, the cheap place): when the window reaches the fold point (the fixed
     /// cost plus fold_at of the room left after it, `context::fold_point`; real usage when known), or after
     /// fold_max_turns turns. Never when it could not free a meaningful share of the room (`fold_gain` under
-    /// `min_gain`: soak 2026-11-08 folded before almost every turn at 8K, some folds growing the prompt). After a
+    /// `min_gain`: at small windows that folds before almost every turn, some folds growing the prompt). After a
     /// failed or skipped fold, wait until the window grows by that share again.
     pub(super) fn maybe_fold(&mut self) {
         if self.history.len() < 2 { return; } // only the request: nothing to fold
@@ -748,7 +748,7 @@ impl<'f> Session<'f> {
             if forgot.is_some_and(|f| h.id < f) && m.db.in_project(h.id, &m.project) { continue; }
             match h.kind {
                 // this session's own turns are in the window or its notes already: recalling one only repeats it
-                // (2026-11-09: Elisa's own reply from a moment ago came back as [memory])
+                // (Elisa's own reply from a moment ago would come back as [memory])
                 HitKind::Turn if h.session == m.session => continue,
                 HitKind::Card if cards.contains(&h.id) => continue,
                 _ => {}
@@ -992,7 +992,7 @@ impl<'f> Session<'f> {
     }
 
     /// A fold's result put in place: `notes` and the history `[first message] + rest`, only when that makes the
-    /// prompt smaller than `before` (soak 2026-11-08: 6 of 40 folds made it bigger, 3842 → 3907 …). Over it, the notes
+    /// prompt smaller than `before` (a fold can make it bigger). Over it, the notes
     /// are cut by priority to fit first; when even that does not do it, everything stays as it was, the retry waits
     /// for the window to grow, and false comes back. The notes are saved only when the fold is kept.
     fn commit_fold(&mut self, notes: String, rest: Vec<Message>, generic: &str, before: usize) -> bool {

@@ -40,8 +40,8 @@ fn with_subject(clauses: Vec<String>) -> Vec<String> {
 }
 
 /// A fact the user stated about themself in one clause, said in the third person ("my name is Linh" → "The user's
-/// name is Linh"). 2026-11-09 (qwen3-vl:2b): after /compact the notes held "My name is Linh, …" as the session goal,
-/// written by Elisa, and "What's my name?" got "My name is Elisa": the user's facts must never read as Elisa's.
+/// name is Linh"). Notes are written by Elisa, so "My name is Linh, …" kept there as typed reads as Elisa's own
+/// words, and "What's my name?" can get Elisa's name: the user's facts must never read as Elisa's.
 fn user_fact(clause: &str) -> Option<String> { user_fact_kv(clause).map(|(f, _)| f) }
 
 /// `user_fact` and the fact's value ("Linh", "Hanoi", "ORCHID-42").
@@ -154,7 +154,7 @@ pub fn with_user_facts(notes: &str, facts: &[String]) -> String {
 
 /// The user's words as Elisa shows them in notes or `[state]`: a stated fact in the third person (`user_facts`),
 /// first-person words quoted as the user's (`the user said: "fix my build"`), anything else as it is. "I", "me" and
-/// "my" outside the user's own messages would read as Elisa's (2026-11-09: "My name is Elisa").
+/// "my" outside the user's own messages would read as Elisa's.
 pub fn users_words(text: &str) -> String {
     let t = text.trim();
     if only_user_facts(t) { return user_facts(t).join("; "); }
@@ -348,7 +348,7 @@ fn check_claim(line: &str, ledger: &Ledger, now: &dyn Fn(&str) -> Option<String>
 pub const UNVERIFIED: &str = "(unverified: not in Elisa's edit records)";
 
 /// New notes (a summary, or state cards) with their "done / changed" claims checked against Elisa's own edit records
-/// (soak 2026-11-08: notes kept "added restock_cost", "--low-only flag", "bumped the version" though no edit did any
+/// (otherwise notes keep "done" items a summary invented, though no edit did any
 /// of it; `check_claim`). A contradicted claim is dropped; one with nothing to check while nothing changed this
 /// session is marked UNVERIFIED. The model's `## Files touched` lines keep only files the records have (others are
 /// dropped, or marked when there are no records), and a "no files were touched" line goes. `now`: a changed file's text now (path relative to the project).
@@ -406,9 +406,9 @@ const CODE_CLAIM: &[&str] = &["code example", "code examples", "example code", "
     "code snippets", "python script", "a script", "scripts", "python code", "the code"];
 const GAVE: &[&str] = &["provided", "generated", "wrote", "written", "shared", "gave", "given", "included", "includes", "including", "created", "showed", "shown", "offered"];
 
-/// New notes checked against what the conversation actually holds (2026-11-09, a 2B fold of a PDF chat: "Elisa has
-/// also provided … code examples" with no code in any reply; "Files touched: /Users/…/2412.20138v7.pdf – analyzed"
-/// for a PDF the user attached; "[tool glob …]" under Files touched). `said`: every assistant text of the
+/// New notes checked against what the conversation actually holds (a small model's summary can claim code examples
+/// no reply holds, list a PDF the user attached as a file it touched, or put raw tool lines
+/// under Files touched). `said`: every assistant text of the
 /// conversation; `docs`: the attached documents (file names); `ledger`: Elisa's edit records.
 /// - a sentence claiming code was given goes when no reply holds code (a ``` fence or an indented block);
 /// - a `## Done` sentence claiming a file was made or changed goes when no reply names that file and no edit

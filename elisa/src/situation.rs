@@ -18,8 +18,8 @@
 //! tool calls in the history, a failed end); the current state card (the memory store's latest card on
 //! `--continue`) for the next step; the newest saved session of this project (`.elisa/sessions`, its mtime and
 //! `.meta` title, or the goal of its last state card when the title is small talk). Never notes content: a new
-//! session only gets a title to offer, and the user decides (2026-11-09: a 2B model answered "hey" with an old task
-//! when the notes were carried).
+//! session only gets a title to offer, and the user decides (a small model can answer "hey" with an old task
+//! when the notes are carried).
 
 /// how every situation line starts (`strip` keys on it)
 pub const PREFIX: &str = "(Situation: ";

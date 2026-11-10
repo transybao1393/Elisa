@@ -72,13 +72,13 @@ fn system_prompt_stable_notes_last_caps() {
     let tools = estimate_tokens(&serde_json::to_string(&elisa::tools::defs()).unwrap());
     println!("system prompt ~{toks} tokens ({} chars), tools ~{tools}, total ~{}", base.chars().count(), toks + tools);
     let raw = estimate_tokens(include_str!("../prompts/system.md"));
-    // +1 line (2026-11-01, one mode): "use tools only when … answer plain questions directly"
-    // +1 line (2026-11-01, after a reset the model typed tool calls as text): "call tools via the tool interface"
-    // +1 line and +3 tools (2026-11-03, syntax-tree tools outline / read_symbol / edit_symbol): +~34 prompt, +~250 tools
+    // +1 line (one mode): "use tools only when … answer plain questions directly"
+    // +1 line (after a reset the model typed tool calls as text): "call tools via the tool interface"
+    // +1 line and +3 tools (syntax-tree tools outline / read_symbol / edit_symbol): +~34 prompt, +~250 tools
     // tokens, paid once in the cached system prefix; `ast = false` drops both
-    // +1 line (2026-11-04) "use the session's language …", then -1 (2026-11-08) when the session language went
-    // 2026-11-09 chat-first rewrite (assistant, not coding agent; card only after multi-step tasks): ~337 -> ~376 tokens (intent rules); + capability list for "what can you do" -> ~417
-    // 2026-11-09 reply quality: same size, reworded (no "on the user's Mac", write asked-for
+    // +1 line "use the session's language …", then -1 when the session language went
+    // chat-first rewrite (assistant, not coding agent; card only after multi-step tasks): ~337 -> ~376 tokens (intent rules); + capability list for "what can you do" -> ~417
+    // reply quality: same size, reworded (no "on the user's Mac", write asked-for
     // content in full, no closing question, the user as "you")
     assert!(raw <= 420,"system.md ~{raw} tokens");
     let plain = estimate_tokens(&serde_json::to_string(&elisa::tools::defs_for(false)).unwrap());
@@ -350,7 +350,7 @@ fn old_session_vote_field_still_loads() {
     assert!(!serde_json::to_string(&m).unwrap().contains("vote"));
 }
 
-/// 2026-11-01 (test-elisa sessions): after a reset the model treated Elisa's header, old notes and recalled
+/// After a reset a model can treat Elisa's header, old notes and recalled
 /// [memory] as the user's words. The request section and the summary transcript carry only what the user typed.
 #[test]
 fn user_words_kept_apart_from_elisa_context() {
@@ -436,7 +436,7 @@ fn text_tool_calls_are_detected() {
 
 #[test]
 fn recall_gate_needs_keywords_and_coverage() {
-    // values seen on a copy of the user's store (2026-11-01, keyword part only)
+    // values seen on a copy of the user's store (keyword part only)
     let (min, sup) = (10.0, 0.45);
     // fresh history: keyword score and coverage at the base bars
     assert!(context::recall_passes(12.0, 0.45, false, min, sup));
@@ -452,7 +452,7 @@ fn recall_gate_needs_keywords_and_coverage() {
 
 #[test]
 fn recalled_lookup_answers_are_stale_on_lookup_turns() {
-    // the app test's hit (2026-11-09): an earlier run's read of notes.txt, tool line kept after the reply
+    // a remembered answer from an earlier read of notes.txt, tool line kept after the reply
     let read = "I found the meeting code in the file: ORCHID-42. It's listed in the notes.txt file.\n[read notes.txt]";
     assert!(context::stale_lookup(read, true, false), "a files turn reads the file again");
     assert!(!context::stale_lookup(read, false, true), "a web turn: a file lookup is no copy of a search");
@@ -622,7 +622,7 @@ fn a_copied_card_instruction_is_not_shown() {
 
 #[test]
 fn template_placeholders_never_make_a_card() {
-    // uitest 2026-11-08: card #9 kept the template's `keep: must-not-lose facts`
+    // a small model copies the template's `keep: must-not-lose facts` into its card
     let (_, card, broken) = context::split_state("Done.\n<state>\ngoal: search for rust\ndone: …\nnow: ...\nkeep: must-not-lose facts\nnext: open the docs\n</state>");
     assert!(!broken);
     assert_eq!(card.as_deref(), Some("goal: search for rust\nnext: open the docs"));
@@ -785,7 +785,7 @@ fn notes_cap_keeps_whole_lines_from_the_top() {
     assert_eq!(context::cap_notes(n, 0), "");
 }
 
-/// soak 2026-11-08 at 8K: system + tools 2.8K, limit 5.9K. The old fold point (0.65 of the limit = 3.8K) sat barely
+/// At 8K: system + tools 2.8K, limit 5.9K. The old fold point (0.65 of the limit = 3.8K) sat barely
 /// above the fixed cost; the new one is the fixed cost plus 0.65 of the room left after it.
 #[test]
 fn the_fold_point_follows_the_fixed_cost() {
@@ -813,7 +813,7 @@ fn ledger_of(cwd: &Path, calls: &[(&str, serde_json::Value)]) -> context::Ledger
     l
 }
 
-/// soak 2026-11-08: the notes said restock_cost, a --low-only flag and a version bump were done; no edit did them.
+/// Notes can claim work as done (restock_cost, a --low-only flag, a version bump) that no edit did.
 #[test]
 fn done_claims_are_checked_against_the_edit_records() {
     use serde_json::json;
@@ -850,7 +850,7 @@ fn done_claims_are_checked_against_the_edit_records() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// soak 2026-11-08: /clear replaced the notes with one turn's summary; the codename, the owner and the fix were gone.
+/// /clear must not replace the notes with one turn's summary and lose the codename, the owner and the fix.
 #[test]
 fn notes_merge_keeps_earlier_facts_and_drops_repeats() {
     let old = "## Done\n- Fixed low_stock (< to <=).\n\n## Facts to remember\n- Codename BLUE HERON, owner Mira Tanaka.\n\n## Current state / next step\nold next step";
@@ -1046,8 +1046,8 @@ fn long_old_answers_are_shortened_in_requests() {
     assert!(txt(&s2[1]).ends_with(context::SHORTENED) && txt(&s2[3]) == txt(&h[3]) && txt(&s2[5]) == txt(&h[5]) && txt(&s2[7]) == txt(&h[7]));
 }
 
-/// 2026-11-09 (qwen3-vl:2b, 16K): after /compact the notes kept "My name is Linh, …" as the session goal, written by
-/// Elisa, and "What's my name?" got "My name is Elisa". The user's facts are kept and shown in the third person.
+/// Notes are written by Elisa: "My name is Linh, …" kept there as typed reads as Elisa's own words, and "What's my
+/// name?" can get Elisa's name. The user's facts are kept and shown in the third person.
 #[test]
 fn user_facts_are_the_users_in_the_third_person() {
     let intro = "My name is Linh, I live in Hanoi, my favourite colour is green and my meeting code is ORCHID-42.";

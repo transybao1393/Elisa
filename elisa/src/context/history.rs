@@ -280,7 +280,7 @@ fn trim_strings(v: &mut Value) {
 pub const RESULT_MIN_CHARS: usize = 1000;
 
 /// Follows the marker of a cut `read`: the cut took its `next: offset=N` footer, and more reads would only be cut too
-/// (run 2026-11-05: 2-4 lines per read until the context was full, the offsets guessed).
+/// (otherwise the model reads a few lines at a time, guessing offsets, until the context is full).
 pub const READ_CUT: &str = "[the context window is too full to read more of this file; answer with what you have]";
 
 /// One result cut to `keep` chars: its head (to a line end when one is near) + `[trimmed N chars]`; a cut `read`
