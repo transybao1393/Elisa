@@ -302,6 +302,11 @@ impl<'f> Session<'f> {
         }
         self.facts_ok.extend(facts.iter().map(|f| context::fact_key(f)));
         let merged = context::with_user_facts(&merged, &facts);
+        // a line giving one of the user's things another value than Elisa knows ("User's name: Elisa"): the facts
+        // from this history and the earlier notes' own lines (the request that said them may be folded already)
+        let mut known = facts;
+        known.extend(context::fact_lines(self.notes.as_deref().unwrap_or("")));
+        let merged = context::without_contradicted_facts(&merged, &known);
         context::cap_notes_priority(&merged, self.notes_budget())
     }
 
@@ -1039,7 +1044,7 @@ pub(super) fn texts(m: &Message) -> String {
 /// instructions and template text (`context::clean_notes`). Empty = unusable.
 fn summary_text(content: Vec<Block>) -> String {
     let raw = texts(&Message::new(Role::Assistant, content));
-    context::clean_notes(&context::split_state(&raw).0)
+    context::summary_notes(&context::split_state(&raw).0)
 }
 
 #[cfg(test)]

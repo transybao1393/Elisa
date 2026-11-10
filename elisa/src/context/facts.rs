@@ -142,6 +142,50 @@ pub fn fact_to_you(fact: &str) -> Option<String> {
     Some(you)
 }
 
+/// One of Elisa's own third-person fact lines (`user_fact`'s "The user's name is Linh") as (its thing in words,
+/// its value): ("name", "Linh"). None for any other line.
+fn fact_parts(line: &str) -> Option<(String, String)> {
+    let rest = line.trim().trim_start_matches(['-', '*', ' ']).strip_prefix("The user's ")?;
+    let (k, v) = rest.split_once(" is ").or_else(|| rest.split_once(" are "))?;
+    let v = norm_words(v);
+    (!v.is_empty()).then(|| (norm_words(k), v))
+}
+
+/// The lines of `notes` in the form of Elisa's own fact lines (`fact_parts`), without their bullets.
+pub fn fact_lines(notes: &str) -> Vec<String> {
+    notes.lines().filter(|l| fact_parts(l).is_some()).map(|l| l.trim().trim_start_matches(['-', '*', ' ']).to_string()).collect()
+}
+
+/// `notes` without the lines about one of the user's things (`facts`: Elisa's own lines, `user_facts`; "The user's
+/// name is Linh") that hold none of the values Elisa knows for it: a summary's "User's name: Elisa" or "The user's
+/// name is Elisa" or "Linh's name: Elisa" next to "The user's name is Linh" (a small model mixes up the two parties;
+/// read back, the user's name became Elisa's). The user is named by "user" or by one of the known values. A sentence
+/// that gives one of those things to Elisa ("retrieve Elisa's name and meeting code" for the user's question) goes
+/// too. Lines of `facts` themselves always stay.
+pub fn without_contradicted_facts(notes: &str, facts: &[String]) -> String {
+    let known: Vec<(String, String)> = facts.iter().filter_map(|f| fact_parts(f)).collect();
+    if known.is_empty() { return notes.to_string(); }
+    let own: HashSet<String> = facts.iter().map(|f| bullet_key(f)).collect();
+    let subjects: Vec<&str> = std::iter::once("user").chain(known.iter().map(|(_, v)| v.as_str())).collect();
+    let assistant = norm_words(ASSISTANT);
+    let owned = |n: &str, s: &str, k: &str| [format!(" {s} s {k} "), format!(" {s} {k} ")].into_iter().find_map(|p| n.find(&p).map(|i| i + p.len() - 1));
+    let wrong = |sent: &str| {
+        let n = format!(" {} ", norm_words(sent));
+        known.iter().any(|(k, _)| {
+            owned(&n, &assistant, k).is_some()
+                || subjects.iter().find_map(|s| owned(&n, s, k)).is_some_and(|at| !known.iter().any(|(k2, v)| k2 == k && n[at..].contains(&format!(" {v} "))))
+        })
+    };
+    let mut out: Vec<String> = Vec::new();
+    for l in notes.lines() {
+        if l.trim().starts_with('#') || own.contains(&bullet_key(l)) || !wrong(l) { out.push(l.to_string()); continue; }
+        let kept: Vec<String> = sentences(l.trim_end()).into_iter().filter(|s| !wrong(s)).collect();
+        let line = kept.join(" ");
+        if !line.trim().trim_start_matches(['-', '*']).trim().is_empty() { out.push(line); }
+    }
+    clean_notes(&out.join("\n"))
+}
+
 /// Whether a request only tells facts about the user ("My name is Linh, I live in Hanoi"): no session goal.
 pub fn only_user_facts(text: &str) -> bool {
     let cl = user_clauses(text);

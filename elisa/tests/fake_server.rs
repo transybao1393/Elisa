@@ -3911,6 +3911,33 @@ fn a_copied_or_wordless_reply_is_asked_again_alone() {
     assert!(later.contains("salad dressing") && !later.contains("More of the same"), "{later}");
 }
 
+/// A reply not in the message's language is asked once more with the language note; still in another language,
+/// the message is asked alone with the note, and that answer is shown and kept.
+#[test]
+fn a_reply_still_in_another_language_is_asked_alone_with_the_note() {
+    let dir = tmpdir("jsonl-lang-alone");
+    let f = Fake::start(vec![
+        text_reply("Hi! Yes, I'm doing well, thanks!"),
+        text_reply("Hi! Yes, I'm doing well, thank you!"),
+        text_reply("Chào bạn! Mình khỏe, cảm ơn bạn!"),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "Xin chào, bạn khỏe không?"}));
+    let evs = s.until("turn_done");
+    let at = evs.iter().rposition(|e| e["type"] == "reply_retracted").map_or(0, |i| i + 1);
+    let shown: String = evs[at..].iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect();
+    assert_eq!(shown, "Chào bạn! Mình khỏe, cảm ơn bạn!", "{evs:?}");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 3);
+    let note = elisa::reply_check::lang_note("Xin chào, bạn khỏe không?").to_string();
+    assert!(reqs[1]["messages"].to_string().contains(&note), "the second try has the note");
+    let alone = reqs[2]["messages"].as_array().unwrap();
+    assert_eq!(alone.len(), 1, "asked alone: {alone:?}");
+    assert!(alone[0].to_string().contains("Xin chào") && alone[0].to_string().contains(&note));
+}
+
 /// A reply that names a saved file on a turn with no write at all is corrected: asked once more in words
 /// with no tools, and a reply that still claims it gets the plain line. A plain reply is left alone.
 #[test]

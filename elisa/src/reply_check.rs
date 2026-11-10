@@ -225,6 +225,9 @@ pub fn lang_mismatch(ask: &str, reply: &str) -> bool {
         return off(&r) || text.lines().flat_map(sentences).any(|x| off(&profile(x)));
     }
     if a.words == 0 || (a.marked_words as f32 / a.words as f32) < MARKED_WORDS_MIN { return false; }
+    // a reply mostly in a script the message does not use at all ("元気だよ!" to "bạn khỏe không?")
+    let foreign: usize = r.per_script.iter().filter(|(s, _)| !a.per_script.contains_key(s)).map(|(_, n)| n).sum();
+    if foreign * 2 > r.letters { return true; }
     let density = a.marked as f32 / a.letters as f32;
     if let (Some(x), Some(y)) = (crate::reply_lang::detect(ask), crate::reply_lang::detect(&text)) { if x != y { return true; } }
     let unmarked = |p: &Profile, need: f32| p.marked == 0 && p.letters as f32 * density >= need;
@@ -256,7 +259,9 @@ pub fn ends_mid_sentence(reply: &str) -> bool {
     let last = last.trim();
     if !last.chars().last().is_some_and(char::is_alphabetic) { return false; }
     let s = sentences(last);
-    s.len() >= 2 && s.last().is_some_and(|t| t.split_whitespace().count() <= 3)
+    // (a list number's dot is no sentence end: "1. Kyoto 2. Nara 3. Osaka")
+    let real_end = s.len() >= 2 && s[s.len() - 2].split_whitespace().last().is_some_and(|w| !w.trim_end_matches(['.', '!', '?']).chars().all(|c| c.is_ascii_digit()));
+    real_end && s.last().is_some_and(|t| t.split_whitespace().count() <= 3)
 }
 
 #[cfg(test)]
@@ -306,6 +311,8 @@ mod tests {
         // a Vietnamese reply with an English sentence in it
         assert!(lang_mismatch("bạn khỏe không?", "Tôi khỏe, cảm ơn bạn! How can I help you today with anything?"));
         assert!(lang_mismatch("Привет, как дела?", "Hello! I am fine, thank you for asking."));
+        // another script altogether, however short
+        assert!(lang_mismatch("Xin chào, bạn khỏe không?", "元気だよ! 😊"));
         assert!(!lang_mismatch("xin chào", "Chào bạn! Mình có thể giúp gì?"));
         assert!(!lang_mismatch("Привет", "Привет! Как дела?"));
         assert!(!lang_mismatch("hello", "Hello! How can I help?"));
@@ -319,7 +326,7 @@ mod tests {
     #[test]
     fn an_unfinished_last_sentence_is_seen() {
         assert!(ends_mid_sentence("Hey, how about a quick story? Let"));
-        for t in ["Here is a story.", "Paris", "- apples\n- pears", "Done. See `main.rs`", "Wow! 😊", "Hi! I am Elisa and I like long walks on the beach"] {
+        for t in ["Here is a story.", "Paris", "1. Kyoto 2. Nara 3. Osaka", "- apples\n- pears", "Done. See `main.rs`", "Wow! 😊", "Hi! I am Elisa and I like long walks on the beach"] {
             assert!(!ends_mid_sentence(t), "{t}");
         }
     }

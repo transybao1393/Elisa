@@ -7,10 +7,14 @@ impl<'f> Session<'f> {
     /// and this turn's picture text when it has one (a small model may copy an earlier reply into every later
     /// turn, or answer Elisa's bracketed blocks instead of the ask; asked alone it answers the
     /// ask, as the picture request does). The answer when it is usable (`guard`), else None.
-    fn isolated_reply(&mut self, max_tokens: usize, guard: &context::ReplyGuard) -> Option<String> {
-        let mut text = context::request_body(&self.input).trim().to_string();
+    /// With `lang`: the language note (`reply_check::lang_note`) follows the words, and an answer still not in the
+    /// message's language is not usable either.
+    fn isolated_reply(&mut self, max_tokens: usize, guard: &context::ReplyGuard, lang: Option<&str>) -> Option<String> {
+        let ask = context::request_body(&self.input).trim().to_string();
+        let mut text = ask.clone();
         if text.is_empty() { return None; }
         if let Some(p) = &self.turn_pic { text = format!("{text}\n{}", context::picture_block(p)); }
+        if let Some(n) = lang { text = format!("{text}\n\n{n}"); }
         let msgs = [Message::user_text(text.clone())];
         let no_tools: [crate::types::ToolDef; 0] = [];
         let req = Request { system: &self.system, tools: &no_tools, messages: &msgs, max_tokens };
@@ -21,7 +25,8 @@ impl<'f> Session<'f> {
         let t = echo.strip(&crate::route::strip_echoed_notes(&context::strip_picture_echo(context::split_state(&raw).0.trim())));
         let off = self.turn_pic.as_deref().is_some_and(|p| context::off_picture(&t, p));
         let garbled = crate::reply_check::garbled(&t, &text);
-        (!t.trim().is_empty() && guard.broken(&t).is_none() && !off && !garbled).then(|| t.trim().to_string())
+        let other_lang = lang.is_some() && crate::reply_check::lang_mismatch(&ask, &t);
+        (!t.trim().is_empty() && guard.broken(&t).is_none() && !off && !garbled && !other_lang).then(|| t.trim().to_string())
     }
 
     /// One step's tool results against what the window has left (the limit minus the request so far): over it, the
@@ -325,13 +330,17 @@ impl<'f> Session<'f> {
                 // a reply that copies an earlier one, has no words or repeats Elisa's headings (`context::ReplyGuard`),
                 // or still none after the nudge: the user's words asked once more alone (`isolated_reply`)
                 // (and on a turn with picture text, a reply with nothing of what the picture's answer to this ask said)
+                // (and a reply still in another language after the language note: asked alone with the note, where the
+                // history's earlier replies in another language do not pull a small model back to it)
                 let off_pic = |t: &str| self.turn_pic.as_deref().is_some_and(|p| context::off_picture(t, p));
                 let why = if !wrote { Some("empty") }
                     else if context::looks_like_text_tool_call(&vis) { None }
-                    else { reply_guard.broken(&vis).or_else(|| crate::reply_check::garbled(&vis, &ask).then_some("garbled")).or_else(|| off_pic(&vis).then_some("off the picture")) };
+                    else { reply_guard.broken(&vis).or_else(|| crate::reply_check::garbled(&vis, &ask).then_some("garbled")).or_else(|| off_pic(&vis).then_some("off the picture"))
+                        .or_else(|| (lang_retried && crate::reply_check::lang_mismatch(&ask, &vis)).then_some("another language")) };
+                let note = (why == Some("another language")).then(|| crate::reply_check::lang_note(&ask));
                 // (a copy may run to the output limit: moondream:1.8b's 1,024-token "I hope this email finds you well…")
                 let vis = match why.filter(|_| self.tool_lines.is_empty()).filter(|_| if wrote { cut.is_none() && stop_reason != "cancelled" } else { normal_end }) {
-                    Some(why) => match self.isolated_reply(max_tokens, &reply_guard) {
+                    Some(why) => match self.isolated_reply(max_tokens, &reply_guard, note.as_deref()) {
                         Some(t) => {
                             self.debug(&format!("[the reply was unusable ({why}); asked once more with the user's words alone]"));
                             if wrote { self.fe.reply_retracted(); }

@@ -37,13 +37,19 @@ pub fn clean_notes(notes: &str) -> String {
         let n = norm_words(t);
         (n.len() >= 12 && instr.contains(&n)) || frags.iter().any(|f| n.contains(f.as_str()))
     };
+    // the template's own headings; another heading that repeats the instructions ("## Last line: `Also known as:`")
+    // goes with its lines (names listed under it read as one group: the user's name next to Elisa's)
+    let headings: HashSet<String> = COMPACT_MD.lines().filter(|l| l.starts_with('#')).map(norm_words).collect();
+    let mut skip = false;
     let mut lines: Vec<String> = Vec::new();
     for l in notes.lines() {
         let t = l.trim();
         if t.starts_with('#') {
-            if !t.trim_start_matches('#').trim().is_empty() { lines.push(t.to_string()); }
+            skip = echo(t) && !headings.contains(&norm_words(t));
+            if !skip && !t.trim_start_matches('#').trim().is_empty() { lines.push(t.to_string()); }
             continue;
         }
+        if skip { continue; }
         if t.is_empty() { lines.push(String::new()); continue; }
         let body = t.trim_start_matches(['-', '*', '`', ' ']).trim_end_matches('`');
         if body.to_ascii_lowercase().starts_with("also known as:") {
@@ -240,6 +246,26 @@ fn tool_summary(name: &str, input: &Value) -> String {
     }
 }
 
+/// the assistant's own name, as the system prompt gives it
+pub(super) const ASSISTANT: &str = "Elisa";
+/// the speaker labels of a summary request's transcript (`transcript`)
+const USER_LABEL: &str = "User: ";
+const ELISA_LABEL: &str = "Elisa: ";
+
+/// A summary's notes (`clean_notes`) without the lines that copy the transcript's dialogue: a line led by one of
+/// its speaker labels (`USER_LABEL`, `ELISA_LABEL`), such as `Elisa: “What's your name and your meeting code?”` (the
+/// user's question, labelled as Elisa's) or `Elisa: Assistant, Goal: …`. Out of their turns they no longer say who
+/// is who, and a small model reading them back took the user for Elisa.
+pub fn summary_notes(raw: &str) -> String {
+    let labels = [USER_LABEL, ELISA_LABEL].map(|l| l.trim_end().to_lowercase());
+    let kept: Vec<&str> = raw.lines().filter(|l| {
+        let body = l.trim().trim_start_matches(['-', '*', '`', '>', ' ']).to_lowercase();
+        let body = body.replace("**", "");
+        !labels.iter().any(|lab| body.starts_with(lab.as_str()))
+    }).collect();
+    clean_notes(&kept.join("\n"))
+}
+
 fn transcript(msgs: &[Message]) -> String {
     let mut out = String::new();
     for m in msgs {
@@ -253,7 +279,7 @@ fn transcript(msgs: &[Message]) -> String {
                     let t = if m.role == Role::User && crate::attach::is_block(t) { crate::attach::first_line(t) } else { t };
                     if t.is_empty() { continue; }
                     if m.role == Role::User && t.starts_with(NUDGE_PREFIX.trim_end()) { continue; }
-                    out.push_str(if m.role == Role::User { "User: " } else { "Elisa: " });
+                    out.push_str(if m.role == Role::User { USER_LABEL } else { ELISA_LABEL });
                     out.push_str(t);
                 }
                 Block::ToolUse { name, input, .. } => out.push_str(&format!("[tool {}]", tool_summary(name, input))),
@@ -277,7 +303,7 @@ fn transcript(msgs: &[Message]) -> String {
 /// when it is too long.
 pub fn digest(msgs: &[Message], old_notes: Option<&str>, max_chars: usize) -> String {
     let lines: Vec<String> = transcript(msgs).lines()
-        .filter(|l| l.starts_with("User: ") || l.starts_with("Elisa: "))
+        .filter(|l| l.starts_with(USER_LABEL) || l.starts_with(ELISA_LABEL))
         .map(|l| if l.chars().count() > 160 { format!("{}…", head(l, 160)) } else { l.to_string() })
         .collect();
     let mut kept: Vec<&str> = Vec::new();

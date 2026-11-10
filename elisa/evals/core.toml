@@ -498,7 +498,7 @@ description = "short follow-ups after an answer get a one-line hint before the w
 [[case.script]]
 text = "1. Kyoto 2. Nara 3. Osaka"
 [[case.script]]
-text = "Nara has deer and old temples."
+text = "Nara có hươu và chùa cổ."
 [[case.script]]
 text = "Because they are close to each other."
 [[case.script]]

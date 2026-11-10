@@ -1076,6 +1076,31 @@ fn user_facts_are_the_users_in_the_third_person() {
     assert!(g.ends_with("the user said: \"help me plan my trip to Hue\""), "{g}");
 }
 
+/// A summary's notes keep who is who: the transcript's dialogue lines are not notes, and a line giving one of the
+/// user's things another value than Elisa's own fact line (gemma3:1b wrote "User's name: Elisa") goes.
+#[test]
+fn summary_notes_keep_the_user_apart_from_elisa() {
+    let raw = "## Facts to remember\n- Elisa: “What’s your name and your meeting code?”\n- User: “OK.”\n- **Elisa:** Assistant, Goal: keep a record\n- Linh’s name: Linh\n- Meeting code: ORCHID-42";
+    assert_eq!(context::summary_notes(raw), "## Facts to remember\n- Linh’s name: Linh\n- Meeting code: ORCHID-42");
+    // a heading copied from the instructions goes with the names under it (the user's next to Elisa's)
+    assert_eq!(context::summary_notes(&format!("{raw}\n\n## Last line: `Also known as:`\n- Linh\n- Robert\n- Elisa\n\n## Done\n- table shown")),
+        "## Facts to remember\n- Linh’s name: Linh\n- Meeting code: ORCHID-42\n\n## Done\n- table shown");
+    let facts = context::user_facts("My name is Linh, I live in Hanoi, my favourite colour is green and my meeting code is ORCHID-42.");
+    let notes = context::with_user_facts("## Facts to remember\n- User’s name: Elisa\n- The user's name is Elisa\n- Linh's name: Elisa\n- User's name: Linh\n- Linh’s favourite colour: Green\n- User's preferred format: PDF\n- The user asked Elisa for a table", &facts);
+    let kept = context::without_contradicted_facts(&notes, &facts);
+    assert!(!kept.contains("name is Elisa") && !kept.contains("name: Elisa"), "{kept}");
+    // the user's question turned into Elisa's things: that sentence goes, the rest of the line stays
+    let state = context::without_contradicted_facts("## Current state / next step\nRetrieve Elisa’s name and meeting code. Then answer the user.", &facts);
+    assert_eq!(state, "## Current state / next step\nThen answer the user.");
+    for l in ["User's name: Linh", "Linh’s favourite colour: Green", "User's preferred format: PDF", "The user asked Elisa for a table", "The user's name is Linh", "The user lives in Hanoi", "The user's meeting code is ORCHID-42"] {
+        assert!(kept.contains(l), "{l}: {kept}");
+    }
+    // the earlier notes' own lines count as known (the message that said them was folded before)
+    assert_eq!(context::fact_lines("## Facts to remember\n- The user's name is Linh\n- Name: Linh"), vec!["The user's name is Linh"]);
+    // nothing known: unchanged
+    assert_eq!(context::without_contradicted_facts("- User's name: Elisa", &[]), "- User's name: Elisa");
+}
+
 /// /forget's stop point (`.elisa/memory-forgotten`): absent before, read back after, and a later /forget moves it.
 #[test]
 fn forgot_point_round_trips() {
