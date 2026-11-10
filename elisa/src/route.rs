@@ -619,7 +619,10 @@ fn time_in(zone: &str) -> Option<String> {
     let (rest, off) = s.rsplit_once(' ')?;
     if !o.status.success() || off.len() != 5 { return None; }
     let city = zone.rsplit('/').next().unwrap_or(zone).replace('_', " ");
-    Some(format!("Time in {city} now: {rest} (UTC{}:{}, {zone})", &off[..3], &off[3..]))
+    // the part of the day there, from its clock (as `local_now`)
+    let hour = rest.split_whitespace().nth(1).and_then(|t| t.split(':').next()?.parse::<u32>().ok());
+    let part = hour.map(|h| format!(" {}", crate::situation::part_of_day(h))).unwrap_or_default();
+    Some(format!("Time in {city} now: {rest}{part} (UTC{}:{}, {zone})", &off[..3], &off[3..]))
 }
 
 /// The clock lines for a turn about the time: the local time, then each place the message names.
@@ -925,6 +928,11 @@ mod tests {
         if std::path::Path::new("/usr/share/zoneinfo/Asia/Tokyo").exists() {
             let l = time_lines("what time is it in Tokyo");
             assert!(l.starts_with("Local time now: ") && l.contains("\nTime in Tokyo now: ") && l.contains("(UTC+09:00, Asia/Tokyo)"), "{l}");
+            // each clock line says its part of the day, from its own hour
+            for line in l.lines() {
+                let hour: u32 = line.split_whitespace().find(|w| w.len() == 5 && w.as_bytes()[2] == b':').and_then(|t| t[..2].parse().ok()).unwrap();
+                assert!(line.contains(&format!(" {} (UTC", crate::situation::part_of_day(hour))), "{line}");
+            }
         }
     }
 

@@ -13,7 +13,7 @@ fn local_date() -> String {
     }
 }
 
-/// The local time for the model, from the system clock: `Local time now: 2026-11-09 14:05 Sunday (UTC+07:00,
+/// The local time for the model, from the system clock: `Local time now: 2026-11-09 14:05 Sunday afternoon (UTC+07:00,
 /// Asia/Ho_Chi_Minh)`. The zone name comes from `TZ`, else the `/etc/localtime` link; left out when neither names one.
 /// Added to the first message and to every turn routed to the time group (`route.rs`), so "what time is it in Tokyo"
 /// needs no tool.
@@ -30,7 +30,9 @@ pub fn local_now() -> String {
     let zone = std::env::var("TZ").ok().map(|z| z.trim_start_matches(':').to_string()).filter(|z| z.contains('/'))
         .or_else(|| fs::read_link("/etc/localtime").ok().and_then(|p| p.to_str().and_then(|s| s.split_once("zoneinfo/").map(|(_, z)| z.to_string()))));
     let day = DAYS.get(tm.tm_wday as usize).copied().unwrap_or("");
-    format!("Local time now: {:04}-{:02}-{:02} {:02}:{:02} {day} (UTC{sign}{:02}:{:02}{})", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+    // the part of the day from the clock itself ("20:24 Monday evening"): left to the model, 20:24 was called morning
+    let part = crate::situation::part_of_day(tm.tm_hour as u32);
+    format!("Local time now: {:04}-{:02}-{:02} {:02}:{:02} {day} {part} (UTC{sign}{:02}:{:02}{})", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
         tm.tm_hour, tm.tm_min, a / 3600, a % 3600 / 60, zone.map(|z| format!(", {z}")).unwrap_or_default())
 }
 
