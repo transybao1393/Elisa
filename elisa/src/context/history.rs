@@ -131,7 +131,18 @@ pub fn meaning_similarity(a: &str, b: &str) -> Option<f32> {
 pub fn about_picture(msg: &str, seen: &str) -> bool {
     let msg = request_body(msg).trim();
     if msg.is_empty() { return false; }
+    // with a file named, a bare "it" or a short follow-up points at the file: only a picture, what it showed, or a
+    // pronoun before a word of the picture's answer ("this cat", "its ears") counts
+    if crate::mcp_reason::names_file(msg) { return picture_words(msg, false) || shares_meaning(msg, seen) || pronoun_before_seen_word(msg, seen); }
     picture_words(msg, true) || crate::followup::kind(msg).is_some() || shares_meaning(msg, seen)
+}
+
+/// A pronoun that `picture_words` counts, followed by a word that `seen` (what the picture turn learned) used:
+/// "this cat" after "A black cat with blue ears."
+fn pronoun_before_seen_word(msg: &str, seen: &str) -> bool {
+    let low = |t: &str| t.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    let seen: std::collections::HashSet<String> = low(seen).into_iter().collect();
+    low(msg).windows(2).any(|w| picture_words(&w[0], true) && seen.contains(&w[1]))
 }
 
 /// Whether `msg`, a turn after other talk came since the picture was last looked at, is about that picture: it names

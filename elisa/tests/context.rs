@@ -1206,6 +1206,10 @@ fn a_later_message_is_about_the_picture_by_its_own_words() {
     assert!(!context::about_picture_later("", seen));
     // right after the picture turn the pronoun still counts
     assert!(context::about_picture("tell me more about it", seen));
+    // a named file is what "it" points at, right after the picture turn and later
+    let ask = "Use your read tool on the file selftest-note.txt and tell me the secret word in it.";
+    assert!(!context::about_picture(ask, seen) && !context::about_picture_later(ask, seen));
+    assert!(context::about_picture("is the cat in the picture the same as in notes.txt?", seen), "a picture named outright");
 }
 
 /// the picture's answer is a text block of the user message, kept out of the shown history
