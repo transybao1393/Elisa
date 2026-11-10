@@ -449,8 +449,8 @@ pub fn merge_notes(old: Option<&str>, new: &str) -> String { merge_notes_kept(ol
 
 /// `merge_notes`, where an old `Facts to remember`, `Session goal` or `Done` line stays only when `keep` says so (a
 /// line of the new notes always does). The fold and /clear keep an old fact only when the conversation being summarised talks
-/// about it, or it was pinned (`fact_in_talk`): 2026-11-09 an old Python-async task's facts and a "hey" goal, read
-/// from a stale notes file, were carried forward by every fold of a PDF conversation that never mentioned them.
+/// about it, or it was pinned (`fact_in_talk`): otherwise an unrelated old task's facts, read from a stale notes
+/// file, are carried forward by every fold of a conversation that never mentions them.
 pub fn merge_notes_kept(old: Option<&str>, new: &str, keep: &dyn Fn(&str) -> bool) -> String {
     let old = old.map(str::trim).unwrap_or("");
     if old.is_empty() { return tidy_notes(new); }

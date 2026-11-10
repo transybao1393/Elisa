@@ -348,7 +348,7 @@ pub fn render(d: &Doc, pick: &Pick, budget: usize) -> String {
         }
         Pick::Overview => {
             let (body, _) = crate::untrusted::fence(&src, &overview(d, budget));
-            // a vague request ("read this for me") answered with "Sure, I'll read it" on the 2B model: say what to do
+            // a vague request ("read this for me") can get only a promise to read it from a small model: say what to do
             format!("{MARK}{}, {}; overview below, ask about any part for detail]\n{body}{tail}\n(Elisa: unless asked for something else, \
                 summarise this document for the person in a few short points.)", d.name, d.units)
         }

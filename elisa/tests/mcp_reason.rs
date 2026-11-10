@@ -85,7 +85,7 @@ fn placeholder_arguments_are_dropped_before_a_strict_server_sees_them() {
     let (mut h, notes) = Host::start(&[cfg], &|_| false);
     assert!(notes.is_empty(), "{notes:?}");
     assert!(!h.reason_tool("think_sequentialthinking"), "a user server is never the built-in one");
-    // the 2B model's call that was rejected before
+    // a small model's call that was rejected before
     let (t, e) = call(&mut h, "think_sequentialthinking", json!({"thought": "list the files", "nextThoughtNeeded": true,
         "thoughtNumber": 1, "totalThoughts": 3, "isRevision": false, "revisesThought": 0, "branchFromThought": 0, "branchId": "", "needsMoreThoughts": false}));
     assert!(!e, "{t}");

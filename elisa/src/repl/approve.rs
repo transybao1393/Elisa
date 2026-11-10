@@ -215,7 +215,7 @@ struct RuleHit { level: Level, pattern: String, source: String }
 /// only "do not call this tool again…; answer without it", a model may still say a denied write was saved)
 const NO_RETRY: &str = "NOTHING was done: no file was written or changed and no command ran. Tell the user plainly that it was \
     not done and why; never say it was saved or done. Do not call this tool again for this request";
-/// a call the user said no to: nothing happened, and a sample sentence (the 2B model, told only "say why", said
-/// "I don't have the capability to write files")
+/// a call the user said no to: nothing happened, and a sample sentence (told only "say why", a small model may
+/// claim it cannot write files at all)
 const SAID_NO: &str = "the user said no, so NOTHING was done: no file was written or changed and no command ran. Reply in one \
     short sentence like \"Okay, I didn't do that, since you said no.\"; never say it was saved or done. Do not call this tool again for this request";

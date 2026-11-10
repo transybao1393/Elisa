@@ -74,8 +74,8 @@ pub fn picture_non_answer(answer: &str) -> bool {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| regex::Regex::new(r"(?i)not sure what you(?:'re| are) asking|(?:didn't|did not|don't|do not) understand (?:your|the) question|\bunanswerable\b").unwrap());
     let t = answer.trim().replace('’', "'");
-    // a refusal anywhere, not only first (qwen3-vl:2b-instruct asked the read ask with the picture: "That image
-    // appears to be a digital illustration… I can't extract a secret word from the image you shared.")
+    // a refusal anywhere, not only first (a small model asked about a picture can describe it first and refuse
+    // at the end)
     t.is_empty() || re.is_match(&t) || t.split_inclusive(['.', '!', '?', '\n']).any(|s| unfit_memory(s.trim()))
 }
 
@@ -376,9 +376,9 @@ pub const SHORTEN_AT_PCT: usize = 35;
 
 /// The history as a request sends it when it is long (over SHORTEN_AT_PCT of `max_ctx`): every assistant answer
 /// before `end` (the current turn's request) except the last 2 keeps only its first SHORT_REPLY_TOKENS tokens plus
-/// SHORTENED. For requests only, never the saved history; None when nothing changes. 2026-11-09: a resumed PDF chat
-/// carried ~7K tokens of a 2B model's long padded answers, which squeezed each question's document budget to its 2K
-/// floor (1-2 pages), and answers came out partly made up.
+/// SHORTENED. For requests only, never the saved history; None when nothing changes. Otherwise a resumed document
+/// chat's long old answers squeeze each question's document budget to its floor, and answers come out partly
+/// made up.
 pub fn shorten_old_replies(msgs: &[Message], end: usize, max_ctx: usize) -> Option<Vec<Message>> {
     if estimate_messages(msgs) * 100 <= max_ctx * SHORTEN_AT_PCT { return None; }
     let answers: Vec<usize> = msgs[..end.min(msgs.len())].iter().enumerate()
@@ -612,7 +612,7 @@ pub fn real_content(h: &[Message]) -> bool {
 }
 
 /// The request's messages with a repeated reply dropped: when the last two answered turns got the same reply (the
-/// 2B model then copies it a third time: measured, the intro 3 times running), the older turn (its user message and
+/// model then tends to copy it a third time), the older turn (its user message and
 /// reply) goes from the request, until the last two differ. None when nothing repeats. The history is unchanged.
 pub fn drop_repeated_replies(msgs: &[Message]) -> Option<Vec<Message>> {
     let user_text = |m: &Message| m.role == Role::User && m.content.iter().all(|b| matches!(b, Block::Text { .. }));

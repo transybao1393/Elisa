@@ -293,7 +293,7 @@ impl<'f> Session<'f> {
     /// Merged notes as they are kept: Elisa's own list of the files changed this session merged in (ground truth),
     /// duplicates gone, cut by priority to the notes' share of the window (`context::notes_budget`).
     /// The facts the user stated about themself in this history go in too, in the third person (`context::user_facts`:
-    /// a 2B model's summary wrote them as Elisa's, "My name is Elisa"), and count as found in this run's talk.
+    /// a summary can otherwise write them as Elisa's), and count as found in this run's talk.
     pub(super) fn finish_notes(&mut self, merged: String) -> String {
         let merged = match self.ledger.section() { Some(sec) => context::merge_notes(Some(&merged), &sec), None => merged };
         let mut facts: Vec<String> = Vec::new();
@@ -905,7 +905,7 @@ impl<'f> Session<'f> {
         }
         self.fe.progress(Some(&prog(0.0, None)));
         let digest_chars = out * 3;
-        // a reasoning model (Ollama "thinking") reasons past the summary's budget (3,800 tokens, 35 s on qwen3-vl:2b)
+        // a reasoning model (Ollama "thinking") reasons past the summary's budget
         // and writes nothing: such a model folds to a digest straight away
         if self.digest_only || self.client.reasoning_room() > 0 {
             let why = if self.digest_only { "the model's summaries ran out on reasoning" } else { "a reasoning model's summary is slow" };

@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn the_sequential_thinking_placeholders_are_dropped() {
-        // the 2B model's rejected call: `revisesThought: Too small: expected number to be >=1`
+        // a small model's rejected call: `revisesThought: Too small: expected number to be >=1`
         let args = json!({"thought": "list the files", "nextThoughtNeeded": true, "thoughtNumber": 1, "totalThoughts": 3,
             "isRevision": false, "revisesThought": 0, "branchFromThought": 0, "branchId": "", "needsMoreThoughts": false});
         let (out, dropped) = clean(&seq(), &args);

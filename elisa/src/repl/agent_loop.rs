@@ -270,7 +270,7 @@ impl<'f> Session<'f> {
                 (self.new_card, self.card_broken) = (card, broken);
                 // the reply showed words (not only the "[max_tokens]" placeholder below)
                 let wrote = !vis.trim().is_empty();
-                // nothing for the user to read (QA N3: qwen3-vl:2b after the no-think prefill answered "thanks" with
+                // nothing for the user to read (after the no-think prefill a small model can answer "thanks" with
                 // only a state card): ask once more, any provider, then say so rather than show nothing
                 let normal_end = cut.is_none() && stop_reason != "cancelled" && stop_reason != "max_tokens";
                 if !wrote && normal_end && !retried {
@@ -395,7 +395,7 @@ impl<'f> Session<'f> {
                     },
                 };
             }
-            // `sh`, `shell`, `terminal`: the model meant bash (qwen3-vl:2b called `sh` for "run ls", 2 of 2)
+            // `sh`, `shell`, `terminal`: the model meant bash (a small model may call `sh` for "run ls")
             let content: Vec<Block> = content.into_iter().map(|b| match b {
                 Block::ToolUse { id, name, input } => { let (name, input) = self.shell_alias(name, input); Block::ToolUse { id, name, input } }
                 b => b,

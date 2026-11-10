@@ -14,7 +14,7 @@ pub fn strip_markup(card: &str) -> String {
 
 /// Splits a final reply into (visible text, last complete `<state>` card, broken). Every complete block and a trailing
 /// unclosed `<state>` are removed from the visible text; broken = no usable card (none, unclosed or empty).
-/// the system prompt's card instruction line, which small models (qwen3-vl:2b-instruct) copy into their reply before
+/// the system prompt's card instruction line, which small models copy into their reply before
 /// the card (or instead of it): removed from what is shown and kept
 pub const CARD_ECHO: &str = "<=80-token card of what the next step needs:";
 
@@ -77,7 +77,7 @@ impl CardFilter {
                 }
             }
             if let Some(i) = self.buf.find(CARD_ECHO) { self.buf.replace_range(i..i + CARD_ECHO.len(), ""); continue; }
-            // a stray closing tag with no block open (gemma3:1b: "```tool_code\noutline\n</state>\n```") is dropped
+            // a stray closing tag with no block open (e.g. "```tool_code\noutline\n</state>\n```") is dropped
             if let Some((i, n)) = first_tag(&self.buf, &CARD_CLOSE).filter(|c| first_tag(&self.buf, &CARD_OPEN).is_none_or(|o| c.0 < o.0)) {
                 self.buf.replace_range(i..i + n, "");
                 continue;

@@ -30,8 +30,7 @@ pub struct CallMetric {
 pub const SIMPLE_OUT: usize = 1024;
 
 /// A simple turn's output cap (`Client::simple_cap`) for a `max_ctx` window: 1/8 of it, 1024..=4096 (2048 on a 16K
-/// window). 2026-11-09: a flat 1024 cut plain chat answers about a paper mid-sentence on a 16K window, three times
-/// in a row.
+/// window): a flat 1024 would cut plain chat answers mid-sentence on a bigger window.
 pub fn simple_out(max_ctx: usize) -> usize { (max_ctx / 8).clamp(SIMPLE_OUT, 4 * SIMPLE_OUT) }
 
 /// How often a streaming call that waits on the server (for the response head or the next line) looks at the

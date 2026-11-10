@@ -91,8 +91,8 @@ pub fn user_fact_values(text: &str) -> Vec<String> {
 /// Hanoi.", "I'm from Hanoi too"): a clause of the reply with a first-person word and,
 /// after it, a value, and no "you" / "your" (that clause speaks to the user: "I'm glad you're from Hanoi"). Only
 /// the session's own fact values are looked for, never fixed words of a reply. Empty when none is claimed.
-// a few first- and second-person words, English and Vietnamese, kept short on purpose (user 2026-11-09: "can be
-// hardcoded but not too much"); never grow it per failure case
+// a few first- and second-person words, English and Vietnamese, kept short on purpose (a small fixed list, not a
+// long one); never grow it per failure case
 pub fn claimed_user_facts(reply: &str, values: &[String]) -> Vec<String> {
     static FIRST: OnceLock<regex::Regex> = OnceLock::new();
     static YOU: OnceLock<regex::Regex> = OnceLock::new();

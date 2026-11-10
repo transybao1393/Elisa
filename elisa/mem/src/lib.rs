@@ -1138,7 +1138,7 @@ impl Memory {
     pub fn pinned_facts(&self, project: &str) -> Vec<String> { self.facts_where(project, false) }
 
     /// `pinned_facts` the user pinned (`pin_fact`), without the facts derived from a note's Facts section: those
-    /// belong to the session that wrote the note (Elisa 2026-11-09: a new session starts clean; an earlier session's
+    /// belong to the session that wrote the note (Elisa starts a new session clean; an earlier session's
     /// notes reach it only through recall).
     pub fn user_pinned_facts(&self, project: &str) -> Vec<String> { self.facts_where(project, true) }
 
@@ -1684,8 +1684,8 @@ mod unicode_recall_tests {
         let _ = fs::remove_dir_all(d);
     }
 
-    /// Two open stores on one directory (as two processes): neither assumes it is the only writer. Before
-    /// 2026-11-09 B's open rewrote the shared hot files under A, and A's next recall indexed past its doc table
+    /// Two open stores on one directory (as two processes): neither assumes it is the only writer. With the old
+    /// shared hot files, B's open rewrote them under A, and A's next recall indexed past its doc table
     /// (`text`: index out of bounds); B's ids also collided with A's.
     #[test]
     fn two_handles_share_one_store() {

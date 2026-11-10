@@ -412,7 +412,7 @@ fn summary_prompt_records_only_what_was_said() {
 
 #[test]
 fn text_tool_calls_are_detected() {
-    // the exact reply from test-elisa session 1793541894 (twice in a row, nothing ran)
+    // a reply that typed a tool call as text, so nothing ran
     let seen = "Mình cần xem lại file `main.py`.\n\n\n\n<tool>\n<tool_name>read_file</tool_name>\n<path>/x/python_files/main.py</path>\n</tool>";
     assert!(context::looks_like_text_tool_call(seen));
     for t in [
@@ -638,7 +638,7 @@ fn template_placeholders_never_make_a_card() {
 
 #[test]
 fn summary_notes_drop_instruction_echo_and_template_text() {
-    // the notes the uitest /clear saved (2B model), plus a real line in each section that must survive
+    // notes a small model saved on /clear, plus a real line in each section that must survive
     let junk = "## Goal\nWhat the user said: \"2+2=?\" and \"The conversation above will be erased. Write notes so a fresh session can pick up the work\"\n\n\
         ## Done\nFinished steps and decisions, with their reasons.\nAnswered 2+2 = 4. REAL-1\n\n\
         ## Files touched\nOne line per file: path, then what changed.\n\n\
@@ -670,15 +670,15 @@ fn new_session_notes_are_background_without_the_old_goal() {
     assert!(first.contains(context::NOTES_BG_HEADING) && first.contains(context::NOTES_BACKGROUND) && first.ends_with("## Request\nwhat is 2+2?"));
 }
 
-/// 2026-11-09: a continued session's notes are its own: their heading says so (it said "from earlier sessions")
+/// A continued session's notes are its own: their heading says so (it said "from earlier sessions")
 #[test]
 fn continued_notes_heading_is_this_conversation() {
     let first = context::first_message(Path::new("/p"), Some("## Done\n- read the paper"), "continue");
     assert!(first.contains("## Notes from this conversation") && !first.contains("earlier sessions"), "{first}");
 }
 
-/// 2026-11-09: the shared `.elisa/notes.md` of Elisa before per-session notes came back with `--continue` (an old
-/// Python-async task in a PDF chat). It is never read: a session's notes are its own `.elisa/notes/<id>.md` only.
+/// The shared `.elisa/notes.md` of Elisa before per-session notes would come back with `--continue` (an unrelated
+/// old task in a new chat). It is never read: a session's notes are its own `.elisa/notes/<id>.md` only.
 #[test]
 fn legacy_notes_md_is_never_read() {
     let t = Tmp::new();
@@ -703,8 +703,8 @@ const STALE_FACT: &str = "The user is asking to fix a Python code that uses asyn
 const PDF_TALK: &str = "what is the application of this paper? The TradingAgents framework uses multi-agent LLM trading with risk management. \
     Table 1 compares cumulative return, Sharpe ratio and maximum drawdown on AAPL. Here is a code example to plot the results.";
 
-/// 2026-11-09: every fold kept the old notes' facts (`merge_notes` keeps older lines), so an unrelated task's facts
-/// rode along a PDF chat. Old facts stay only when the conversation talks about them, or they were pinned.
+/// Every fold would keep the old notes' facts (`merge_notes` keeps older lines), so an unrelated task's facts
+/// would ride along a document chat. Old facts stay only when the conversation talks about them, or they were pinned.
 #[test]
 fn merge_drops_unrelated_old_facts_keeps_related_and_pinned() {
     let old = format!("## Facts to remember\n{STALE_FACT}\n- The paper's Table 1 reports Sharpe ratio on AAPL\n- The release branch is trunk\n\n## Done\n- read the paper and its Table 1\n");
@@ -730,7 +730,7 @@ fn merge_drops_unrelated_old_facts_keeps_related_and_pinned() {
     assert!(context::fact_in_talk("Codename HERON for the launch", "remember: the codename for the launch is HERON"));
 }
 
-/// 2026-11-09: "## Session goal\nhey" was stored and carried forward. Small talk is never the goal.
+/// "## Session goal\nhey" must not be stored and carried forward. Small talk is never the goal.
 #[test]
 fn small_talk_goal_is_not_stored() {
     for g in ["hey", "hi", "thanks", "Hi Elisa!", "thank you so much", "ok", "hello there"] {
@@ -749,7 +749,7 @@ fn small_talk_goal_is_not_stored() {
     assert!(context::with_session_goal("", "summarise the paper").contains("summarise the paper"));
 }
 
-/// 2026-11-09, a 2B fold of a PDF chat: a code claim no reply backs, the attached PDF as a touched file, raw tool lines
+/// A small model's fold of a document chat: a code claim no reply backs, the attached PDF as a touched file, raw tool lines
 #[test]
 fn ground_notes_drops_false_claims_and_maps_uploads() {
     let notes = "## Done\nElisa analyzed Table 1 of the paper. Elisa has also provided actionable tips, including code examples and charts.\n- created report.md with the summary\n\n\
@@ -1010,7 +1010,7 @@ fn session_goal_comes_from_the_users_words_not_a_paste() {
     const { assert!(GOAL_DRIFT >= 2) };
 }
 
-/// 2026-11-09: a flat 1024-token simple-turn cap cut chat answers on a 16K window; it scales with the window
+/// A flat 1024-token simple-turn cap would cut chat answers on a bigger window; it scales with the window
 #[test]
 fn simple_turn_cap_scales_with_the_window() {
     assert_eq!(elisa::api::simple_out(16_384), 2048);
@@ -1019,7 +1019,7 @@ fn simple_turn_cap_scales_with_the_window() {
     assert_eq!(elisa::api::simple_out(65_536), 4096);
 }
 
-/// 2026-11-09: a resumed PDF chat's long old answers squeezed the document budget. Over 35% of the window, answers
+/// A resumed document chat's long old answers would squeeze the document budget. Over 35% of the window, answers
 /// older than the last 2 are shortened in the request (never in the history itself).
 #[test]
 fn long_old_answers_are_shortened_in_requests() {
@@ -1116,7 +1116,7 @@ fn the_card_filter_agrees_across_deltas() {
     let mut f = context::CardFilter::default();
     let got: String = ["```tool_code\noutline\n</sta", "te>\n```"].iter().map(|d| f.push(d)).collect::<String>() + &f.finish();
     assert_eq!(got, "```tool_code\noutline\n\n```", "a stray closing tag is dropped");
-    // a reply that stopped inside the copied card instruction (qwen3-vl:2b-instruct, 2026-11-09)
+    // a reply that stopped inside the copied card instruction
     assert_eq!(context::split_state("Here it is.\n\n<=80-token card").0, "Here it is.");
 }
 
@@ -1434,7 +1434,7 @@ fn replies_that_claim_the_users_facts() {
     assert!(c("I'm glad you're from Hanoi, Linh!").is_empty());
     assert!(c("Your name is Linh, you live in Hanoi, and your meeting code is ORCHID-42.").is_empty());
     assert!(c("I can't find Hanoifood.").is_empty(), "whole words only");
-    // 2026-11-10: "I'm Linh, from Hanoi": the second clause has the first one's subject, so Hanoi is a fact too
+    // "I'm Linh, from Hanoi": the second clause has the first one's subject, so Hanoi is a fact too
     let v = context::user_fact_values("I'm Linh, from Hanoi");
     assert_eq!(v, vec!["Linh", "Hanoi"]);
     assert_eq!(context::claimed_user_facts("I'm Elisa from Hanoi", &v), vec!["Hanoi"]);

@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(call("step_done", &json!({"n": 4}), &mut st).0, "Done 4/4. All steps done: check the result and answer.");
         assert!(call("steps", &json!({"list": "a; b"}), &mut st).0.starts_with("2 steps."));
         assert!(call("steps", &json!({"list": ""}), &mut State::default()).1);
-        // bare numbers are not steps (the 2B model sent "1; 2; 3"); the turn's one list is not used up by it
+        // bare numbers are not steps (a small model may send "1; 2; 3"); the turn's one list is not used up by it
         let mut st = State::default();
         let (t, e) = call("steps", &json!({"list": "1; 2; 3"}), &mut st);
         assert!(e && t.contains("e.g."), "{t}");

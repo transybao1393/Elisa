@@ -11,7 +11,7 @@
 //! With the hosted intent router configured (`router.rs`), its answer decides the groups instead (`from_router`,
 //! `Why::Router`); when it is off or misses, everything here runs unchanged.
 //!
-//! Why no tiny model classification call: on the measured 2B local model one extra round trip costs a full prefill of
+//! Why no tiny model classification call: on a small local model one extra round trip costs a full prefill of
 //! its own prompt plus a first-token wait (~0.3-0.6 s warm) on every unclear turn, more than the ~150 tokens of web tool
 //! definitions the default set sends, and the widen path already repairs a miss.
 

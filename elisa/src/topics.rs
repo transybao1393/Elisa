@@ -11,8 +11,8 @@
 //! (c) else a short follow-up ("why?", "continue", "more", "and the Sharpe ratio?") or a bare "the paper" → the last
 //!     turn's topic;
 //! (d) else nothing: a card or document whose topic does not match is never sent.
-//! 2026-11-09: one stale card (#647, "read the first few pages of the PDF file") was carried into every request for
-//! hours while the user had moved to another paper, and pulled the model back to the old PDF.
+//! Otherwise one stale card is carried into every request after the user has moved to another document, and pulls
+//! the model back to the old one.
 
 use std::collections::{HashMap, HashSet};
 

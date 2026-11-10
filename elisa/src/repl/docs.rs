@@ -180,7 +180,7 @@ impl<'f> Session<'f> {
                 Ok(mut d) => {
                     self.scrub_doc(&mut d, mode);
                     let (block, pick) = crate::attach::block_for(&d, question, budget, &[]);
-                    // no tool definitions for it: the text is in the turn, and on the measured 2B model the docs tools made
+                    // no tool definitions for it: the text is in the turn, and on a small model the docs tools can make
                     // the reply a state card only (one more call); the routed words still decide the turn's tools
                     let large = false;
                     if let Some(it) = &d.info {

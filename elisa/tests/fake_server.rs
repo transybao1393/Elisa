@@ -974,9 +974,9 @@ fn full_without_a_watcher() {
     assert!(o.stderr.contains("watcher: not available on this gateway"), "{}", o.stderr);
 }
 
-// ---------- 2026-11-01 test-elisa regressions ----------
+// ---------- reset and tool-call regressions ----------
 
-/// A reply that types a tool call as text (session 1793541894: `<tool><tool_name>read_file</tool_name>…`) gets one
+/// A reply that types a tool call as text (e.g. `<tool><tool_name>read_file</tool_name>…`) gets one
 /// correction; the real call that follows runs. Requests keep the prefix rule and the tools.
 #[test]
 fn text_tool_call_gets_one_correction() {
@@ -2737,7 +2737,7 @@ fn jsonl_clear_merges_notes_and_lists_the_files_really_changed() {
 /// first message after /clear carried "Codename BLUE HERON" twice (notes + `[state]`), came out bigger than the
 /// two-turn conversation, and the "always shrink" rule cut the fact from the notes, leaving only the file records.
 /// Now: the fact stays in the notes, is not repeated as a pinned fact, and the context may simply not shrink.
-/// (Notes are per session since 2026-11-09: the facts are this session's own, from the session it continues.)
+/// (Notes are per session: the facts are this session's own, from the session it continues.)
 #[test]
 fn jsonl_clear_with_memory_keeps_the_earlier_facts() {
     let dir = tmpdir("jsonl-clear-mem");
@@ -2936,8 +2936,8 @@ fn seed_session(d: &std::path::Path, id: u64, notes: &str) -> std::path::PathBuf
 const OLD_TASK_NOTES: &str = "## Goal\nFix a Python async example that raises RuntimeError with asyncio.run. OLD-TASK-GOAL\n\n\
     ## Current state / next step\nCheck the directory for the async file. OLD-TASK-NEXT\n\n## Facts to remember\n- OLD-TASK-FACT\n";
 
-/// 2026-11-09: in a folder whose earlier session left notes (the old shared `.elisa/notes.md` and a per-session
-/// notes file), a new session answered "hey" and "what can you do for me?" with that old task. A new session starts
+/// In a folder whose earlier session left notes (the old shared `.elisa/notes.md` and a per-session
+/// notes file), a new session must not answer "hey" and "what can you do for me?" with that old task. A new session starts
 /// clean: no earlier notes in any request, and the earlier notes stay on disk as they were.
 #[test]
 fn jsonl_new_session_with_old_notes_answers_hey_without_the_old_task() {
@@ -2969,7 +2969,7 @@ fn jsonl_new_session_with_old_notes_answers_hey_without_the_old_task() {
 
 /// `--continue` after a new session in between: the continued (newest) session comes back with its history and its
 /// own notes; `/clear` in it then carries those notes, and the notes of the session it continued are untouched.
-/// 2026-11-09: an old fact the conversation never mentions (another task's, carried in from a stale notes file) is
+/// An old fact the conversation never mentions (another task's, carried in from a stale notes file) is
 /// not merged forward; one it talks about is.
 #[test]
 fn jsonl_continue_restores_history_and_its_own_notes() {
@@ -2998,7 +2998,7 @@ fn jsonl_continue_restores_history_and_its_own_notes() {
     assert_eq!(std::fs::read_to_string(&seeded).unwrap(), own, "the continued session's own file changed");
 }
 
-/// 2026-11-09: a continued conversation looked empty in the app ("resumed 8 messages" only). Right after the banner
+/// A continued conversation must not look empty in the app (a "resumed N messages" line only). Right after the banner
 /// a `history` event lists its earlier turns: the user's own words (no Working directory / OS / Date header, notes,
 /// `[state]`, situation line; an attached document as its reference line), the replies as written, a tool call as one
 /// line, no tool results.
@@ -3638,8 +3638,8 @@ fn replica_lines_for_model_command() {
 
 // ---------- a reply cut by the output limit is continued ----------
 
-/// 2026-11-09: plain answers about a paper stopped mid-sentence at the output limit ("continue" turns with
-/// stop_reason max_tokens, three in a row). A text reply cut by the limit (OpenAI `finish_reason: "length"`) is
+/// Plain answers can stop mid-sentence at the output limit (stop_reason max_tokens), leaving the user to type
+/// "continue". A text reply cut by the limit (OpenAI `finish_reason: "length"`) is
 /// continued: the same history plus the partial reply and "Continue exactly where you stopped." (that request only),
 /// streamed into the same reply, up to 2 times; still cut: a quiet line to say "continue".
 #[test]

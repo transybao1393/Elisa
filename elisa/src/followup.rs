@@ -264,7 +264,7 @@ mod tests {
         assert!(PICK_OPTION.chars().count() as f32 / 3.3 <= 30.0);
     }
 
-    /// 2026-11-09: about an attached paper, "continue" got "details that are not in the original paper"
+    /// about an attached document, "continue" must not bring in details that are not in it
     #[test]
     fn document_hints_stay_with_the_document() {
         assert_eq!(line_for(&Kind::More, true), "(Follow-up: continue from the document: the next relevant part, only what it says, no repeats.)");
@@ -274,7 +274,7 @@ mod tests {
         assert_ne!(line_for(&Kind::More, false), line_for(&Kind::More, true));
     }
 
-    /// 2026-11-09: "ok" after "Would you like me to: 1. Create a code example … 2. Generate a chart …" got code
+    /// a bare "ok" after a reply that offered several options must not just pick the first one
     #[test]
     fn yes_after_several_options_asks_which() {
         let several = "TradingAgents beats the baselines.\n\nWould you like me to:\n1. **Create a code example** to build it?\n2. **Generate a visual chart**?\n3. **Help with prompting**?\n\nLet me know!";

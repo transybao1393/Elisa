@@ -51,7 +51,7 @@ fn messages(system: &str, msgs: &[Message]) -> Vec<Value> {
 /// `thinks`: the model reasons (Ollama capability "thinking"). Its reasoning comes out of `num_predict` too, so a
 /// reply budget sized for the answer alone was used up before the answer started: such a model gets `REASONING_ROOM`
 /// tokens on top of `max_tokens`, and `think` = the session's setting. Not the window's end (-2): a small model's
-/// reasoning can run on in circles, and then the whole window went by (185 s on qwen3-vl:2b) before the stop.
+/// reasoning can run on in circles, and then the whole window goes by before the stop.
 /// (qwen3-vl reasons about as long with `think: false` as with true: the flag is a hint, not a switch.)
 /// a reasoning model's room for its reasoning, on top of the answer's `max_tokens` (it measured 300–2,500 tokens on
 /// most questions, up to 5,700 on a picture)

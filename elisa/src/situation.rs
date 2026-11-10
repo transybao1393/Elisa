@@ -51,7 +51,8 @@ pub fn model_now(model: &str, vision: bool) -> String {
 pub fn model_facts(model: &str, vision: bool, native_tools: bool, thinking: bool, ctx: usize) -> String {
     // after a model switch a small model may copy the old model's answers from the history:
     // the line says that earlier replies may be another model's and are never copied
-    // ("you run on gemma3:1b" made gemma3:1b call itself Gemma: the model is what Elisa runs on, she stays Elisa)
+    // (told which model it runs on, a small model may take that name as its own: the model is what Elisa runs on,
+    // she stays Elisa)
     format!("Model facts (detected, true now): {}. \
         A question about the model is answered from these only, never from a document or an earlier reply (earlier replies \
         may be another model's); write every answer fresh, never copy an earlier one.", facts_head(model, vision, native_tools, thinking, ctx))
