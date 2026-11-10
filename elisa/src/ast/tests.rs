@@ -345,7 +345,7 @@ fn reindent_keeps_relative_indentation() {
     assert_eq!(reindent("fn a() {\n\n    b();\n}", "\t", true), "\tfn a() {\n\n\t    b();\n\t}");
 }
 
-/// soak M2: two Python statements joined on one line leave only a hidden `MISSING _newline` node; the guard must
+/// Two Python statements joined on one line leave only a hidden `MISSING _newline` node; the guard must
 /// still see it (it let the file through before)
 #[test]
 fn python_guard_catches_joined_statements() {

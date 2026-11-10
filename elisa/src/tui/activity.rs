@@ -189,7 +189,7 @@ pub(crate) fn detail(name: &str, input: &serde_json::Value, cwd: &std::path::Pat
 /// The edit as a diff with 3 context lines, computed from the file text the edit would write (the same
 /// `replacen` / `replace` as `tools::edit`), so the preview is what lands on disk. Splicing `new` in as whole lines
 /// showed an old text ending in a newline replaced by a new one without it as "no changes" / two separate lines,
-/// while the file got the two lines joined into one (soak M2).
+/// while the file got the two lines joined into one.
 fn edit_body(text: &str, old: &str, new: &str, all: bool) -> Vec<PL> {
     let n = if old.is_empty() { 0 } else { text.matches(old).count() };
     if n == 0 { return vec![PL::Note("old text not found in the file".into())]; }
@@ -269,7 +269,7 @@ pub(super) fn pl_line(p: &PL, nw: usize, w: usize) -> Line<'static> {
 mod edit_preview_tests {
     use super::*;
 
-    /// soak M2: old ends in a newline, new does not: the file gets two lines joined, and the preview must say so
+    /// Old ends in a newline, new does not: the file gets two lines joined, and the preview must say so
     #[test]
     fn preview_shows_joined_lines() {
         let text = "def t():\n    a = 1\n    assert a\n    b = 2\n";

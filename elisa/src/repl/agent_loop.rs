@@ -24,11 +24,11 @@ impl<'f> Session<'f> {
 
     /// One step's tool results against what the window has left (the limit minus the request so far): over it, the
     /// NEW results are cut before they are appended (largest first, `[trimmed N chars]`), so the next request never
-    /// goes over the limit (ui_run1: four big JSON reads made it 10.1K tokens against 8192).
+    /// goes over the limit (a few big parallel reads can otherwise push it over).
     ///
-    /// Append-only within a turn: older messages are never rewritten to make room (run2 calls 18–25: each step shrank
-    /// one earlier result to `[trimmed: … N lines]`, often longer than the original, and each call re-prefilled
-    /// 4.6–6.2K tokens, 52–71 s). Only when even the cut-to-minimum results do not fit does the turn's one fold run.
+    /// Append-only within a turn: older messages are never rewritten to make room (shrinking one earlier result per
+    /// step, often to a marker longer than the original, made each call re-prefill everything after the system
+    /// prompt and tools). Only when even the cut-to-minimum results do not fit does the turn's one fold run.
     fn fit_step_results(&mut self, results: &mut [Block]) {
         let need = estimate_messages(&[Message::new(Role::User, results.to_vec())]);
         let tail = self.limit() / STEP_TAIL;
@@ -75,7 +75,7 @@ impl<'f> Session<'f> {
     }
 
     /// After a fold: when the kept current turn is still over the limit, its newest tool results are cut to fit, so
-    /// the request after a fold never goes over it either (ui_run1: the fold kept the 25 KB reads and overflowed again).
+    /// the request after a fold never goes over it either (a fold that keeps big reads would overflow again).
     pub(super) fn fit_newest_results(&mut self) {
         if self.est_safe() <= self.limit() { return; }
         let Some(i) = self.history.iter().rposition(|m| m.content.iter().any(|b| matches!(b, Block::ToolResult { .. }))) else { return };
@@ -110,7 +110,7 @@ impl<'f> Session<'f> {
         let mut retried = false;
         let mut stashed_card: Option<String> = None;
         // a simple turn's reply that used its whole small budget with no text for the user: sent once more without
-        // the simple-turn limits (longrun2: a two-question turn judged simple showed only the stop line)
+        // the simple-turn limits (otherwise a two-question turn judged simple shows only the stop line)
         let mut widened = false;
         // a small-talk turn whose reply called a tool: asked once more with no tools and a note in that request only
         // (or a turn asked again in words with its own note: `retry_note`)
@@ -121,7 +121,7 @@ impl<'f> Session<'f> {
         for step in 0..=max_steps {
             if step == max_steps && final_ask.is_none() { break; }
             if !self.mid_turn_fold() {
-                // run2 call 30: sent anyway, 8,199 tokens against 8,192, and the server returned nothing
+                // sent anyway, a request over the window gets nothing back from the server
                 // only this turn is left and it is still too big (a very long message): nothing more to make room from
                 self.history.push(Message::assistant_text("[stopped: context full]"));
                 self.fe.info(&format!("[stopped: this message (~{} tokens) is too long for the model's {}-token context; send a shorter one]", ui::k(self.est_safe()), ui::k(self.max_ctx)));
@@ -193,7 +193,7 @@ impl<'f> Session<'f> {
                 reply.usage.output_tokens = estimate_messages(&[Message::new(Role::Assistant, reply.content.clone())]).saturating_sub(MSG_OVERHEAD_TOKENS);
             }
             // Anthropic usage: input_tokens excludes the cached (reused) part. Without it the context is the estimate
-            // of the request just sent plus that output (uitest: ctx_used 0 after Esc reset the app's ctx meter)
+            // of the request just sent plus that output (a ctx_used of 0 after Esc would reset the app's ctx meter)
             // no count from the server: Elisa's estimate, marked in the status line (`backend::ctx_from`)
             let (prompt_ctx, estimated) = crate::backend::ctx_from(prompt_real, self.estimate());
             let ctx_used = prompt_ctx + if estimated { reply.usage.output_tokens } else { reply.usage.output_tokens.saturating_sub(reply.usage.reasoning_tokens) };
@@ -685,7 +685,7 @@ impl AstStats {
 }
 
 /// The /context line on the syntax-tree tools: their tokens against reading the same files whole, and which side is
-/// cheaper (uitest: "181 tokens vs 30 … 0.2x fewer" said fewer for 6x more).
+/// cheaper (a ratio under 1 must say "more", never "0.2x fewer").
 fn ast_line(calls: usize, tokens: usize, whole: usize, files: usize) -> String {
     let what = if files == 1 { "that file".to_string() } else { format!("those {files} files") };
     let ratio = match (tokens, whole) {
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn ast_line_says_which_side_is_cheaper() {
-        // uitest: "181 tokens vs 30 for reading those 1 files whole · 0.2x fewer"
+        // more tokens than reading whole says "more", never "0.2x fewer"; one file is "that file"
         assert_eq!(ast_line(3, 181, 30, 1), "ast: outline + read_symbol 3 calls · 181 tokens vs 30 for reading that file whole · 6.0x more tokens (small files: reading them whole is cheaper)");
         assert_eq!(ast_line(1, 200, 2400, 2), "ast: outline + read_symbol 1 call · 200 tokens vs 2.4K for reading those 2 files whole · 12.0x fewer tokens");
         assert_eq!(ast_line(2, 50, 0, 0), "ast: outline + read_symbol 2 calls · 50 tokens vs 0 for reading those 0 files whole");

@@ -242,7 +242,7 @@ impl<'f> Session<'f> {
     /// every plugin, the user's and the project's
     fn all_plugins(&mut self) -> Vec<plugins::Info> {
         if let Some(h) = self.home.clone() { self.plugin_infos = plugins::load_user(&h, &self.cwd, &|_| false).infos; }
-        // a server this session could not start is marked failed, with docker's reason (longrun2 F5)
+        // a server this session could not start is marked failed, with docker's reason
         plugins::set_live(&mut self.plugin_infos, &self.plugin_servers, &|n| self.mcp.down_reason(n));
         self.plugin_infos.iter().chain(&self.proj_infos).cloned().collect()
     }
@@ -303,7 +303,7 @@ impl<'f> Session<'f> {
     /// Plugins changed outside this session (another window, `elisa plugin remove`): when the state file's stamp moved,
     /// the plugins are loaded again as `/plugin enable` / `disable` would — servers of removed or switched-off plugins
     /// stop and their tools, rules and commands go; newly switched-on ones start — with a line for each. Cheap when
-    /// nothing changed (one stat). Run before each turn and before a plugin tool call (longrun2 F4).
+    /// nothing changed (one stat). Run before each turn and before a plugin tool call.
     pub(super) fn sync_plugins(&mut self) {
         let Some(home) = self.home.clone() else { return };
         let now = plugins::state_stamp(&home);
@@ -630,8 +630,8 @@ impl<'f> Session<'f> {
                     Ok(n) => {
                         let old = self.notes.clone();
                         // merged into the earlier notes (the folds' summaries and cards stay), its claims checked
-                        // and the files changed this session taken from Elisa's own records (soak: /clear replaced
-                        // the notes with one turn's summary that said "No files were touched" after 4 edits)
+                        // and the files changed this session taken from Elisa's own records (otherwise /clear can replace
+                        // the notes with one turn's summary that says "No files were touched" after edits)
                         let v = self.verified(&n);
                         let m = self.merge_kept(old.as_deref(), &v);
                         let n = self.finish_notes(m);

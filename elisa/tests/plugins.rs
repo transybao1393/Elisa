@@ -291,7 +291,7 @@ fn plugin_add_in_a_session_shows_the_setup_asks_and_brings_the_server_in() {
 
 #[test]
 fn a_plugin_removed_by_another_process_stops_in_a_running_session() {
-    // longrun2 F4: `elisa plugin remove` while a session ran left the plugin's server working in that session
+    // `elisa plugin remove` while a session runs must stop the plugin's server in that session
     let d = setup("removed-elsewhere");
     let src = d.0.join("src-plugin").display().to_string();
     assert_eq!(elisa(&d.0, &["plugin", "add", &src, "--yes"]).0, 0);
@@ -433,7 +433,7 @@ exit 0
 
 #[test]
 fn a_container_server_that_docker_cannot_start_is_reported_as_failed_with_the_reason() {
-    // longrun2 F5: exit 125 "bind source path does not exist" was shown as "Run 'docker run --help'…", and the plugin
+    // exit 125 "bind source path does not exist" must not show as "Run 'docker run --help'…", nor the plugin
     // as "installed and on"
     let d = setup("fail125");
     let bin = d.0.join("bin");

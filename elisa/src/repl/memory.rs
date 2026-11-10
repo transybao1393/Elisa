@@ -199,7 +199,7 @@ impl<'f> Session<'f> {
     }
 
     /// After /clear (history empty, new notes set): the context should come out smaller than `before`. Notes
-    /// longer than the conversation they replace (uitest: 2.5K → 2.9K after three short turns) lose their low-value
+    /// longer than the conversation they replace (possible after a few short turns) lose their low-value
     /// lines (`context::shrink_for_clear`: new aliases, the model's file list and request quote, the excess of an
     /// overlong section), never a fact, a line of the earlier notes or Elisa's file records. When that is not enough
     /// the notes stay as they are and the context does not shrink (eval `context.clear_merges_notes`: a fact was cut
@@ -376,11 +376,11 @@ impl<'f> Session<'f> {
     }
 
     /// Before each request of a turn. Within a turn the history is append-only (a sent message never changes: the
-    /// gateway's DeltaNet + KV state cannot rewind, so any rewrite re-prefills everything after system + tools; run2
-    /// turn 1 lost ~430 s to 8 such rewrites). Only when the output reserve is gone (the request is over the limit)
+    /// gateway's DeltaNet + KV state cannot rewind, so any rewrite re-prefills everything after system + tools, which
+    /// costs minutes over a long turn). Only when the output reserve is gone (the request is over the limit)
     /// does the one rewrite a turn may make run: a fold (earlier turns, or this turn's older results when it alone is
     /// over). Returns whether the request fits max_ctx with MIN_OUT of output after the safety margin; when it does
-    /// not, the caller stops the turn instead of sending a request the server would refuse (run2 call 30).
+    /// not, the caller stops the turn instead of sending a request the server would refuse.
     ///
     /// Over the limit, the room is made in this order, and the turn goes on by itself (rather than stopping
     /// with "say continue" every turn): earlier documents' text becomes their reference lines (`context::drop_doc_text`),

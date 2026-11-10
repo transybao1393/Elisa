@@ -34,7 +34,7 @@ pub const TINY_CTX: usize = 4096;
 pub fn tiny_window(max_ctx: usize) -> bool { max_ctx < TINY_CTX }
 
 /// Share (percent) of max_ctx kept free on top of the output reserve: the 3.3 chars/token estimate runs low on code and
-/// JSON (run2 call 30: 8,199 real tokens sent against max_ctx 8,192 and 0 tokens came back).
+/// JSON (a request a few tokens over max_ctx can come back with nothing at all).
 pub const CTX_MARGIN_PCT: usize = 3;
 pub fn ctx_margin(max_ctx: usize) -> usize { (max_ctx * CTX_MARGIN_PCT).div_ceil(100) }
 
@@ -94,11 +94,11 @@ pub fn min_fold_gain(fixed: usize, limit: usize) -> usize { (limit.saturating_su
 
 /// The notes' share of the window (tokens): a sixth of the working budget, within 200 ..= 1200. After a fold the
 /// prompt is the fixed cost + the notes + the kept exchange; notes near the fold point made every later turn fold again
-/// (8K live run: ~1,000-token notes left ~700 tokens of room before the next fold).
+/// (at 8K, ~1,000-token notes leave ~700 tokens of room before the next fold).
 pub fn notes_budget(fixed: usize, limit: usize) -> usize { (limit.saturating_sub(fixed) / 6).clamp(200, 1200) }
 
-/// A tool result that did not fit even after a fold: said plainly, so the model does not invent what it held (soak:
-/// a grep count trimmed to nothing was answered "2734"; the real count was 378).
+/// A tool result that did not fit even after a fold: said plainly, so the model does not invent what it held (a
+/// count trimmed to nothing can get a made-up number).
 pub fn not_shown(content: &str) -> String {
     let first = content.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     format!("[elisa: this result ({} chars, {} lines; it starts \"{}\") did not fit the context window even after folding \

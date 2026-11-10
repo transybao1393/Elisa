@@ -21,7 +21,7 @@
 //! One exception for `read` (`read_source`): a file in a document format people receive rather than write in a code
 //! project — PDF, Word / OpenDocument / RTF, e-book, mail, a web archive, or an HTML page saved from a browser
 //! ("saved from url=") — is fenced like `docs_pdf`'s output, so a document's injected text is data whichever tool
-//! reads it (longrun2: `read report.pdf` of an ASCII PDF gave the model what `docs_pdf` had fenced). The rule goes by
+//! reads it (otherwise `read` of an ASCII PDF gives the model unfenced what `docs_pdf` fences). The rule goes by
 //! the file's type, not its folder: a project's own source (its .html included) stays the user's content, unfenced.
 
 use regex::Regex;

@@ -283,7 +283,7 @@ fn a_present_older_line_runs_when_the_user_says_no_and_is_named_once() {
 
 #[test]
 fn with_deps_a_no_to_the_download_also_falls_back_and_is_not_asked_again() {
-    // longrun2 F2: the fetch phase runs in the wanted image too; a no there must fall back like a run without deps
+    // the fetch phase runs in the wanted image too; a no there must fall back like a run without deps
     let d = setup("fallbackdeps");
     std::fs::write(d.0.join("state/python_3.13-alpine"), "sha256:old|7000000|x@sha256:old ").unwrap();
     std::fs::create_dir_all(d.0.join("project/.git")).unwrap();

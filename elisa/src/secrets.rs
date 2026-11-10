@@ -130,8 +130,8 @@ fn rules() -> &'static [Rule] {
                 Check::Env,
                 &[],
             ),
-            // the same caps KEY=value / KEY: value inside a sentence, after a space or punctuation (QA N2: "my db password
-            // is DB_PASSWORD=Zr4W…" typed by the user); the value must also hold a digit (`Check::Mid`)
+            // the same caps KEY=value / KEY: value inside a sentence, after a space or punctuation ("my db password
+            // is DB_PASSWORD=…" typed by the user); the value must also hold a digit (`Check::Mid`)
             r(
                 "env-secret",
                 r#"(?:^|[\s(\[{,;])[*`"']{0,2}(?:[A-Z][A-Z0-9_]*)?(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|AUTH_?KEY|CREDENTIALS?)[A-Z0-9_]*[*`"']{0,2}[ \t]*(?::=|=|:)[ \t]*["'`]?([^\s"'`#,;]{8,})"#,
@@ -285,7 +285,7 @@ fn mask(v: &str) -> String {
 }
 
 /// The secret values a session has seen, so a later restatement of one in any context (a model's prose "the key is
-/// Zp…", a quote with no key name) is hidden too (QA N1: a value read from `app.cfg` was stored redacted in the tool
+/// Zp…", a quote with no key name) is hidden too (otherwise a value read from a file is stored redacted in the tool
 /// result but raw in the model's sentence about it). In memory only, never written anywhere. A value is learned
 /// only when a rule matched it and it is long and random enough (`learnable`), so ordinary words never get scrubbed.
 #[derive(Default, Debug)]
@@ -634,7 +634,7 @@ mod tests {
         }
     }
 
-    /// QA N2: caps `KEY=value` and `key: value` inside a sentence (the user typing a password into the prompt).
+    /// Caps `KEY=value` and `key: value` inside a sentence (the user typing a password into the prompt).
     #[test]
     fn mid_sentence_assignments() {
         let v = k(&["Zr4W", "q8Lp2Nx6Tb9Vk3Hs"]);
@@ -674,7 +674,7 @@ mod tests {
         }
     }
 
-    /// QA N1: a value seen once is hidden later wherever it appears, prose included.
+    /// A value seen once is hidden later wherever it appears, prose included.
     #[test]
     fn scrubber_learns_values_and_scrubs_any_context() {
         let v = k(&["ZpQ8", "1kLmN3vB7xR2tY6w"]);

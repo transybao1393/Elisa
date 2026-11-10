@@ -61,7 +61,7 @@ impl LineStream {
 
 /// Send a streaming POST. The blocking network reads (the wait for the response head, then each line) run on a
 /// thread of their own, so the caller can stop the moment `cancel` is set: Esc before the first token used to wait
-/// for the server's first bytes (longrun2: 3.6 s). A cancelled call's thread ends with its connection, the next time
+/// for the server's first bytes, seconds on a long prefill. A cancelled call's thread ends with its connection, the next time
 /// the server sends or closes. Ok(None) = cancelled before the response head; an error status is Err("HTTP n: …").
 pub(crate) fn post_lines(rq: ureq::RequestBuilder<ureq::typestate::WithBody>, body: String, cancel: &AtomicBool) -> Result<Option<LineStream>, String> {
     use std::sync::mpsc::{channel, RecvTimeoutError};

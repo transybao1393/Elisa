@@ -259,8 +259,8 @@ fn trim_result(content: &str) -> String {
     format!("[trimmed: {} … {} lines]", head(first, 80), content.lines().count())
 }
 
-/// Whether a fold's one-line shrink would really make this result shorter: run2 turned "False\n[exit 0]" (14 chars)
-/// into "[trimmed: False … 2 lines]" (25), a longer rewrite that still cost a full re-prefill.
+/// Whether a fold's one-line shrink would really make this result shorter: "False\n[exit 0]" (14 chars) would become
+/// "[trimmed: False … 2 lines]" (25), a longer rewrite that still costs a full re-prefill.
 fn shrinkable(content: &str) -> bool {
     !content.starts_with("[trimmed:") && trim_result(content).chars().count() < content.chars().count()
 }
@@ -275,8 +275,8 @@ fn trim_strings(v: &mut Value) {
 }
 
 /// a capped tool result keeps at least this many chars (~300 tokens: its head, its tail and the marker); the session
-/// folds older turns rather than cut below it, and says so plainly when even that does not fit (`not_shown`). soak:
-/// results cut to "0 tokens left" (240 chars of head) were re-requested or answered with invented numbers.
+/// folds older turns rather than cut below it, and says so plainly when even that does not fit (`not_shown`).
+/// Results cut to almost nothing get re-requested or answered with invented numbers.
 pub const RESULT_MIN_CHARS: usize = 1000;
 
 /// Follows the marker of a cut `read`: the cut took its `next: offset=N` footer, and more reads would only be cut too
@@ -334,8 +334,8 @@ fn cut_result(content: &str, keep: usize) -> String {
 
 /// One step's tool results fitted into `room_tokens` (what the window has left before the output reserve): when
 /// they are over, the largest are cut first, water-filling, so every result keeps the same share and small ones stay
-/// whole (each keeps >= RESULT_MIN_CHARS). ui_run1: four parallel reads of big JSON files (25 KB) made the next request
-/// 10.1K tokens against an 8192 limit. Returns how many results were cut.
+/// whole (each keeps >= RESULT_MIN_CHARS). Otherwise a few parallel reads of big files can push the next request
+/// over the limit. Returns how many results were cut.
 pub fn cap_step_results(results: &mut [Block], room_tokens: usize) -> usize {
     let mut sizes: Vec<usize> = Vec::new();
     let mut overhead = 0;

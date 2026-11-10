@@ -384,7 +384,7 @@ pub fn verify_claims(notes: &str, ledger: &Ledger, now: &dyn Fn(&str) -> Option<
             continue;
         }
         // sentence by sentence: a paragraph that mixes a real change with an invented one keeps only the real one
-        // (8K live run: "…created CHANGELOG.md. The model has updated README.md…" with README.md never changed)
+        // (e.g. "…created CHANGELOG.md. The model has updated README.md…" when README.md never changed)
         let done = heading.starts_with("done");
         let mut kept: Vec<String> = Vec::new();
         for sent in sentences(l.trim_end()) {

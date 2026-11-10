@@ -211,7 +211,7 @@ pub fn strong_recall(query: &str, hit: &str) -> bool {
 /// The summary instructions (prompts/compact.md), sent as one more user message for an in-context summary.
 pub fn compact_instructions() -> &'static str { COMPACT_MD.trim_end() }
 
-/// Words that make a message small talk, not a task (soak: "hi Elisa! how are you today?" became the session goal).
+/// Words that make a message small talk, not a task (so "hi Elisa! how are you today?" never becomes the session goal).
 const SMALL_TALK: &[&str] = &[
     "hi", "hello", "hey", "heya", "hiya", "yo", "howdy", "greetings", "good", "morning", "afternoon", "evening", "day",
     "night", "how", "are", "is", "it", "going", "you", "doing", "today", "elisa", "there", "again", "thanks", "thank",

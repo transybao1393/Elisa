@@ -94,7 +94,7 @@ impl Store {
         let dir = self.sessions_dir();
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let p = dir.join(format!("{}.json", run_id()));
-        // the title below comes from the redacted copy too (QA N2: a password typed in the prompt reached the .meta)
+        // the title below comes from the redacted copy too (so a password typed in the prompt never reaches the .meta)
         let mut msgs = redact_messages(msgs);
         // a turn's situation line / follow-up hint is that request's only: the saved user words go without it
         for m in msgs.iter_mut().filter(|m| m.role == Role::User) {

@@ -468,7 +468,7 @@ fn useless_edits_fail_before_approval() {
     assert!(!tools::looks_like_url("src/a.rs") && !tools::looks_like_url("://x") && !tools::looks_like_url("1a://x") && !tools::looks_like_url("a b://x"));
 }
 
-/// soak M2 (tests/test_core.py 19:12:33): `old` ended in a newline, `new` did not, so the edit joined two statements
+/// `old` ended in a newline, `new` did not, so the edit joined two statements
 /// on one line. The parse guard missed it (tree-sitter-python marks it only with a hidden `MISSING _newline`); now
 /// the edit is refused and the file is unchanged.
 #[test]

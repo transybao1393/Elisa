@@ -494,7 +494,7 @@ fn step_results_are_water_filled_into_the_room_left() {
     // fits: unchanged
     let mut v = vec![r("a", 1000), r("b", 2000)];
     assert_eq!(cap_step_results(&mut v, 5000), 0);
-    // ui_run1: four ~6.4K-char files into ~2K tokens: the small one stays whole, the big ones share the rest
+    // four ~6.4K-char files into ~2K tokens: the small one stays whole, the big ones share the rest
     let mut v = vec![r("a", 6500), r("b", 5700), r("c", 300), r("d", 6400)];
     assert_eq!(cap_step_results(&mut v, 2000), 3);
     assert_eq!(len(&v[2]), 300);
@@ -564,8 +564,8 @@ fn session_goal_from_the_first_request_or_a_stated_new_goal() {
     assert!(n2.contains("G2 goal") && !n2.contains("G1 goal") && n2.contains("## Done\n- x"), "{n2}");
 }
 
-/// run2 call 30: the server had reported 8,047 prompt tokens + 54 output for call 29, call 30 added ~98 tokens of
-/// text, and the chars/token estimate of the whole request was lower. The safe size takes the larger, and the request
+/// The server reported 8,047 prompt tokens + 54 output for the last call, the next one adds ~98 tokens of
+/// text, and the chars/token estimate of the whole request is lower. The safe size takes the larger, and the request
 /// does not fit 8,192 with the 3% margin and MIN_OUT, so it is never sent.
 #[test]
 fn safe_request_tokens_takes_the_report_and_the_ratio() {
@@ -580,7 +580,7 @@ fn safe_request_tokens_takes_the_report_and_the_ratio() {
     assert!(!context::request_fits(8_192 - 246 - 319, 320, 8_192));
 }
 
-/// run2: a fold's one-line shrink turned "False\n[exit 0]" into the longer "[trimmed: False … 2 lines]".
+/// A fold's one-line shrink must not turn "False\n[exit 0]" into the longer "[trimmed: False … 2 lines]".
 #[test]
 fn shrink_never_makes_a_result_longer() {
     let r = |id: &str, c: &str| Message::new(Role::User, vec![Block::ToolResult { tool_use_id: id.into(), content: c.into(), is_error: false }]);
@@ -885,7 +885,7 @@ fn notes_cap_drops_by_priority_not_position() {
     let c = context::cap_notes_priority(&n, 30);
     assert!(c.contains("core.py: edited 1×") && c.contains("newest item") && !c.contains("old item one"), "the oldest done item goes first: {c}");
     assert_eq!(context::cap_notes_priority(&n, 10_000), context::tidy_notes(&n));
-    // a long done list never starves the facts and the next step (8K live run: the facts were gone)
+    // a long done list never starves the facts and the next step
     let done: String = (0..40).map(|i| format!("- done item {i} with a few more words\n")).collect();
     let n = format!("## Done\n{done}\n## Current state / next step\nNEXT-STEP\n\n## Facts to remember\n- FACT codename BLUE HERON");
     let c = context::cap_notes_priority(&n, 120);
@@ -952,7 +952,7 @@ fn injected_history() -> Vec<Message> {
     ]
 }
 
-/// longrun2: text from untrusted sources (fenced) must not become a goal, decision or next step in the notes or the
+/// Text from untrusted sources (fenced) must not become a goal, decision or next step in the notes or the
 /// state card; at most a quoted fact with its source.
 #[test]
 fn outside_text_stays_out_of_goal_and_next_steps() {
@@ -981,7 +981,7 @@ fn outside_text_stays_out_of_goal_and_next_steps() {
     assert!(plain.is_empty());
 }
 
-/// longrun2: the start of a 200 KB paste became the session goal and survived /clear. A paste gives no goal; the
+/// The start of a long paste must not become the session goal and survive /clear. A paste gives no goal; the
 /// user's own line around it does; a goal follows the conversation to a different task.
 #[test]
 fn session_goal_comes_from_the_users_words_not_a_paste() {

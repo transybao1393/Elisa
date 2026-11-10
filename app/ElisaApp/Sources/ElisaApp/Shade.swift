@@ -124,7 +124,7 @@ final class ShadeKit {
 /// How fast the Shades may animate, from the main window's state: occluded / minimized / app hidden = paused (no
 /// timeline ticks at all), not key = a lower rate, and a sleeping Shade holds one pose (curled, eyes shut, mid-breath)
 /// that is drawn once per state change. Each tick of a Shade's TimelineView re-runs the window's SwiftUI update and
-/// display pass; that is what kept an idle window with a sleeping Shade at ~50 % CPU (uitest longrun M4). Awake in the
+/// display pass; that is what kept an idle window with a sleeping Shade at ~50 % CPU. Awake in the
 /// key window: rates unchanged.
 @MainActor
 final class ShadePace: ObservableObject {

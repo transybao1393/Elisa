@@ -3,8 +3,8 @@ use super::*;
 /// What the model got from outside sources in a stretch of conversation: the bodies of the `<untrusted source=…>`
 /// fences in its tool results (web pages, fetched documents, MCP / plugin output; `untrusted.rs`), as 4-word runs,
 /// minus any run the user also wrote. Notes and state cards are checked against it (`quarantine_notes`,
-/// `quarantine_card`): longrun2 found a fenced page's instruction copied into the notes' next step, from where it
-/// carried across /clear as if the user had asked for it.
+/// `quarantine_card`): otherwise a fenced page's instruction can be copied into the notes' next step, from where it
+/// carries across /clear as if the user had asked for it.
 #[derive(Default)]
 pub struct Outside {
     spans: Vec<(String, HashSet<String>)>,

@@ -1,4 +1,4 @@
-//! Two processes on one memory store (longrun2 F1): two Elisa sessions with the same HOME and different projects.
+//! Two processes on one memory store: two Elisa sessions with the same HOME and different projects.
 //! Session A idles while session B writes turns, ends its session (/clear), writes again and compacts; A's next
 //! turn used to panic in elisa-mem (`text`: index out of bounds, B had rewritten the shared hot files under A), and
 //! the ids both handed out collided. The child process is this test binary run again with `MEM_RACE_CHILD` set.
@@ -51,7 +51,7 @@ fn child(d: &Path, rounds: usize) -> std::process::Child {
         .spawn().unwrap()
 }
 
-/// The longrun2 sequence: A opens and writes, B runs to the end (turns, end, new session, compaction), then A's next
+/// The sequence: A opens and writes, B runs to the end (turns, end, new session, compaction), then A's next
 /// recall and write. Then both at once, many writes each: every record lands once, ids stay dense, nothing panics.
 #[test]
 fn two_processes_share_one_memory_store() {

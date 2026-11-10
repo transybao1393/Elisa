@@ -887,7 +887,7 @@ pub fn prepare_trust(home: &Path, name: &str) -> Result<(Manifest, Preview), Str
 pub const UNPARSABLE: &str = "no longer parses";
 
 /// An installed plugin whose changed plugin.toml does not parse cannot be trusted (there is nothing to review or run):
-/// it stays off, and the message says the ways out (longrun2: only removal worked, and nothing said so).
+/// it stays off, and the message says the ways out (otherwise nothing tells the user that removal works).
 fn unparsable(name: &str, e: &str) -> String {
     format!("plugin {name}: its plugin.toml {UNPARSABLE}, so it cannot be trusted and stays off — {e}
         Ways out: /plugin update {name} installs it again from its source folder; /plugin remove {name} removes it; \
@@ -1243,8 +1243,8 @@ pub fn run_server(args: &[String]) -> i32 {
         Ok((d, a)) => {
             d.sweep();
             // a child, not exec: its stderr passes through, and when docker could not start the container (125-127)
-            // the last line says why in words (the session keeps only the last stderr line; longrun2 F5: that was
-            // "Run 'docker run --help' for more information")
+            // the last line says why in words (the session keeps only the last stderr line, which docker otherwise
+            // fills with "Run 'docker run --help' for more information")
             let mut c = Command::new(&d.bin);
             c.args(&a).env("DOCKER_HOST", &d.host).env_remove("DOCKER_CONTEXT").stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::piped());
             let mut child = match c.spawn() { Ok(c) => c, Err(e) => { eprintln!("plugin {plugin}/{server}: cannot run docker: {e}"); return 1 } };

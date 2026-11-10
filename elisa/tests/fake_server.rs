@@ -1794,7 +1794,7 @@ fn metrics_lines_and_stats() {
     assert!(o2.stderr.contains("metrics are off"), "{}", o2.stderr);
 }
 
-// ---------- ui_run1 fixes: one step's results vs the context; warm-ups ----------
+// ---------- one step's results vs the context; warm-ups ----------
 
 /// Tokens of a request by src/context.rs's estimate (3.3 chars/token, 6 per message, tools + 240 preamble).
 fn est_tokens(req: &Value) -> usize {
@@ -1815,8 +1815,8 @@ fn four_reads(input: usize, tag: &str) -> Resp {
     s.end("tool_use", 20)
 }
 
-/// ui_run1 A: four parallel reads (25 KB) made the next request 10.1K tokens against 8192, and the fold after it
-/// kept them and overflowed again. Now one step's results are cut to what the window has left (largest first,
+/// Four parallel big reads must not push the next request over the limit, nor the fold after it
+/// keep them and overflow again. Now one step's results are cut to what the window has left (largest first,
 /// `[trimmed N chars]`), and every request (also after the folds) stays under the limit (8192 - 2048 output).
 #[test]
 fn parallel_tool_results_are_capped_to_the_context_and_folds_stay_under_the_limit() {
@@ -2487,8 +2487,8 @@ fn written_files(d: &Path) -> Vec<PathBuf> {
     all
 }
 
-/// QA N1: `app.cfg` holds `API_KEY_PROD=<value>`; the tool result was stored redacted, but the model's sentence
-/// "…app.cfg with the value <value>" (no key name) reached notes, the session and memory raw. A value the session
+/// `app.cfg` holds `API_KEY_PROD=<value>`; the tool result is stored redacted, and the model's sentence
+/// "…app.cfg with the value <value>" (no key name) must not reach notes, the session or memory raw. A value the session
 /// has seen is now hidden wherever it appears on disk.
 #[test]
 fn a_secret_restated_in_prose_never_reaches_disk() {
@@ -2517,8 +2517,8 @@ fn a_secret_restated_in_prose_never_reaches_disk() {
     assert!(saw_reply, "the reply was saved (redacted): {all:?}");
 }
 
-/// QA N2: a `KEY=value` / `key: value` the user types inside a sentence was raw in the session, metrics.jsonl and
-/// memory (a ghp_ token in the same message was redacted).
+/// A `KEY=value` / `key: value` the user types inside a sentence must not stay raw in the session, metrics.jsonl or
+/// memory (a ghp_ token in the same message is redacted too).
 #[test]
 fn a_secret_typed_mid_sentence_never_reaches_disk() {
     let d = tmpdir("secret-typed");
@@ -2539,7 +2539,7 @@ fn a_secret_typed_mid_sentence_never_reaches_disk() {
     assert!(s.contains("DB_PASSWORD=[redacted:env-secret]") && s.contains("password: [redacted:"), "{s}");
 }
 
-/// QA N3: a reply with only its state card left the user with nothing to read. Asked once more (the nudge goes with
+/// A reply with only its state card leaves the user with nothing to read. Asked once more (the nudge goes with
 /// that one request, never into the history), then an info line if it is still empty.
 #[test]
 fn an_empty_visible_reply_is_retried_once_then_noted() {
@@ -2673,7 +2673,7 @@ fn jsonl_a_cancelled_tool_turn_leaves_no_trace_in_the_next_request() {
 }
 
 /// Esc mid-reply on a server that reports no usage (Ollama sends it only at the end): `reply_done` carries the
-/// estimated context, not 0 (uitest: the ctx meter reset to 0/8.2K). A short reply has no decode window: tok_s null.
+/// estimated context, not 0 (that would reset the app's ctx meter). A short reply has no decode window: tok_s null.
 #[test]
 fn jsonl_interrupt_keeps_the_context_and_short_replies_have_no_rate() {
     let dir = tmpdir("jsonl-esc-ctx");
@@ -2807,9 +2807,9 @@ fn no_model_sends_nothing_and_says_how_to_choose() {
     assert!(o.stderr.contains("No model chosen") && o.stderr.contains("--model"), "{}", o.stderr);
 }
 
-// ---------- longrun2 fixes: a panic in a turn, Esc before the first token, max_tokens with nothing shown ----------
+// ---------- a panic in a turn, Esc before the first token, max_tokens with nothing shown ----------
 
-/// A panic inside a turn (longrun2 F1: elisa-mem's index out of bounds) reaches the user as an error event plus
+/// A panic inside a turn (e.g. an index out of bounds in elisa-mem) reaches the user as an error event plus
 /// `turn_done`, and the next message is an ordinary turn (before, the agent thread died and the app waited forever).
 #[test]
 fn jsonl_a_panic_in_a_turn_is_an_error_and_the_session_goes_on() {
@@ -2839,7 +2839,7 @@ fn jsonl_a_panic_in_a_turn_is_an_error_and_the_session_goes_on() {
 }
 
 /// Esc while the server has not sent a byte yet (prefill of a long prompt): the call stops within ~300 ms instead of
-/// waiting for the first bytes (longrun2: "[cancelled]" 3.6 s after Esc).
+/// waiting for the first bytes (seconds on a long prefill).
 #[test]
 fn cancel_before_the_first_byte_stops_at_once() {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2876,7 +2876,7 @@ fn cancel_before_the_first_byte_stops_at_once() {
 }
 
 /// A simple turn (small output cap) whose reply spends the whole cap with no text for the user is sent once more
-/// without the simple-turn cap; the user gets the answer, not just a stop line (longrun2 s1b sales.xlsx turn).
+/// without the simple-turn cap; the user gets the answer, not just a stop line.
 #[test]
 fn simple_turn_that_hits_max_tokens_with_no_text_is_retried_uncapped() {
     let dir = tmpdir("jsonl-maxtok");

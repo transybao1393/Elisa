@@ -278,8 +278,8 @@ impl<'f> Session<'f> {
             self.watch_poll();
             let Some(line) = self.fe.read_input() else { break };
             // a panic anywhere in the line's work (a turn, a command, the fold after it) ends that line with an error
-            // and its turn_done; the session takes the next message (longrun2 F1: a panic in elisa-mem killed the
-            // agent thread silently and the app showed the turn as running forever)
+            // and its turn_done; the session takes the next message (otherwise a panic kills the agent thread
+            // silently and the app shows the turn as running forever)
             self.done_sent = false;
             let go_on = match guarded(|| self.one_line(line)) {
                 Ok(g) => g,

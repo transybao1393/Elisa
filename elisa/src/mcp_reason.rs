@@ -524,7 +524,7 @@ mod tests {
         }
         assert_eq!(call("think", &json!({}), &mut st), (ENOUGH.to_string(), false));
         assert_eq!(call("think", &json!({"thought": "a real one"}), &mut st), (ENOUGH.to_string(), false));
-        // 16 empty calls (the QA run): all past the third are capped
+        // 16 empty calls: all past the third are capped
         let mut st = State::default();
         let capped = (0..16).filter(|_| call("think", &json!({}), &mut st).0 == ENOUGH).count();
         assert_eq!(capped, 16 - THINK_MAX);

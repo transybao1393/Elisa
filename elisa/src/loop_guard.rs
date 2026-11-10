@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn a_binary_file_is_read_once_whatever_the_paging() {
-        // retest N5: read revenue.xlsx ran ~6 times as {path}, {limit:4}, {limit:400}, {offset:1}
+        // a binary file can otherwise be read again and again with other paging: {path}, {limit:4}, {limit:400}, {offset:1}
         let mut g = Guard::default();
         let err = "revenue.xlsx is a binary file: read shows text only, and no offset / limit changes that. Use docs_sheet …";
         assert_eq!(step_out(&mut g, "read", json!({"path": "revenue.xlsx"}), err, true).0, Verdict::Run);

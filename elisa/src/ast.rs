@@ -610,7 +610,7 @@ pub fn errors(src: &str, tree: &Tree) -> Vec<ParseErr> {
         let mut c = n.walk();
         let kids: Vec<Node> = n.children(&mut c).collect();
         // the error sits in a hidden node the node API never shows (Python's `MISSING _newline` when two statements
-        // are joined on one line): report it here, or the guard lets a broken file through (soak M2)
+        // are joined on one line): report it here, or the guard lets a broken file through
         if !kids.iter().any(|k| k.has_error() || k.is_error() || k.is_missing()) { out.push(hidden_error(src, n, &kids)); }
         for k in kids.into_iter().rev() { stack.push(k); }
     }
@@ -681,7 +681,7 @@ pub fn guard(path: &Path, rel: &str, old: Option<&str>, new: &str) -> Result<(),
 // ---------- duplicates after an edit (the parse guard's write / edit warning) ----------
 
 /// Everything defined twice in one file, each line named by `rel`: top-level symbols (not `impl` / extension
-/// blocks), the same HTTP route registered twice (Python / JS decorators; ui_run2 added `search_items` twice), and
+/// blocks), the same HTTP route registered twice (Python / JS decorators), and
 /// class members (Python / JS / TS; Rust and Swift members are skipped: two `impl` / extension blocks may each have
 /// their own `fmt`). A Python `@overload` / `@x.setter` / `@x.deleter` member is not a duplicate.
 pub fn duplicates(path: &Path, rel: &str) -> Vec<String> {

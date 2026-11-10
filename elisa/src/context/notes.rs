@@ -142,8 +142,8 @@ pub fn goal_statement(input: &str) -> Option<String> {
 }
 
 /// The session goal after `input`: the first real request sets it (its goal statement, else the request); later
-/// requests change it only with an explicit goal statement (the card / notes goal drifted to the newest request in
-/// ui_run1, so "what was the goal of this session?" got the last request).
+/// requests change it only with an explicit goal statement (otherwise the card / notes goal drifts to the newest
+/// request, and "what was the goal of this session?" gets the last request).
 /// A pasted blob gives no goal (only the user's own words around it do; `own_words`).
 pub fn next_goal(current: Option<&str>, input: &str) -> Option<String> {
     let input = request_body(input).trim();
@@ -153,7 +153,7 @@ pub fn next_goal(current: Option<&str>, input: &str) -> Option<String> {
         (_, Some(g)) => Some(g),
         (Some(c), None) => Some(c.to_string()),
         (None, None) => {
-            // small talk and a plain question set no goal (soak: "hi Elisa! how are you today?" became the session
+            // small talk and a plain question set no goal (otherwise "hi Elisa! how are you today?" becomes the session
             // goal); a greeting in front of a request is not part of it
             let req = without_greeting(input).trim();
             let question = req.ends_with('?') && crate::mcp_reason::wanted(req) == Some(false);
@@ -173,7 +173,7 @@ const GOAL_OWN_CHARS: usize = 300;
 /// The part of a request that is the user's own words, for the session goal. A short request is all of it. A long
 /// one (a paste) gives its first or last paragraph, else its first or last line, when that is short and not repeated
 /// inside the paste: the user's line around what they pasted ("count the words in this:"). None when the request is
-/// only pasted text (longrun2: the first 240 chars of a 200 KB paste became the session goal and the 2B model kept
+/// only pasted text (otherwise the start of a long paste becomes the session goal and a small model keeps
 /// steering back to it, also after /clear).
 pub fn own_words(input: &str) -> Option<&str> {
     let input = input.trim();
@@ -375,7 +375,7 @@ pub(super) fn bullet_key(l: &str) -> String {
 }
 
 /// `lines` without duplicates: the same words again, or a line whose words another line contains (>= 3 words: the
-/// longer one stays, where the first one stood). soak: a Done list repeated 8 bullets 3-4 times.
+/// longer one stays, where the first one stood): a Done list can otherwise repeat the same bullets several times.
 fn dedupe(lines: &[String]) -> Vec<String> {
     let mut out: Vec<(String, String)> = Vec::new();
     for l in lines {
@@ -443,8 +443,7 @@ pub fn small_talk_goal(goal: &str) -> bool {
 /// `new` notes merged into `old` ones, no model call: a section that describes "now" (goal, current state, the state
 /// card section) is replaced by its newer version; every other section keeps the old lines and adds the new ones
 /// (duplicates dropped); Elisa's own file records merge by path (the newer line for a path wins). Sections only the
-/// old notes have stay. soak: /clear replaced the notes with a summary of one turn, and the codename, the owner and
-/// the `<=` fix were gone.
+/// old notes have stay, so /clear never replaces the notes with a summary of one turn and loses the earlier facts.
 pub fn merge_notes(old: Option<&str>, new: &str) -> String { merge_notes_kept(old, new, &|_| true) }
 
 /// `merge_notes`, where an old `Facts to remember`, `Session goal` or `Done` line stays only when `keep` says so (a

@@ -157,7 +157,7 @@ fn handle(mut c: TcpStream, script: &Mutex<Script>, log: &Mutex<Vec<Rec>>) -> st
             let reply: Option<Vec<Step>> = {
                 let mut s = script.lock().unwrap();
                 match kind {
-                    // the real gateway: "[streamdense] Context full …", 0 tokens generated (run2 call 30)
+                    // as the real gateway does: "[streamdense] Context full …", 0 tokens generated
                     _ if total > MAX_CTX => Some(vec![Step::Text(format!("[streamdense] Context full: this conversation is {total} tokens and the engine limit is {MAX_CTX}"))]),
                     Kind::SummaryTranscript => Some(vec![Step::Text(summarise(&last_text))]),
                     Kind::SummaryInContext => Some(vec![Step::Text(summarise(&render(&req)))]),
@@ -447,8 +447,8 @@ fn age_sessions(d: &Path) {
 
 /// Tokens the real gateway reuses (docs/GATEWAY.md "KV reuse"): the engine state is DeltaNet + KV, so it cannot rewind
 /// to an interior token. Reuse = the previous agent request's whole message list is a prefix of this one (live state:
-/// `prefix` / `followup`), else only the saved system + tools snapshot (stable prefix). ui_run1 measured exactly this:
-/// after any history rewrite (fold, shrunk old result) the next call reused 1,246 tokens = system + tools.
+/// `prefix` / `followup`), else only the saved system + tools snapshot (stable prefix): after
+/// any history rewrite (fold, shrunk old result) the next call reuses only system + tools.
 fn state_reuse(prev: Option<&Rec>, req: &Rec) -> usize {
     let fixed = fixed_tok(&req.body);
     let Some(p) = prev else { return 0 };
@@ -677,7 +677,7 @@ fn card_folds_keep_the_next_step_and_write_notes() {
     assert!(notes.contains("## From state cards") && notes.contains("goal: GOAL-G1 word-count CLI") && notes.contains("open: step s2"), "{notes}");
 }
 
-/// ui_run1 recall after folds: the session goal stays the first request's (not the newest request's), and every
+/// Recall after folds: the session goal stays the first request's (not the newest request's), and every
 /// request stays under the limit.
 #[test]
 fn recall_after_folds_keeps_the_session_goal() {
@@ -710,8 +710,8 @@ fn recall_after_folds_keeps_the_session_goal() {
     assert!(first.contains("## Session goal") && !first.contains("session goal: list what we changed"), "{first}");
 }
 
-/// ui_run1 A turn 1 (26 calls, many reads in one request): every in-turn shrink of older results rewrote the history
-/// and the next call re-prefilled everything after system + tools (3–6.6K tokens, 37–83 s each). One request with
+/// Many reads in one turn: an in-turn shrink of older results would rewrite the history, and the next call
+/// re-prefill everything after system + tools. One request with
 /// ten big reads: the new results are cut to fit while the window has room (append-only), so the history is rewritten
 /// rarely; every request stays under the limit. Prints reuse by the gateway rule (`state_reuse`).
 #[test]
@@ -747,11 +747,11 @@ fn mid_turn_rewrites(reqs: &[&Rec]) -> Vec<(usize, usize)> {
     }).collect()
 }
 
-/// run2 turn 1 (real 27B, max_ctx 8192): two big reads, then many small steps (`False\n[exit 0]`, 3-line reads) with
-/// the window in its last 12.5%. Each step shrank ONE earlier result to `[trimmed: … N lines]` (often longer than the
-/// original), so calls 18–21 and 23–25 reused only system + tools and re-prefilled 4.6–6.2K tokens each (~430 s).
-/// The server's tokenizer counts 25% more than the chars/token formula (code: run2's text estimate ran that low once a
-/// rewrite dropped the reported usage). Append-only: the new results are cut instead (a big one leaves the window's
+/// max_ctx 8192: two big reads, then many small steps (`False\n[exit 0]`, 3-line reads) with
+/// the window in its last 12.5%. Shrinking ONE earlier result per step to `[trimmed: … N lines]` (often longer than
+/// the original) would make each call reuse only system + tools and re-prefill everything after them.
+/// The server's tokenizer counts 25% more than the chars/token formula (code: the text estimate runs that low once a
+/// rewrite drops the reported usage). Append-only: the new results are cut instead (a big one leaves the window's
 /// tail for the small steps after it), and no call within the turn rewrites the history.
 #[test]
 fn small_results_late_in_a_turn_keep_the_history_append_only() {
@@ -779,8 +779,8 @@ fn small_results_late_in_a_turn_keep_the_history_append_only() {
     assert!(bad.is_empty(), "history rewritten within the turn at calls {bad:?} (call, re-prefilled tokens): {}", o.stderr);
 }
 
-/// run2 call 30: 8,199 real tokens sent against max_ctx 8,192 (0 tokens back): after an in-turn rewrite the estimate
-/// fell back to chars/3.3, which runs low on code. A server whose tokenizer counts 25% more than the formula, a turn
+/// After an in-turn rewrite the estimate falls back to chars/3.3, which runs low on code, so a request can go a few
+/// tokens over max_ctx and get nothing back. A server whose tokenizer counts 25% more than the formula, a turn
 /// that fills the window, a second turn: no request goes over (the server never answers "Context full").
 #[test]
 fn a_denser_tokenizer_never_overflows_the_context() {
