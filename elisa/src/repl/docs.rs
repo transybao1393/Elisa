@@ -37,32 +37,43 @@ impl<'f> Session<'f> {
         Vec::new()
     }
 
-    /// The pictures this turn asks about, and whether they came with it: the ones sent with it, else,
-    /// on the one turn right after a picture turn, that turn's pictures again when `input` is about them
-    /// (`about_last_pictures`); the pictures are dropped after that turn. An answer there that tells nothing about the
-    /// picture is not carried (`look`).
+    /// The pictures this turn asks about, and whether they came with it: the ones sent with it, else the last
+    /// pictures again when `input` is about them (`about_last_pictures`), on the turn right after a turn that looked
+    /// at them or any later one (a question about the picture after some other talk is still answered from the
+    /// picture, not from what such things usually look like). They are kept until new pictures come or the
+    /// conversation is cleared. An answer there that tells nothing about the picture is not carried (`look`).
     pub(super) fn turn_pictures(&mut self, input: &str) -> Option<(Vec<Block>, bool)> {
         let new = std::mem::take(&mut self.attach);
-        let again = std::mem::take(&mut self.pics_next);
+        let next = std::mem::take(&mut self.pics_next);
         if !new.is_empty() {
             (self.last_pics, self.pics_next) = (new.clone(), true);
             self.last_pic_seen = context::request_body(input).trim().to_string();
             return Some((new, true));
         }
-        let old = std::mem::take(&mut self.last_pics);
-        let seen = std::mem::take(&mut self.last_pic_seen);
-        if !(again && self.vision && !old.is_empty()) { return None; }
-        if self.about_last_pictures(input, &seen) { return Some((old, false)); }
+        if !self.vision || self.last_pics.is_empty() { return None; }
+        if self.about_last_pictures(input, next) {
+            self.pics_next = true;
+            return Some((self.last_pics.clone(), false));
+        }
         self.debug("[this message is not about the last picture; it was not sent again]");
         None
     }
 
-    /// Whether the turn right after a picture turn is about its pictures (resent with every next turn, the
-    /// picture's answer would go into an unrelated ask and the model would answer the picture). The router's answer when it
-    /// gave one: a follow-up of the last turn (why / more / a pick / "what about …") is about it, a greeting or a
-    /// closing is not; else, and for anything the router leaves open, `context::about_picture` on the message and
-    /// what the picture turn learned (`seen`).
-    fn about_last_pictures(&self, input: &str, seen: &str) -> bool {
+    /// the pictures and what was learned about them are forgotten (/clear, /reset: a fresh start)
+    pub(super) fn forget_pictures(&mut self) {
+        (self.last_pics, self.pics_next, self.last_pic_seen) = (Vec::new(), false, String::new());
+    }
+
+    /// Whether this turn is about the last pictures (resent with every next turn, the picture's answer would go
+    /// into an unrelated ask and the model would answer the picture). Right after a turn that looked at them
+    /// (`next`): the router's answer when it gave one (a follow-up of the last turn — why / more / a pick / "what
+    /// about …" — is about it, a greeting or a closing is not), else `context::about_picture` on the message and
+    /// what the picture turns learned (`last_pic_seen`). Later, when other talk came between, a follow-up of the last
+    /// turn is about that talk: only a message that names a picture or is close in meaning to what was learned
+    /// about it (`context::about_picture_later`).
+    fn about_last_pictures(&self, input: &str, next: bool) -> bool {
+        let seen = &self.last_pic_seen;
+        if !next { return context::about_picture_later(input, seen); }
         if matches!(self.router_kind(), Some(Some(_))) { return true; }
         if self.router_says("greeting") == Some(true) || self.router_says("closing") == Some(true) { return false; }
         context::about_picture(input, seen)
@@ -74,9 +85,9 @@ impl<'f> Session<'f> {
     /// slows every turn down), and a small vision model that reads pictures only when asked alone still reads them.
     /// An answer that tells nothing about the picture (`context::picture_non_answer`: a refusal, "I'm not sure what
     /// you're asking") is never carried as what the picture shows (it would become
-    /// that turn's reply): on the turn the
-    /// pictures came with, they are asked about once more with the plain describe question, and still nothing gives
-    /// `PICTURE_UNSEEN`; on the turn after, there is no picture text (Ok(None)). Ok(Some((block, answer))): `answer`
+    /// that turn's reply): the next question of `context::picture_asks` is tried (the user's words alone, and on the
+    /// turn the pictures came with the plain describe question), and still nothing gives
+    /// `PICTURE_UNSEEN`; on a later turn, there is no picture text (Ok(None)). Ok(Some((block, answer))): `answer`
     /// is the picture's real answer, None for `PICTURE_UNSEEN`.
     pub(super) fn look(&mut self, question: &str, pics: &[Block], new: bool) -> Result<Option<(String, Option<String>)>, TurnEnd> {
         let n = pics.len();
@@ -84,10 +95,7 @@ impl<'f> Session<'f> {
         let aid = self.acts.begin(&mut *self.fe, &crate::activity::Phrase::new("model", "picture", "", format!("Looking at {what}"), format!("Looked at {what}")));
         CANCEL.store(false, Ordering::SeqCst);
         self.client.set_kind("picture");
-        let question = context::request_body(question).trim().to_string();
-        let mut asks = vec![question.clone()];
-        // the plain describe question as the second try (never the same question twice)
-        if new && !question.is_empty() { asks.push(String::new()); }
+        let asks = context::picture_asks(question, new);
         let last = asks.len() - 1;
         for (i, q) in asks.into_iter().enumerate() {
             let msgs = context::picture_request(&q, pics);

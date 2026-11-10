@@ -392,9 +392,13 @@ impl<'f> Session<'f> {
         let before = self.estimate();
         let cap = self.turn_cap(&self.history);
         if let Some(h) = context::drop_doc_text(&self.history, cap) { self.history = h; self.real = None; }
+        // the size the fold already reported (`compacted`): not reported a second time below when nothing else shrank
+        let mut reported = None;
         if !self.folded_this_turn && self.history.len() >= 2 && over(self) {
             self.folded_this_turn = true;
+            let pre = self.estimate();
             self.fold(false);
+            if self.estimate() != pre { reported = Some(self.estimate()); }
         }
         if over(self) {
             let cap = self.turn_cap(&self.history);
@@ -407,7 +411,7 @@ impl<'f> Session<'f> {
             let keep: String = d.chars().take(room * 3).collect();
             self.set_doc_req((!keep.is_empty()).then(|| format!("{keep}\n[the rest of the document text did not fit]")));
         }
-        if self.estimate() != before { self.shrunk(before); }
+        if self.estimate() != before && Some(self.estimate()) != reported { self.shrunk(before); }
         context::request_fits(self.est_safe(), MIN_OUT + 64, self.max_ctx)
     }
 

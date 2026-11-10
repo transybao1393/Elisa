@@ -1182,6 +1182,32 @@ fn a_picture_is_asked_about_alone_pictures_first() {
     assert!(matches!(&two[1].content[..], [Block::Text { text }] if text == "Describe these pictures.\n"));
 }
 
+/// The picture request's questions in turn: first the user's words with the line asking for sentences from what the
+/// picture shows (a small model's one bare word tells the turn nothing, and on a follow-up it answers from what such
+/// things usually are), then the words alone (a model may write nothing with that line), then on the turn the
+/// picture came with the plain describe question
+#[test]
+fn a_picture_is_asked_for_sentences_first_then_plainly() {
+    let note = context::PICTURE_ANSWER_NOTE;
+    assert_eq!(context::picture_asks(" what is this? ", true), vec![format!("what is this?\n{note}"), "what is this?".into(), String::new()]);
+    assert_eq!(context::picture_asks("what colour are its ears?", false), vec![format!("what colour are its ears?\n{note}"), "what colour are its ears?".into()]);
+    assert_eq!(context::picture_asks("", true), vec![String::new()]);
+}
+
+/// A message after other talk is about the last picture only when it names a picture or shares what was learned
+/// about it; a pronoun or a short follow-up then points at the other talk
+#[test]
+fn a_later_message_is_about_the_picture_by_its_own_words() {
+    let seen = "what is this?\nA stylized cartoon cat with light blue ears and a small yellow star next to it.";
+    assert!(context::about_picture_later("is there a star next to the cat?", seen));
+    assert!(context::about_picture_later("what colour was the background in the picture?", seen));
+    assert!(!context::about_picture_later("why is that funny?", seen), "a follow-up of the last answer");
+    assert!(!context::about_picture_later("tell me more about it", seen));
+    assert!(!context::about_picture_later("", seen));
+    // right after the picture turn the pronoun still counts
+    assert!(context::about_picture("tell me more about it", seen));
+}
+
 /// the picture's answer is a text block of the user message, kept out of the shown history
 #[test]
 fn a_pictures_text_block_is_not_shown_as_the_users_words() {

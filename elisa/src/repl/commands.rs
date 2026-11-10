@@ -647,6 +647,7 @@ impl<'f> Session<'f> {
                             self.topic_cards.clear();
                             (self.topic, self.card_req) = (Default::default(), None);
                             self.ledger = context::Ledger::default();
+                            self.forget_pictures();
                         }
                         self.card_log.clear();
                         self.history.clear();
@@ -677,6 +678,7 @@ impl<'f> Session<'f> {
                 // a fresh start also drops the carried state card, or the next request still continues the old task
                 self.history.clear(); self.real = None; self.fold_reset();
                 self.drop_card();
+                self.forget_pictures();
                 self.goal = None;
                 self.notes_bg = true;
                 self.fe.info("history and state card emptied (notes kept)");

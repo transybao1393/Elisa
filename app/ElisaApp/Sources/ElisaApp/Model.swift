@@ -296,7 +296,7 @@ final class AppModel: ObservableObject {
         welcome = false
         attachments = []; sentImages = []; vision = false; documents = []; sentDocs = []
         blocks = []; edits = []; editIdx = 0; stat = nil; sumIn = 0; sumOut = 0; turn = 0; cur = nil; queued = 0
-        approval = nil; picker = nil; liveAct = nil; nextAct = nil; watchLine = nil; auditLine = nil; job = nil; compactLine = nil; cardNo = nil; expanded = []
+        approval = nil; picker = nil; liveAct = nil; nextAct = nil; watchLine = nil; auditLine = nil; job = nil; compactLine = nil; lastCompacted = nil; cardNo = nil; expanded = []
         scrollHeld = false; heldLines = 0; heldNew = false
         PluginStore.shared.sessionEnded()
         setPhase(.starting)
@@ -556,6 +556,17 @@ final class AppModel: ObservableObject {
     /// the transcript line of a fold in progress ("compacting the conversation…"), by its block / part id, so it can
     /// be updated in place and become the result line when the fold ends
     private var compactLine: UUID?
+    /// the last "✓ compacted" line and the size it started from: one more shrink right after it (nothing shown in
+    /// between) updates that line instead of printing a second one
+    private var lastCompacted: (id: UUID, from: Int)?
+
+    /// whether the line `id` is still the newest thing in the transcript (its own block, or the last part of the last
+    /// or current reply)
+    private func isNewest(_ id: UUID) -> Bool {
+        if blocks.last?.id == id || blocks.last?.parts.last?.id == id { return true }
+        if let r = cur, r < blocks.count { return blocks[r].parts.last?.id == id }
+        return false
+    }
 
     /// a progress label that is a fold (the history being compacted), not other background work (memory indexing)
     static func isFold(_ label: String) -> Bool { label.hasPrefix("summarizing") || label.hasPrefix("folding") }
@@ -760,7 +771,12 @@ final class AppModel: ObservableObject {
             add(.box("NOTES", s(e, "text")))
         case "compacted":
             // the fold's own line becomes the result (it said "compacting…" while the fold ran)
-            setCompactLine("✓ compacted the conversation: \(k(n(e, "from"))) → \(k(n(e, "to"))) tokens · earlier turns are in the notes (/notes)")
+            // a shrink right after the last one (the same fold making more room) is one line: it starts from the
+            // larger size and ends at the new one
+            var from = n(e, "from")
+            if let lc = lastCompacted, compactLine == lc.id || (compactLine == nil && isNewest(lc.id)) { compactLine = lc.id; from = max(from, lc.from) }
+            setCompactLine("✓ compacted the conversation: \(k(from)) → \(k(n(e, "to"))) tokens · earlier turns are in the notes (/notes)")
+            lastCompacted = compactLine.map { ($0, from) }
             compactLine = nil
             // the context meter follows the fold / /clear (the next reply_done sets it again)
             if e["to"] is NSNumber {
@@ -802,6 +818,8 @@ final class AppModel: ObservableObject {
                         // a fold that ended without compacting (cancelled, nothing to fold) says so on its line
                         if compactLine != nil { setCompactLine(done.hasPrefix("summary failed") || done.contains("cancelled") ? "⚠︎ compacting: \(done)" : "✓ \(done)") }
                     } else if compactLine == nil {
+                        // a fold right after a shrink line goes on that line
+                        if let lc = lastCompacted, isNewest(lc.id) { compactLine = lc.id }
                         setCompactLine("⟳ compacting the conversation (\(label))… the reply waits for it")
                     }
                 }

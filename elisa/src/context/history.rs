@@ -134,6 +134,15 @@ pub fn about_picture(msg: &str, seen: &str) -> bool {
     picture_words(msg, true) || crate::followup::kind(msg).is_some() || shares_meaning(msg, seen)
 }
 
+/// Whether `msg`, a turn after other talk came since the picture was last looked at, is about that picture: it names
+/// a picture (`picture_words`, no pronoun: "it" there points at the other talk), or shares a content word with or is
+/// close in meaning to what the picture turn learned (`seen`; `shares_meaning`). A short follow-up of the last answer
+/// is about that answer, not the picture.
+pub fn about_picture_later(msg: &str, seen: &str) -> bool {
+    let msg = request_body(msg).trim();
+    !msg.is_empty() && (picture_words(msg, false) || shares_meaning(msg, seen))
+}
+
 /// Whether two texts share a content word (`topics::words`) or are close in meaning (`meaning_similarity` at
 /// `PICTURE_MEANING_MIN`, when the embedding model is present).
 pub fn shares_meaning(a: &str, b: &str) -> bool {
@@ -252,6 +261,24 @@ pub fn picture_request(question: &str, pics: &[Block]) -> Vec<Message> {
     let q = question.trim();
     let q = if !q.is_empty() { q } else if pics.len() > 1 { PICTURES_QUESTION } else { PICTURE_QUESTION };
     vec![Message::new(Role::User, pics.to_vec()), Message::user_text(format!("{q}\n"))]
+}
+
+/// the line after the user's own question in the first picture request (`picture_asks`): a small vision model asked
+/// "what is this?" alone answers with one bare word ("cat") that tells the turn almost nothing; asked for sentences
+/// from what it sees, the same model says what the picture shows, and on a follow-up it answers from the picture,
+/// not from what such things usually look like
+pub const PICTURE_ANSWER_NOTE: &str = "Answer in full sentences, from what the picture shows.";
+
+/// The questions the picture request tries in turn until one gets an answer that tells about the picture: the
+/// user's words with `PICTURE_ANSWER_NOTE`, then the user's words alone (a model may write nothing at all with the
+/// note), then, on the turn the pictures came with, the plain describe question (`""`: `picture_request` fills it
+/// in). Never the same question twice.
+pub fn picture_asks(question: &str, new: bool) -> Vec<String> {
+    let q = request_body(question).trim().to_string();
+    if q.is_empty() { return vec![String::new()]; }
+    let mut asks = vec![format!("{q}\n{PICTURE_ANSWER_NOTE}"), q];
+    if new { asks.push(String::new()); }
+    asks
 }
 
 fn trim_result(content: &str) -> String {

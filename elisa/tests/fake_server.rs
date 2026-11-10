@@ -706,8 +706,7 @@ fn repl_mid_turn_fold_once_keeps_current_turn() {
     let o = run_elisa(&["--base-url", &f.url(), "--max-ctx", "8192"], &d, Some("read f1\nread f2 then f3\n"));
     assert_eq!(o.code, 0, "stderr: {}", o.stderr);
     assert_eq!(f.left(), 0, "{}", o.stderr);
-    assert_eq!(o.stderr.matches("saved summary").count(), 1, "exactly one fold: {}", o.stderr);
-    let reqs = f.messages();
+    assert_eq!(o.stderr.matches("saved summary").count(), 1, "exactly one fold: {}", o.stderr);    let reqs = f.messages();
     assert_eq!(reqs.len(), 6, "{reqs:#?}");
     // request 4 extends request 3 exactly (append-only within the turn), with the new f2 result cut
     let (m3, m4) = (reqs[2]["messages"].as_array().unwrap(), reqs[3]["messages"].as_array().unwrap());
@@ -726,6 +725,26 @@ fn repl_mid_turn_fold_once_keeps_current_turn() {
     assert_eq!(r.len(), 2, "{r:?}");
     assert!(r[0].contains("f2.txt line 001") && r[1].contains("f3.txt line 001"), "{r:?}");
     assert!(last["max_tokens"].as_u64().unwrap() >= 256);
+}
+
+/// A message too big for what is left of the window: the fold before its request is reported once (one
+/// `[compacted: …]` line), not once by the fold and again for the same shrink.
+#[test]
+fn a_fold_before_a_request_is_reported_once() {
+    let d = tmpdir("fold-once");
+    big_files(&d, &["f1.txt"]);
+    let f = Fake::start(vec![
+        read_call(3000, "r1", "f1.txt"),
+        reply_with(3800, "ok"),
+        text_reply("NOTES-T1: read f1"),
+        text_reply("done"),
+    ]);
+    let long: String = (0..700).map(|i| format!("word{i} ")).collect::<String>() + "summarise all of that";
+    let o = run_elisa(&["--base-url", &f.url(), "--max-ctx", "8192"], &d, Some(&format!("read f1\n{long}\n")));
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!(f.left(), 0, "{}", o.stderr);
+    assert_eq!(o.stderr.matches("saved summary").count(), 1, "one fold: {}", o.stderr);
+    assert_eq!(o.stderr.matches("[compacted:").count(), 1, "{}", o.stderr);
 }
 
 fn user_texts_of(req: &Value) -> Vec<String> {
@@ -2550,6 +2569,8 @@ fn an_empty_visible_reply_is_retried_once_then_noted() {
     assert_eq!(o.code, 0, "stderr: {}", o.stderr);
     assert!(o.stdout.contains("You're welcome!"), "{}", o.stdout);
     assert!(o.stderr.contains("asking the model once more") && !o.stderr.contains("[no answer"), "{}", o.stderr);
+    // the retry's line is in plain words: Elisa's own term for the hidden card never reaches the person
+    assert!(!o.stderr.contains("state card"), "{}", o.stderr);
     let reqs = f.messages();
     assert_eq!(reqs.len(), 2);
     let (m0, m1) = (reqs[0]["messages"].as_array().unwrap(), reqs[1]["messages"].as_array().unwrap());
@@ -3706,7 +3727,8 @@ fn picture_text_is_never_a_reply_and_only_its_own_turn_carries_it() {
     let f = Fake::start(vec![
         text_reply("A black cat with blue ears."),
         text_reply("[picture: A black cat with blue ears.] It's a black cat."),
-        // the turn after: the picture request answers the read ask with a refusal
+        // the turn after: the picture request answers the read ask with a refusal, asked both ways
+        text_reply("I'm sorry, but I can't assist with that."),
         text_reply("I'm sorry, but I can't assist with that."),
         Sse::new(800, 0).tool_input("t1", "read", json!({"path": "a.txt"})).end("tool_use", 9),
         text_reply("The word is MANGO."),
@@ -3729,18 +3751,18 @@ fn picture_text_is_never_a_reply_and_only_its_own_turn_carries_it() {
     s.until("turn_done");
     s.quit();
     let reqs = f.messages();
-    assert_eq!(reqs.len(), 6, "two picture requests, four turn requests");
+    assert_eq!(reqs.len(), 7, "three picture requests (the turn after asks twice), four turn requests");
     let has_image = |r: &Value| r["messages"].to_string().contains("\"image\"");
-    assert!(has_image(&reqs[0]) && has_image(&reqs[2]), "the picture turn and the one after look");
-    assert!(!reqs[1..].iter().enumerate().any(|(i, r)| i != 1 && has_image(r)), "no picture in the turn requests");
+    assert!(has_image(&reqs[0]) && has_image(&reqs[2]) && has_image(&reqs[3]), "the picture turn and the one after look");
+    assert!(!reqs[1..].iter().enumerate().any(|(i, r)| i != 1 && i != 2 && has_image(r)), "no picture in the turn requests");
     let body = |r: &Value| r["messages"].to_string();
     assert!(body(&reqs[1]).contains("[picture: A black cat with blue ears.]"), "the picture turn carries its text");
-    for r in &reqs[3..] {
+    for r in &reqs[4..] {
         assert!(!body(r).contains("[picture:"), "no picture text after its turn: {}", body(r));
         assert!(!body(r).contains("can't assist"), "the refusal is not carried");
         assert!(r.get("tools").is_some_and(|t| t.as_array().is_some_and(|a| !a.is_empty())), "tools offered");
     }
-    assert_prefix_rule(&reqs[3..5]);
+    assert_prefix_rule(&reqs[4..6]);
 }
 
 /// The turn after a picture looks at it again only when it is about it. "Tell me a joke." gets no picture
@@ -3779,6 +3801,45 @@ fn only_a_turn_about_the_picture_sends_it_again() {
     assert_eq!((0..7).filter(|&i| has_image(&reqs[i])).collect::<Vec<_>>(), vec![0, 3, 5]);
     assert!(!body(&reqs[2]).contains("[picture:"), "the joke turn has no picture text: {}", body(&reqs[2]));
     assert!(body(&reqs[6]).contains("[picture: Blue.]"), "the eyes turn carries its picture text");
+}
+
+/// A question about the picture after other talk still looks at the picture again (it names the picture or shares
+/// what the picture turn learned), so it is answered from the picture; /reset forgets the picture.
+#[test]
+fn a_later_question_about_the_picture_looks_at_it_again() {
+    let dir = tmpdir("jsonl-picture-later");
+    let f = Fake::start(vec![
+        text_reply("A black cat with light blue ears and a small yellow star."),
+        text_reply("It's a black cat with light blue ears."),
+        text_reply("Why did the chicken cross the road? To get to the other side."),
+        text_reply("The star is yellow."),
+        text_reply("The star in the picture is yellow."),
+        text_reply("There is no picture in our chat now."),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    let pic = json!([{"media_type": "image/png", "data": "iVBORw0KGgo="}]);
+    let shown = |evs: &[Value]| -> String { evs.iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect::<String>() };
+    s.cmd(json!({"type": "send", "text": "what is this?", "images": pic}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "Tell me a joke."}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "what colour is the star next to the cat?"}));
+    let evs = s.until("turn_done");
+    assert_eq!(shown(&evs), "The star in the picture is yellow.");
+    s.cmd(json!({"type": "send", "text": "/reset"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "what colour is the star next to the cat?"}));
+    s.until("turn_done");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 6, "look, turn, joke turn, look again, turn, turn after /reset");
+    let has_image = |r: &Value| r["messages"].to_string().contains("\"image\"");
+    let body = |r: &Value| r["messages"].to_string();
+    assert_eq!((0..6).filter(|&i| has_image(&reqs[i])).collect::<Vec<_>>(), vec![0, 3]);
+    assert!(body(&reqs[3]).contains("what colour is the star next to the cat?"), "the later question is asked of the picture");
+    assert!(body(&reqs[4]).contains("[picture: The star is yellow.]"), "its turn carries the picture's answer");
+    assert!(!body(&reqs[5]).contains("[picture:"), "nothing of the picture after /reset");
 }
 
 /// A reply that copies an earlier reply to another ask, or has no words, is asked once more with the user's

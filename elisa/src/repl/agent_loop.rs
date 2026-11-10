@@ -277,7 +277,7 @@ impl<'f> Session<'f> {
                     retried = true;
                     stashed_card = self.new_card.take();
                     empty_retry = Some(EMPTY_REPLY_NUDGE);
-                    self.fe.info("[the reply had no text for you, only its state card; asking the model once more]");
+                    self.fe.info(EMPTY_REPLY_LINE);
                     continue;
                 }
                 if !wrote && cut.is_none() && stop_reason == "max_tokens" && capped.is_some() && !widened {
@@ -802,6 +802,9 @@ pub(super) fn api_error_line(e: &str) -> String {
 /// the third person (small models mirror that wording back).
 const REASONED_OUT_NUDGE: &str = "(Answer this message now, directly, doing what it asks; no long reasoning first.)";
 const EMPTY_REPLY_NUDGE: &str = "(Answer this message in one plain sentence first; a <state> card, if any, goes after it.)";
+/// the line the person sees when that retry runs: plain words, none of Elisa's own terms (the hidden card is not
+/// something the person knows about)
+const EMPTY_REPLY_LINE: &str = "[the reply came back empty; asking the model once more]";
 
 /// The note of the one-time words-only retry of a small-talk turn whose reply called a tool (`agent_loop`): after
 /// the user's words, in that request only (it never enters the history).
