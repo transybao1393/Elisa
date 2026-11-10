@@ -1,10 +1,12 @@
-# CI for Elisa: linting only (clippy on the Rust core and mem) and a licence guard. No builds, tests or app builds:
+# CI for Elisa: linting only (clippy on the Rust core and mem) and a licence guard, on every push to main and PR. No builds, tests or app builds:
 # those run locally. Clippy runs on macOS because the core has macOS-only code (Seatbelt / sandbox-exec).
 # Actions are pinned to full commit SHAs (version in the comment); update them deliberately, not by tag drift.
 name: CI
 
-# manual only (Actions > CI > Run workflow): macOS runners are costly, so pushes and pull requests start nothing
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
