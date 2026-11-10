@@ -48,6 +48,120 @@ fn messages(system: &str, msgs: &[Message]) -> Vec<Value> {
     out
 }
 
+/// One piece of a single-turn Ollama template: text, a field, or an `if` / `else` / `end` on a field.
+#[derive(Debug, PartialEq)]
+enum Part { Text(String), Field(Field), If(Field), Else, End }
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Field { System, Prompt, Response }
+
+/// The parts of a single-turn template (`.System`, `.Prompt`, `.Response`, `if` / `else` / `end` on them, `{{-` /
+/// `-}}` trims applied to the text), or None for anything else (`.Messages`, `range`, functions): those are left
+/// to Ollama.
+fn parse_template(t: &str) -> Option<Vec<Part>> {
+    let field = |s: &str| match s { ".System" => Some(Field::System), ".Prompt" => Some(Field::Prompt), ".Response" => Some(Field::Response), _ => None };
+    let mut out = Vec::new();
+    let mut rest = t;
+    let mut trim_next = false;
+    while let Some(i) = rest.find("{{") {
+        let (mut text, after) = (rest[..i].to_string(), &rest[i + 2..]);
+        let j = after.find("}}")?;
+        let mut act = &after[..j];
+        if trim_next { text = text.trim_start().to_string(); }
+        if let Some(a) = act.strip_prefix('-') { act = a; text = text.trim_end().to_string(); }
+        trim_next = act.ends_with('-');
+        let act = act.trim_end_matches('-').trim();
+        if !text.is_empty() { out.push(Part::Text(text)); }
+        out.push(match act {
+            "else" => Part::Else,
+            "end" => Part::End,
+            _ => match act.strip_prefix("if ") { Some(f) => Part::If(field(f.trim())?), None => Part::Field(field(act)?) },
+        });
+        rest = &after[j + 2..];
+    }
+    let text = if trim_next { rest.trim_start() } else { rest };
+    if !text.is_empty() { out.push(Part::Text(text.to_string())); }
+    Some(out)
+}
+
+/// The model's template (Ollama `/api/show`) when its reply follows whitespace the template itself writes
+/// (" Answer: {{ .Response }}"): the model must then go on from a lone space, and as its words start with their own
+/// space it gives fragments or nothing ("ik" for "what is 2 + 3?", "" for "Reply with just the word OK.", the start
+/// of a picture's description cut off). The same prompt ending before that space gets real answers. Only a
+/// single-turn template (`parse_template`) qualifies: Elisa renders it herself (`raw_prompt`).
+pub fn raw_template(t: &str) -> Option<String> {
+    let parts = parse_template(t)?;
+    let i = parts.iter().position(|p| *p == Part::Field(Field::Response))?;
+    match i.checked_sub(1).map(|k| &parts[k]) {
+        Some(Part::Text(s)) if s.ends_with([' ', '\t']) && !s.trim().is_empty() => Some(t.to_string()),
+        _ => None,
+    }
+}
+
+/// One turn of a single-turn template; `cut`: the last turn, ended at the reply slot without the whitespace before it.
+fn render_turn(parts: &[Part], system: &str, prompt: &str, response: &str, cut: bool, out: &mut String) {
+    let val = |f: Field| match f { Field::System => system, Field::Prompt => prompt, Field::Response => response };
+    // whether each open `if` is taken (an `else` flips it), and whether everything around it is
+    let mut on: Vec<(bool, bool)> = Vec::new();
+    let live = |on: &[(bool, bool)]| on.iter().all(|&(outer, me)| outer && me);
+    for p in parts {
+        match p {
+            Part::If(f) => { let outer = live(&on); on.push((outer, !val(*f).is_empty())); }
+            Part::Else => if let Some(x) = on.last_mut() { x.1 = !x.1; },
+            Part::End => { on.pop(); }
+            _ if !live(&on) => {}
+            Part::Field(Field::Response) if cut => { out.truncate(out.trim_end_matches([' ', '\t']).len()); return; }
+            Part::Field(f) => out.push_str(val(*f)),
+            Part::Text(s) => out.push_str(s),
+        }
+    }
+}
+
+/// The whole prompt in `tmpl` (`raw_template`), turn by turn as Ollama fills a single-turn template (the system
+/// text, then each user message with the reply after it; messages of one role in a row joined by a blank line; a
+/// picture as `[img-N]` before its message's words), the last turn ended right before the reply: (prompt, images).
+pub fn raw_prompt(tmpl: &str, system: &str, msgs: &[Message]) -> Option<(String, Vec<String>)> {
+    let parts = parse_template(tmpl)?;
+    let mut images: Vec<String> = Vec::new();
+    let (mut sys, mut prompt, mut response) = (system.to_string(), String::new(), String::new());
+    let mut out = String::new();
+    let add = |s: &mut String, t: &str| { if !s.is_empty() && !t.is_empty() { s.push_str("\n\n"); } s.push_str(t); };
+    // the last user message was pictures only: the next one's words follow their tags directly
+    let mut glue = false;
+    for m in msgs {
+        let (mut tags, mut text) = (String::new(), String::new());
+        for b in &m.content {
+            match b {
+                Block::Text { text: t } => add(&mut text, t),
+                Block::ToolResult { content, .. } => add(&mut text, content),
+                Block::Image { source } => { tags.push_str(&format!("[img-{}]", images.len())); images.push(source.data.clone()); }
+                _ => {}
+            }
+        }
+        match m.role {
+            Role::User => {
+                if !response.is_empty() {
+                    render_turn(&parts, &sys, &prompt, &response, false, &mut out);
+                    (sys, prompt, response) = (String::new(), String::new(), String::new());
+                }
+                let text = format!("{tags}{text}");
+                if glue { prompt.push_str(&text); } else { add(&mut prompt, &text); }
+                glue = !tags.is_empty() && text == tags;
+            }
+            Role::Assistant => add(&mut response, &text),
+        }
+    }
+    render_turn(&parts, &sys, &prompt, &response, true, &mut out);
+    Some((out, images))
+}
+
+/// The `/api/generate` body for a model whose template Elisa renders (`raw_prompt`).
+fn raw_body(model: &str, tmpl: &str, req: &Request, num_ctx: usize) -> Option<Value> {
+    let (prompt, images) = raw_prompt(tmpl, req.system, req.messages)?;
+    let mut b = json!({"model": model, "prompt": prompt, "raw": true, "stream": true, "options": {"num_ctx": num_ctx, "num_predict": req.max_tokens}});
+    if !images.is_empty() { b["images"] = json!(images); }
+    Some(b)
+}
+
 /// `thinks`: the model reasons (Ollama capability "thinking"). Its reasoning comes out of `num_predict` too, so a
 /// reply budget sized for the answer alone was used up before the answer started: such a model gets `REASONING_ROOM`
 /// tokens on top of `max_tokens`, and `think` = the session's setting. Not the window's end (-2): a small model's
@@ -140,7 +254,8 @@ impl Stream {
             self.thinking += 1;
             publish_thinking(t);
         }
-        if let Some(t) = m["content"].as_str().filter(|t| !t.is_empty()) {
+        // `/api/chat` streams `message.content`, `/api/generate` (`raw_body`) `response`
+        if let Some(t) = m["content"].as_str().or(v["response"].as_str()).filter(|t| !t.is_empty()) {
             if !self.started { self.started = true; publish(Phase::Decode); }
             self.text.push_str(t);
             if !self.hold { on_text(t); }
@@ -199,17 +314,22 @@ pub fn split_reasoning(text: &str) -> (String, usize) {
 }
 
 /// One streamed call to `root` (the server without `/v1`), with the window `num_ctx`. `simple` = a simple turn: a
-/// reasoning model is asked not to reason (`no_think`). One attempt: `Client::send` retries a transient failure.
+/// reasoning model is asked not to reason (`no_think`). `raw`: the model's template when Elisa renders it
+/// (`raw_template`): a request with no tools then goes to `/api/generate` as one prompt. One attempt: `Client::send`
+/// retries a transient failure.
 #[allow(clippy::too_many_arguments)]
-pub fn send(agent: &ureq::Agent, root: &str, key: &str, model: &str, num_ctx: usize, thinks: Option<bool>, simple: bool, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
+pub fn send(agent: &ureq::Agent, root: &str, key: &str, model: &str, num_ctx: usize, thinks: Option<bool>, simple: bool, raw: Option<&str>, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
     let (thinks, prefill) = no_think(model, thinks, simple);
     let t0 = Instant::now();
     publish(Phase::Sent);
     let _idle = PhaseGuard;
-    let mut rq = agent.post(format!("{}/api/chat", root.trim_end_matches('/'))).header("content-type", "application/json");
+    let raw = raw.filter(|_| req.tools.is_empty() && prefill.is_none()).and_then(|t| raw_body(model, t, req, num_ctx));
+    let path = if raw.is_some() { "generate" } else { "chat" };
+    let mut rq = agent.post(format!("{}/api/{path}", root.trim_end_matches('/'))).header("content-type", "application/json");
     if !key.is_empty() { rq = rq.header("authorization", format!("Bearer {key}")); }
+    let b = raw.unwrap_or_else(|| body(model, req, num_ctx, thinks, prefill));
     // the network reads run on their own thread: Esc stops at once, also before the first byte (`api::post_lines`)
-    let mut lines = crate::api::post_lines(rq, body(model, req, num_ctx, thinks, prefill).to_string(), cancel)?;
+    let mut lines = crate::api::post_lines(rq, b.to_string(), cancel)?;
     if lines.is_some() { publish(Phase::Started); }
     let mut s = Stream { hold: prefill.is_some(), ..Default::default() };
     let mut ttft = None;
@@ -348,6 +468,43 @@ mod tests {
         assert_eq!(no_think("deepseek-r1:8b", Some(true), true), (Some(false), None));
         assert_eq!(no_think("qwen3-vl:2b-instruct", None, true), (None, None));
         assert_eq!(no_think("qwen3-vl:2b", Some(true), false), (Some(true), None));
+    }
+
+    /// moondream:1.8b's template, as Ollama's `/api/show` gives it
+    const SPACED: &str = "{{ if .Prompt }} Question: {{ .Prompt }}\n\n{{ end }} Answer: {{ .Response }}\n\n";
+
+    #[test]
+    fn a_template_with_a_space_before_the_reply_is_rendered_by_elisa_ending_before_it() {
+        assert_eq!(raw_template(SPACED).as_deref(), Some(SPACED));
+        // no space before the reply, a template over the messages, or one Elisa cannot read: left to Ollama
+        assert_eq!(raw_template("{{ if .System }}<|system|>\n{{ .System }}{{ end }}<|user|>\n{{ .Prompt }}<|assistant|>\n{{ .Response }}"), None);
+        assert_eq!(raw_template("{{- range .Messages }}{{ .Content }}{{ end }} Answer: {{ .Response }}"), None);
+        assert_eq!(raw_template("{{ .Prompt }}"), None);
+        let msgs = vec![
+            Message::user_text("what is 2 + 3?"),
+            Message::assistant_text("5"),
+            Message::new(Role::User, vec![Block::image("image/png", "AAAA")]),
+            Message::user_text("what colour are its ears?\n"),
+        ];
+        let (p, imgs) = raw_prompt(SPACED, "You are Elisa.", &msgs).unwrap();
+        // (this template has no system part)
+        assert_eq!(p, " Question: what is 2 + 3?\n\n Answer: 5\n\n Question: [img-0]what colour are its ears?\n\n\n Answer:");
+        assert_eq!(imgs, vec!["AAAA".to_string()]);
+        let b = raw_body("m", SPACED, &Request { system: "", tools: &[], messages: &msgs[..1], max_tokens: 64 }, 2048).unwrap();
+        assert_eq!((b["raw"].clone(), b["prompt"].clone(), b.get("images").is_none()), (json!(true), json!(" Question: what is 2 + 3?\n\n Answer:"), true));
+        assert_eq!(b["options"], json!({"num_ctx": 2048, "num_predict": 64}));
+        // `if` / `else`, a system part and trim marks
+        let t = "{{- if .System }}SYS {{ .System }}\n{{ else }}NONE\n{{ end -}}\n  Q: {{ .Prompt }} A: {{ .Response }}";
+        assert!(raw_template(t).is_some());
+        assert_eq!(raw_prompt(t, "be kind", &msgs[..1]).unwrap().0, "SYS be kind\nQ: what is 2 + 3? A:");
+        assert_eq!(raw_prompt(t, "", &msgs[..1]).unwrap().0, "NONE\nQ: what is 2 + 3? A:");
+        // `/api/generate` streams its text as `response`
+        let mut s = Stream::default();
+        let mut shown = String::new();
+        let mut on = |t: &str| shown.push_str(t);
+        s.feed(r#"{"response":" 5","done":false}"#, &mut on).unwrap();
+        assert!(s.feed(r#"{"response":"","done":true,"done_reason":"stop","eval_count":2}"#, &mut on).unwrap());
+        assert_eq!(shown, " 5");
     }
 
     #[test]

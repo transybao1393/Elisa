@@ -89,12 +89,39 @@ impl<'f> Session<'f> {
     /// turn the pictures came with the plain describe question), and still nothing gives
     /// `PICTURE_UNSEEN`; on a later turn, there is no picture text (Ok(None)). Ok(Some((block, answer))): `answer`
     /// is the picture's real answer, None for `PICTURE_UNSEEN`.
+    ///
+    /// Several pictures are looked at one by one (`context::pictures_text`): a small vision model may read only one
+    /// picture of a request (asked how many images came with two, it answers 1). On the turn they came with each is
+    /// described, and the turn answers the question about them together from those descriptions; on the turn after,
+    /// each is asked the question.
     pub(super) fn look(&mut self, question: &str, pics: &[Block], new: bool) -> Result<Option<(String, Option<String>)>, TurnEnd> {
         let n = pics.len();
         let what = if n == 1 { "the picture".to_string() } else { format!("the {n} pictures") };
         let aid = self.acts.begin(&mut *self.fe, &crate::activity::Phrase::new("model", "picture", "", format!("Looking at {what}"), format!("Looked at {what}")));
         CANCEL.store(false, Ordering::SeqCst);
         self.client.set_kind("picture");
+        let question = context::request_body(question).trim().to_string();
+        if n == 1 {
+            let answer = self.look_one(&question, pics, new, &what, aid)?;
+            self.acts.end_with(&mut *self.fe, aid, "", false);
+            return Ok(match answer {
+                Some(a) => Some((context::picture_block(&a), Some(a))),
+                // nothing came back that tells about the picture: said so on its own turn, so the model does not make it up
+                None => new.then(|| (context::picture_block(context::PICTURE_UNSEEN), None)),
+            });
+        }
+        let q = if new { String::new() } else { question };
+        let mut answers = Vec::with_capacity(n);
+        for p in pics.chunks(1) { answers.push(self.look_one(&q, p, new, &what, aid)?); }
+        self.acts.end_with(&mut *self.fe, aid, "", false);
+        if answers.iter().all(Option::is_none) { return Ok(new.then(|| (context::picture_block(context::PICTURE_UNSEEN), None))); }
+        let text = context::pictures_text(&answers);
+        Ok(Some((context::picture_block(&text), Some(text))))
+    }
+
+    /// One look (`look`) at `pics`, the questions of `context::picture_asks` in turn: the answer, or None when none
+    /// told anything about them (or, on a later turn, the request failed).
+    fn look_one(&mut self, question: &str, pics: &[Block], new: bool, what: &str, aid: u64) -> Result<Option<String>, TurnEnd> {
         let asks = context::picture_asks(question, new);
         let last = asks.len() - 1;
         for (i, q) in asks.into_iter().enumerate() {
@@ -111,10 +138,7 @@ impl<'f> Session<'f> {
                 }
                 Ok(r) => {
                     let answer = context::split_state(&texts(&Message::new(Role::Assistant, r.content))).0.trim().to_string();
-                    if !context::picture_non_answer(&answer) {
-                        self.acts.end_with(&mut *self.fe, aid, "", false);
-                        return Ok(Some((context::picture_block(&answer), Some(answer))));
-                    }
+                    if !context::picture_non_answer(&answer) { return Ok(Some(answer)); }
                     self.debug(&format!("[the picture answer told nothing about it: {}]", context::one_line(&answer, 80)));
                 }
                 // the server failed on this question (moondream:1.8b: "prediction aborted, token repeat limit
@@ -128,9 +152,7 @@ impl<'f> Session<'f> {
                 }
             }
         }
-        self.acts.end_with(&mut *self.fe, aid, "", false);
-        // nothing came back that tells about the picture: said so on its own turn, so the model does not make it up
-        Ok(new.then(|| (context::picture_block(context::PICTURE_UNSEEN), None)))
+        Ok(None)
     }
 
     /// The safety net on the turn a picture came with (a small vision model may say it

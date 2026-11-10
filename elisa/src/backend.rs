@@ -139,6 +139,9 @@ pub struct Caps {
     pub slots: usize,
     /// Ollama's capability list (`/api/show`)
     pub ollama: Option<Vec<String>>,
+    /// Ollama: the model's template when Elisa renders the prompt herself (`ollama::raw_template`: the template puts
+    /// whitespace right before the reply)
+    pub raw_template: Option<String>,
 }
 
 impl Caps {
@@ -217,11 +220,12 @@ fn ok_json(r: &Option<(u16, String, Value)>) -> Option<&Value> {
     r.as_ref().filter(|(st, _, v)| (200..300).contains(st) && !v.is_null()).map(|(_, _, v)| v)
 }
 
-/// Ollama `/api/show`: (capabilities, the model's context length from `model_info["<arch>.context_length"]`).
-pub fn parse_ollama_show(v: &Value) -> Option<(Vec<String>, Option<usize>)> {
+/// Ollama `/api/show`: (capabilities, the model's context length from `model_info["<arch>.context_length"]`, its
+/// template).
+pub fn parse_ollama_show(v: &Value) -> Option<(Vec<String>, Option<usize>, Option<String>)> {
     let caps: Vec<String> = v["capabilities"].as_array()?.iter().filter_map(|c| c.as_str().map(String::from)).collect();
     let ctx = v["model_info"].as_object().and_then(|m| m.iter().find(|(k, _)| k.ends_with(".context_length")).and_then(|(_, x)| x.as_u64())).map(|x| x as usize);
-    Some((caps, ctx))
+    Some((caps, ctx, v["template"].as_str().map(String::from)))
 }
 
 /// llama.cpp `/props`: (n_ctx, total_slots, vision, tools in the chat template). None = not llama.cpp.
@@ -298,7 +302,9 @@ pub fn detect_with(transport: &Transport, base_url: &str, model: &str, key: &str
         let mut c = defaults(Kind::Ollama);
         c.version = v["version"].as_str().map(String::from);
         c.detected_by = "GET /api/version".into();
-        if let Some((caps, ctx)) = ollama_show(&r, model, key, ms) {
+        if let Some((caps, ctx, tmpl)) = ollama_show(&r, model, key, ms) {
+            c.raw_template = tmpl.as_deref().and_then(crate::ollama::raw_template);
+            if c.raw_template.is_some() { c.quirks.push("the template writes a space before the reply: prompt rendered by Elisa (raw /api/generate)"); }
             c.thinking = caps.iter().any(|x| x == "thinking");
             c.vision = Some(caps.iter().any(|x| x == "vision"));
             if !caps.iter().any(|x| x == "tools") { c.tools = Tools::Text; }
@@ -384,7 +390,7 @@ fn ollama_loaded_ctx(root: &str, model: &str, key: &str, ms: u64) -> Option<usiz
 }
 
 /// Ollama `/api/show` of `model`.
-pub fn ollama_show(root: &str, model: &str, key: &str, ms: u64) -> Option<(Vec<String>, Option<usize>)> {
+pub fn ollama_show(root: &str, model: &str, key: &str, ms: u64) -> Option<(Vec<String>, Option<usize>, Option<String>)> {
     let mut rq = agent(ms.max(3000)).post(format!("{}/api/show", root.trim_end_matches('/'))).header("content-type", "application/json");
     if !key.is_empty() { rq = rq.header("authorization", format!("Bearer {key}")); }
     let mut r = rq.send(json!({"model": model}).to_string()).ok()?;
@@ -685,7 +691,7 @@ mod tests {
         assert_eq!(parse_llamacpp_props(&p), Some((Some(16384), 2, Some(false), Some(true))));
         assert_eq!(parse_llamacpp_props(&json!({"version": "x"})), None);
         let s = json!({"capabilities": ["completion", "vision"], "model_info": {"qwen3vl.context_length": 262144}});
-        assert_eq!(parse_ollama_show(&s), Some((vec!["completion".into(), "vision".into()], Some(262144))));
+        assert_eq!(parse_ollama_show(&s), Some((vec!["completion".into(), "vision".into()], Some(262144), None)));
         let l = json!({"object": "list", "data": [{"id": "a", "type": "llm", "state": "not-loaded", "max_context_length": 8192},
             {"id": "qwen2-vl", "type": "vlm", "state": "loaded", "max_context_length": 32768, "loaded_context_length": 4096, "capabilities": ["tool_use"]}]});
         assert_eq!(parse_lmstudio(&l, "qwen2-vl"), Some((Some(4096), true, Some(true), Some("loaded".into()))));

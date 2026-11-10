@@ -60,6 +60,13 @@ pub const PICTURES_QUESTION: &str = "Describe these pictures.";
 /// the picture text when no answer told anything about the picture (`picture_non_answer`, asked twice)
 pub const PICTURE_UNSEEN: &str = "the model could not make out the picture";
 
+/// The picture text of several pictures, each looked at on its own (None: nothing told about that one), numbered in
+/// the order they came: "2 pictures, each looked at on its own:\n1. …\n2. …".
+pub fn pictures_text(answers: &[Option<String>]) -> String {
+    let lines: Vec<String> = answers.iter().enumerate().map(|(i, a)| format!("{}. {}", i + 1, a.as_deref().map_or(PICTURE_UNSEEN, str::trim))).collect();
+    format!("{} pictures, each looked at on its own:\n{}", answers.len(), lines.join("\n"))
+}
+
 /// A picture's text block for the turn's user message: `[picture: ANSWER]`.
 pub fn picture_block(answer: &str) -> String { format!("{PICTURE_MARK}{}]", answer.trim()) }
 
@@ -163,7 +170,11 @@ pub fn shares_meaning(a: &str, b: &str) -> bool {
 
 /// A reply on a turn with picture text that has nothing to do with what the picture showed (`pic`: the picture's
 /// answer), such as a small model carrying on from its own earlier replies instead of answering about the picture.
-pub fn off_picture(reply: &str, pic: &str) -> bool { !reply.trim().is_empty() && !shares_meaning(reply, pic) }
+/// A reply with no word (a bare count, "2") has nothing to compare; `ReplyGuard` judges it.
+pub fn off_picture(reply: &str, pic: &str) -> bool {
+    let word = reply.chars().collect::<Vec<_>>().windows(2).any(|w| w[0].is_alphabetic() && w[1].is_alphabetic());
+    word && !shares_meaning(reply, pic)
+}
 
 /// a reply's text for comparing: lowercase, whitespace collapsed
 fn norm_reply(t: &str) -> String { t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase() }
@@ -193,6 +204,8 @@ pub struct ReplyGuard {
     /// four-word runs of the request's heading and tag lines (a user-message line starting with "## " or "[",
     /// picture text excepted), less those in the user's own words
     grams: std::collections::HashSet<String>,
+    /// the numbers in this turn's own message, picture text included ("2 pictures, each looked at on its own")
+    numbers: std::collections::HashSet<String>,
 }
 
 impl ReplyGuard {
@@ -215,6 +228,11 @@ impl ReplyGuard {
             if !e.is_empty() { g.sources.push(e); }
         }
         g.grams.retain(|x| !own.contains(x));
+        if let Some(m) = msgs.iter().rev().find(|m| m.role == Role::User) {
+            for b in &m.content {
+                if let Block::Text { text } = b { g.numbers.extend(text.split(|c: char| !c.is_ascii_digit()).filter(|n| !n.is_empty()).map(str::to_string)); }
+            }
+        }
         g
     }
 
@@ -228,7 +246,11 @@ impl ReplyGuard {
         // a word: two letters in a row ("Â©" from moondream:1.8b has none; "Paris", "OK", "4 giờ" do)
         let has_word = |t: &str| t.chars().collect::<Vec<_>>().windows(2).any(|w| w[0].is_alphabetic() && w[1].is_alphabetic());
         let a = &self.ask;
-        if !has_word(&r) && has_word(a) && !a.chars().any(|c| c.is_ascii_digit()) { return Some("no words"); }
+        // one number this turn's message has is an answer ("2" to "How many images…?" with the picture text "2
+        // pictures, …"); a box of several numbers, or a number from nowhere (an earlier reply's count), is not
+        let t = r.trim_matches(|c: char| !c.is_alphanumeric());
+        let number = !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) && self.numbers.contains(t);
+        if !has_word(&r) && !number && has_word(a) && !a.chars().any(|c| c.is_ascii_digit()) { return Some("no words"); }
         if word_grams(reply).iter().any(|x| self.grams.contains(x)) { return Some("heading"); }
         None
     }

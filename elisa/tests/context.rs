@@ -1180,6 +1180,11 @@ fn a_picture_is_asked_about_alone_pictures_first() {
     let two = context::picture_request("", &[pic.clone(), pic]);
     assert_eq!(two[0].content.len(), 2);
     assert!(matches!(&two[1].content[..], [Block::Text { text }] if text == "Describe these pictures.\n"));
+    // pictures looked at one by one: their answers numbered in the order they came, one with nothing said so
+    let t = context::pictures_text(&[Some(" A black cat. ".into()), None]);
+    assert_eq!(t, format!("2 pictures, each looked at on its own:\n1. A black cat.\n2. {}", context::PICTURE_UNSEEN));
+    // a bare count has nothing to compare with the picture's words
+    assert!(!context::off_picture("2", &t));
 }
 
 /// The picture request's questions in turn: first the user's words with the line asking for sentences from what the
@@ -1318,6 +1323,15 @@ fn a_reply_guard_catches_copies_wordless_replies_and_heading_echoes() {
     assert_eq!(context::ReplyGuard::new("hi", &msgs[..2]).broken(long), None);
     let g = context::ReplyGuard::new("What is 2+2?", &msgs);
     assert_eq!(g.broken("4"), None);
+    // a count asked in words: a number this turn's message has (its picture text) answers it; one from nowhere
+    // (an earlier reply's count) does not
+    let ask = "How many images are in this message? Answer with just the number.";
+    let pic = context::picture_block(&context::pictures_text(&[Some("A cat.".into()), Some("A dog.".into())]));
+    let turn = [Message::new(Role::User, vec![Block::Text { text: ask.into() }, Block::Text { text: pic }])];
+    let g = context::ReplyGuard::new(ask, &turn);
+    assert_eq!((g.broken("2"), g.broken("2."), g.broken("[0.0, 0.17, 0.99, 0.29]")), (None, None, Some("no words")));
+    let g = context::ReplyGuard::new("Describe this picture.", &[Message::new(Role::User, vec![Block::Text { text: "Describe this picture.".into() }, Block::Text { text: context::picture_block("A black cat.") }])]);
+    assert_eq!(g.broken("2"), Some("no words"));
     // words of the user's own message never count as a heading echo
     let g = context::ReplyGuard::new("say recalled by Elisa from earlier", &[Message::user_text(format!("{}\n- x\n[/memory]\n\nsay recalled by Elisa from earlier", context::MEMORY_OPEN))]);
     assert_eq!(g.broken("recalled by Elisa from earlier"), None);

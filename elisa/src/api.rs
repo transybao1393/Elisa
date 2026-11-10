@@ -619,7 +619,7 @@ impl Client {
                 let ctx = self.ollama_ctx.load(Ordering::Relaxed);
                 let thinks = self.ollama_thinks.load(Ordering::Relaxed).then_some(self.think);
                 let simple = (self.simple.load(Ordering::Relaxed) || self.think_off.load(Ordering::Relaxed)) && self.kind() == "agent";
-                let r = crate::ollama::send(&self.agent, crate::provider::ollama_root(&self.base), &self.key, &self.model, ctx, thinks, simple, req, cancel, on_text)?;
+                let r = crate::ollama::send(&self.agent, crate::provider::ollama_root(&self.base), &self.key, &self.model, ctx, thinks, simple, self.caps.raw_template.as_deref(), req, cancel, on_text)?;
                 self.record(&r, true);
                 return Ok(r);
             }

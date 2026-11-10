@@ -3842,6 +3842,35 @@ fn a_later_question_about_the_picture_looks_at_it_again() {
     assert!(!body(&reqs[5]).contains("[picture:"), "nothing of the picture after /reset");
 }
 
+/// Two pictures in one message: each is looked at alone and described (a small vision model may read only one
+/// picture of a request), and the turn answers from both answers, numbered; its bare count stands.
+#[test]
+fn several_pictures_are_looked_at_one_by_one() {
+    let dir = tmpdir("jsonl-two-pictures");
+    let f = Fake::start(vec![
+        text_reply("A black cat with blue ears."),
+        text_reply("A black cat looking up."),
+        text_reply("2"),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    let pics = json!([{"media_type": "image/png", "data": "iVBORw0KGgo="}, {"media_type": "image/png", "data": "R0lGODlh"}]);
+    s.cmd(json!({"type": "send", "text": "How many images are in this message? Answer with just the number.", "images": pics}));
+    let evs = s.until("turn_done");
+    let shown: String = evs.iter().filter(|e| e["type"] == "delta").map(|e| e["text"].as_str().unwrap()).collect();
+    assert_eq!(shown, "2", "{evs:?}");
+    assert!(!evs.iter().any(|e| e["type"] == "reply_retracted"), "{evs:?}");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 3, "a look per picture, then the turn");
+    let body = |r: &Value| r["messages"].to_string();
+    for (r, data) in [(&reqs[0], "iVBORw0KGgo="), (&reqs[1], "R0lGODlh")] {
+        assert_eq!(body(r).matches("\"image\"").count(), 1, "one picture per look: {}", body(r));
+        assert!(body(r).contains(data) && body(r).contains("Describe this picture."), "{}", body(r));
+    }
+    assert!(body(&reqs[2]).contains("[picture: 2 pictures, each looked at on its own:\\n1. A black cat with blue ears.\\n2. A black cat looking up.]"), "{}", body(&reqs[2]));
+}
+
 /// A reply that copies an earlier reply to another ask, or has no words, is asked once more with the user's
 /// words alone (no history), and that answer is shown and kept.
 #[test]
