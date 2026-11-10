@@ -11,9 +11,16 @@
 //! [router]
 //! url = "https://router.example.com"
 //! api_key_env = "ELISA_ROUTER_KEY"   # or: api_key = "…"
+//! elisa_rules = "off"                 # or "fallback"
 //! ```
 //!
 //! No key (neither set) = off: Elisa routes with its own word rules, exactly as without this module.
+//!
+//! `elisa_rules`: what Elisa's own intent rules (word signals and meaning checks: `route::classify`, the follow-up,
+//! greeting, about-Elisa, picture and own-fact checks, the reasoning gate, news recency by meaning) do while the
+//! router is on. "off" (the default): only the router's answer decides; on a miss the turn gets every tool and the
+//! model decides, with no rule-based notes. "fallback": the router first, Elisa's rules where it gives no answer.
+//! A session changes it with `/router rules off|fallback` (saved here).
 //!
 //! # Contract (version 1)
 //!
@@ -36,7 +43,7 @@
 //! "topic"?: "Osaka"}`. `intents` is a non-empty list of the labels in [`LABELS`]; an unknown label is ignored.
 //!
 //! Anything else (no answer within [`TIMEOUT`], a non-2xx status, a body that is not this JSON, no known label) is a
-//! miss: the turn routes as without a router, no error in the chat, and at most one quiet info line per session.
+//! miss: no error in the chat, at most one quiet info line per session, and the turn routes as `elisa_rules` says.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -66,12 +73,21 @@ pub struct RouterConf {
     pub api_key_env: String,
     #[serde(default, skip_serializing_if = "empty")]
     pub api_key: String,
+    /// Elisa's own intent rules while the router is on: "off" (the default, also when empty) or "fallback"
+    #[serde(default, skip_serializing_if = "empty")]
+    pub elisa_rules: String,
 }
+
+/// the values of `elisa_rules`
+pub const RULES: [&str; 2] = ["off", "fallback"];
 
 impl RouterConf {
     pub fn validate(&self) -> Result<(), String> {
         if !self.url.is_empty() && !(self.url.starts_with("http://") || self.url.starts_with("https://")) {
             return Err(format!("router: url must start with http:// or https:// (got {:?})", self.url));
+        }
+        if !self.elisa_rules.is_empty() && !RULES.contains(&self.elisa_rules.as_str()) {
+            return Err(format!("router: elisa_rules must be \"off\" or \"fallback\" (got {:?})", self.elisa_rules));
         }
         Ok(())
     }
@@ -81,21 +97,32 @@ impl RouterConf {
         let key = if self.api_key_env.is_empty() { None } else { getenv(&self.api_key_env).filter(|v| !v.trim().is_empty()) }
             .unwrap_or_else(|| self.api_key.clone());
         let (url, key) = (self.url.trim().trim_end_matches('/').to_string(), key.trim().to_string());
-        (!url.is_empty() && !key.is_empty()).then_some(Target { url, key })
+        (!url.is_empty() && !key.is_empty()).then_some(Target { url, key, fallback: self.elisa_rules == "fallback" })
     }
 }
 
-/// A configured router: where and with which key. `Debug` never prints the key.
+/// A configured router: where, with which key, and whether Elisa's own rules decide where it gives no answer
+/// (`elisa_rules = "fallback"`). `Debug` never prints the key.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Target { pub url: String, key: String }
+pub struct Target { pub url: String, key: String, pub fallback: bool }
 
 impl std::fmt::Debug for Target {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "Target {{ url: {:?}, key: <set> }}", self.url) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "Target {{ url: {:?}, key: <set>, fallback: {} }}", self.url, self.fallback) }
 }
 
 impl Target {
     #[cfg(test)]
-    pub fn new(url: &str, key: &str) -> Target { Target { url: url.into(), key: key.into() } }
+    pub fn new(url: &str, key: &str) -> Target { Target { url: url.into(), key: key.into(), fallback: false } }
+}
+
+/// `/router rules off|fallback`: `elisa_rules` written to `[router]` in providers.toml under `home` (the file's
+/// other settings kept; saved as every connection change is, mode 600). Err: a bad value, or no `[router]` table.
+pub fn save_rules(home: &std::path::Path, value: &str) -> Result<std::path::PathBuf, String> {
+    if !RULES.contains(&value) { return Err(format!("elisa_rules must be \"off\" or \"fallback\" (got {value:?})")); }
+    let mut f = crate::provider::Providers::load(home)?;
+    let r = f.router.as_mut().ok_or("no [router] table in providers.toml: add its url and key first")?;
+    r.elisa_rules = value.to_string();
+    f.save(home)
 }
 
 /// The turn's facts sent with the message (the contract's `context`).
@@ -226,6 +253,16 @@ pub struct Router {
 impl Router {
     pub fn new(target: Option<Target>) -> Router { Router { target, told: false } }
     pub fn on(&self) -> bool { self.target.is_some() }
+    /// Elisa's own intent rules may decide: no router, or one with `elisa_rules = "fallback"`
+    pub fn rules_on(&self) -> bool { self.target.as_ref().is_none_or(|t| t.fallback) }
+    /// the router and its `elisa_rules`, in one line (the startup line, `/router`, `/context`)
+    pub fn describe(&self) -> String {
+        match &self.target {
+            None => "intent router off (no [router] url and key in providers.toml): Elisa's own intent rules decide".into(),
+            Some(t) if t.fallback => format!("intent router on ({}) · Elisa's own intent rules: fallback (where the router gives no answer)", t.url),
+            Some(t) => format!("intent router on ({}) · Elisa's own intent rules: off (only the router decides; a miss offers every tool)", t.url),
+        }
+    }
 
     /// The router's answer for this turn, or None (off, or a miss). `info`: the one quiet line of a session's first
     /// miss; later misses say nothing.
@@ -234,7 +271,10 @@ impl Router {
         match call(t, message, c) {
             Ok(a) => (Some(a), None),
             Err(e) => {
-                if !std::mem::replace(&mut self.told, true) { info("The intent router did not answer; Elisa routes on her own for now."); }
+                if !std::mem::replace(&mut self.told, true) {
+                    info(if t.fallback { "The intent router did not answer; Elisa routes on her own for now." }
+                        else { "The intent router did not answer; the model gets every tool for now." });
+                }
                 (None, Some(e))
             }
         }
@@ -308,7 +348,7 @@ mod tests {
         assert!(RouterConf { url: "http://r".into(), ..Default::default() }.target(&none).is_none(), "a URL without a key is off");
         assert!(RouterConf { api_key: "k".into(), ..Default::default() }.target(&none).is_none(), "a key without a URL is off");
         assert!(RouterConf { url: "http://r".into(), api_key_env: "UNSET".into(), ..Default::default() }.target(&none).is_none());
-        let t = RouterConf { url: "http://r/".into(), api_key_env: "RK".into(), api_key: "file".into() }.target(&env).unwrap();
+        let t = RouterConf { url: "http://r/".into(), api_key_env: "RK".into(), api_key: "file".into(), ..Default::default() }.target(&env).unwrap();
         assert_eq!((t.url.as_str(), t.key.as_str()), ("http://r", "from-env"));
         assert!(!format!("{t:?}").contains("from-env"), "Debug never shows the key");
         assert!(RouterConf { url: "ftp://r".into(), ..Default::default() }.validate().is_err());
@@ -329,6 +369,46 @@ mod tests {
         let saved = from_json(&json!({"active": "", "providers": []}), &f).unwrap();
         assert_eq!(saved.router, f.router);
         assert!(Providers::parse("active = \"\"\n", "t").unwrap().router.is_none());
+    }
+
+    #[test]
+    fn elisa_rules_is_off_unless_set_to_fallback() {
+        use crate::provider::Providers;
+        let key = |_: &str| None;
+        let conf = |extra: &str| Providers::parse(&format!("[router]\nurl = \"http://r\"\napi_key = \"k\"\n{extra}"), "t");
+        let target = |extra: &str| conf(extra).unwrap().router.unwrap().target(&key).unwrap();
+        assert!(!target("").fallback, "the default is off");
+        assert!(!target("elisa_rules = \"off\"\n").fallback);
+        assert!(target("elisa_rules = \"fallback\"\n").fallback);
+        let e = conf("elisa_rules = \"sometimes\"\n").unwrap_err();
+        assert!(e.contains("elisa_rules must be \"off\" or \"fallback\""), "{e}");
+        // the rules decide with no router, or with one set to fallback; never with one set to off
+        assert!(Router::new(None).rules_on());
+        assert!(Router::new(Some(target("elisa_rules = \"fallback\"\n"))).rules_on());
+        assert!(!Router::new(Some(target(""))).rules_on());
+        assert!(Router::new(Some(target(""))).describe().contains("intent rules: off"));
+        assert!(Router::new(Some(target("elisa_rules = \"fallback\"\n"))).describe().contains("intent rules: fallback"));
+    }
+
+    #[test]
+    fn rules_are_saved_to_providers_toml_keeping_the_rest() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!("elisa-router-rules-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(save_rules(&home, "fallback").is_err(), "no [router] table: nothing to change");
+        let p = crate::provider::path_in(&home);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "active = \"l\"\n[providers.l]\ntype = \"openai\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"m\"\n[router]\nurl = \"http://r\"\napi_key = \"k\"\n").unwrap();
+        assert!(save_rules(&home, "maybe").is_err());
+        save_rules(&home, "fallback").unwrap();
+        let f = crate::provider::Providers::load(&home).unwrap();
+        let r = f.router.clone().unwrap();
+        assert_eq!((r.url.as_str(), r.api_key.as_str(), r.elisa_rules.as_str()), ("http://r", "k", "fallback"));
+        assert_eq!((f.active.as_str(), f.providers["l"].model.as_str()), ("l", "m"));
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        save_rules(&home, "off").unwrap();
+        assert!(!crate::provider::Providers::load(&home).unwrap().router.unwrap().target(&|_| None).unwrap().fallback);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// a one-shot HTTP server on 127.0.0.1 that answers with `status` and `body` after `delay`; returns its URL and

@@ -4081,3 +4081,125 @@ fn a_recalled_save_from_an_earlier_turn_stands() {
     assert!(!reqs[..5].iter().any(|r| r["messages"].to_string().contains("nothing was saved")));
     assert!(reqs[5]["messages"].to_string().contains("nothing was saved"));
 }
+
+// ---------- the hosted intent router and Elisa's own intent rules (`router.rs` `elisa_rules`) ----------
+
+/// A stand-in router: each `/route` call gets the next answer (None = HTTP 500, a miss); returns its URL and the
+/// messages it was asked about.
+fn router_stub(answers: Vec<Option<&'static str>>) -> (String, Arc<Mutex<Vec<String>>>) {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let a = asked.clone();
+    std::thread::spawn(move || {
+        let mut answers = VecDeque::from(answers);
+        for c in l.incoming() {
+            let Ok(mut c) = c else { continue };
+            let mut r = BufReader::new(c.try_clone().unwrap());
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() { break; }
+                if let Some(v) = line.to_lowercase().strip_prefix("content-length:") { len = v.trim().parse().unwrap_or(0); }
+            }
+            let mut body = vec![0; len];
+            let _ = r.read_exact(&mut body);
+            let msg = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["message"].as_str().map(String::from)).unwrap_or_default();
+            a.lock().unwrap().push(msg);
+            let (code, b) = match answers.pop_front().flatten() { Some(b) => (200, b), None => (500, r#"{"error": "down"}"#) };
+            let _ = write!(c, "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{b}", b.len());
+        }
+    });
+    (url, asked)
+}
+
+/// Runs `input` with the router at `router` and `elisa_rules` (None: not set), routing on (`route = "auto"`) and
+/// debug lines on; returns the output, the chat requests and the test folder.
+fn run_routed(tag: &str, router: &str, rules: Option<&str>, replies: usize, input: &str) -> (Out, Vec<Value>, PathBuf) {
+    let d = tmpdir(tag);
+    let f = Fake::start((0..replies).map(|_| oa_reply(&[json!({"content": "Sure."})], "stop", json!({"prompt_tokens": 400, "completion_tokens": 3}))).collect());
+    let home = d.join("_home/.config/elisa");
+    std::fs::create_dir_all(&home).unwrap();
+    let rules = rules.map_or(String::new(), |r| format!("elisa_rules = \"{r}\"\n"));
+    std::fs::write(home.join("providers.toml"), format!("active = \"l\"\n[providers.l]\ntype = \"openai\"\nbase_url = \"{}/v1\"\nmodel = \"local\"\nmax_ctx = 16384\n[router]\nurl = \"{router}\"\napi_key = \"k\"\n{rules}", f.url())).unwrap();
+    let o = run_elisa_cfg(&["--no-checks"], &d, Some(input), &[("ELISA_DEBUG", "1".into())], "route = \"auto\"\n");
+    let reqs: Vec<Value> = f.log().iter().filter(|r| r.path == "/v1/chat/completions").map(|r| r.json()).collect();
+    (o, reqs, d)
+}
+
+/// the tool names of an OpenAI-style request
+fn oa_tools(req: &Value) -> Vec<String> {
+    req["tools"].as_array().map(|a| a.iter().filter_map(|t| t["function"]["name"].as_str().map(String::from)).collect()).unwrap_or_default()
+}
+
+/// the last user message of an OpenAI-style request, as JSON text
+fn oa_last_user(req: &Value) -> String {
+    req["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "user").map(|m| m["content"].to_string()).unwrap_or_default()
+}
+
+/// Router on, `elisa_rules` off (the default): the router's answer alone decides. Strong word signals ("search the
+/// web: …", "read notes.md and save a summary to out.md") answered `chat` get no tools and no ask line; a miss gets
+/// no word routing either: every tool, no notes, and one quiet line.
+#[test]
+fn router_on_with_rules_off_uses_only_the_router() {
+    let chat = Some(r#"{"intents": ["chat"]}"#);
+    let (url, asked) = router_stub(vec![chat, chat, None, None]);
+    let (o, reqs, d) = run_routed("router-off", &url, None, 4, "search the web: rust release news\nread notes.md and save a summary to out.md\nhey there\nread notes.md\n/exit\n");
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!(asked.lock().unwrap().len(), 4, "{}", o.stderr);
+    assert!(o.stderr.contains("Elisa's own intent rules: off"), "the startup line says the mode: {}", o.stderr);
+    // turns 1 and 2: the router said chat: no tools, and no web / read / save ask line from the words
+    assert_eq!(reqs.len(), 4, "{}", o.stderr);
+    for r in &reqs[..2] {
+        assert!(oa_tools(r).is_empty(), "{:?}", oa_tools(r));
+        let t = oa_last_user(r);
+        assert!(!t.contains("call web_search now") && !t.contains("call read on it now") && !t.contains("call write now"), "{t}");
+    }
+    assert_eq!(o.stderr.matches("[route: chat (no tools) (intent router)]").count(), 2, "{}", o.stderr);
+    // turns 3 and 4: misses: no word rules ("hey there" is not small talk, "read notes.md" gets no ask line), every tool
+    assert_eq!(o.stderr.matches("(intent router gave no answer: every tool)]").count(), 2, "{}", o.stderr);
+    assert_eq!(o.stderr.matches("the model gets every tool for now").count(), 1, "one quiet line: {}", o.stderr);
+    for r in &reqs[2..] {
+        let names = oa_tools(r);
+        assert!(["read", "write", "web_search"].iter().all(|t| names.iter().any(|n| n == t)), "{names:?}");
+        assert!(!oa_last_user(r).contains("call read on it now"), "{}", oa_last_user(r));
+    }
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// Router on, `elisa_rules = "fallback"`: the router first, Elisa's word rules on a miss (the old behaviour).
+#[test]
+fn router_on_with_rules_fallback_keeps_the_word_rules_on_a_miss() {
+    let (url, asked) = router_stub(vec![Some(r#"{"intents": ["chat"]}"#), None, None]);
+    let (o, reqs, d) = run_routed("router-fallback", &url, Some("fallback"), 3, "search the web: rust release news\nsearch the web: rust release news\nread notes.md\n/exit\n");
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!(asked.lock().unwrap().len(), 3, "{}", o.stderr);
+    assert!(o.stderr.contains("Elisa's own intent rules: fallback"), "{}", o.stderr);
+    assert_eq!(reqs.len(), 3, "{}", o.stderr);
+    // turn 1: the router answered: its chat stands
+    assert!(oa_tools(&reqs[0]).is_empty(), "{:?}", oa_tools(&reqs[0]));
+    // turns 2 and 3: misses: the word rules route them (web, files/code: signals) and add the ask lines
+    assert_eq!(o.stderr.matches("Elisa routes on her own for now").count(), 1, "{}", o.stderr);
+    assert_eq!(o.stderr.matches("(signals)]").count(), 2, "{}", o.stderr);
+    assert!(oa_tools(&reqs[1]).iter().any(|n| n == "web_search"), "{:?}", oa_tools(&reqs[1]));
+    assert!(oa_last_user(&reqs[1]).contains("call web_search now"), "{}", oa_last_user(&reqs[1]));
+    assert!(oa_tools(&reqs[2]).iter().any(|n| n == "read"), "{:?}", oa_tools(&reqs[2]));
+    assert!(oa_last_user(&reqs[2]).contains("call read on it now"), "{}", oa_last_user(&reqs[2]));
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// `/router rules fallback` changes the mode for the session and saves it to providers.toml (mode 600).
+#[test]
+fn router_rules_command_changes_and_saves_the_setting() {
+    use std::os::unix::fs::PermissionsExt;
+    let (url, _) = router_stub(vec![]);
+    let (o, _, d) = run_routed("router-cmd", &url, None, 0, "/router\n/router rules fallback\n/router rules sometimes\n/exit\n");
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert!(o.stderr.contains("Elisa's own intent rules: fallback"), "{}", o.stderr);
+    assert!(o.stderr.contains("usage: /router"), "{}", o.stderr);
+    let p = d.join("_home/.config/elisa/providers.toml");
+    let text = std::fs::read_to_string(&p).unwrap();
+    assert!(text.contains("elisa_rules = \"fallback\"") && text.contains("api_key = \"k\"") && text.contains("[providers.l]"), "{text}");
+    assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    let _ = std::fs::remove_dir_all(d);
+}

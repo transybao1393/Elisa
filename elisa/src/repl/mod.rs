@@ -249,7 +249,8 @@ struct Session<'f> {
     route: crate::route::Route,
     /// the hosted intent router (`router.rs`; providers.toml `[router]`): off without a key
     router: crate::router::Router,
-    /// the router's answer for this turn; None = no router or a miss, and the word rules decide as before
+    /// the router's answer for this turn; None = no router or a miss: the word rules decide as before, unless the
+    /// router's `elisa_rules` is "off" (`Session::own_rules`)
     routed: Option<crate::router::Answer>,
     /// a picture was refused in this session (the router's `image_refused`)
     pic_refused_seen: bool,

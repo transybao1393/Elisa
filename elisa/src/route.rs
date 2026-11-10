@@ -66,11 +66,13 @@ pub enum Why {
     Off,
     /// the hosted intent router's answer (`router.rs`)
     Router,
+    /// the router gave no answer and Elisa's own rules are off (`elisa_rules = "off"`): every tool, the model decides
+    RouterMiss,
 }
 
 impl Why {
     pub fn word(self) -> &'static str {
-        match self { Why::Chat => "chat", Why::Signals => "signals", Why::FollowUp => "follow-up", Why::Unclear => "unclear: default set", Why::Widened => "widened by a tool call", Why::Off => "route = off", Why::Router => "intent router" }
+        match self { Why::Chat => "chat", Why::Signals => "signals", Why::FollowUp => "follow-up", Why::Unclear => "unclear: default set", Why::Widened => "widened by a tool call", Why::Off => "route = off", Why::Router => "intent router", Why::RouterMiss => "intent router gave no answer: every tool" }
     }
 }
 
@@ -86,6 +88,12 @@ pub struct Route {
 impl Route {
     /// `route = "off"`: every tool group (no clock line: that is a routed turn's)
     pub fn all() -> Route { Route { groups: Groups(ALL & !TIME), others: Vec::new(), why: Why::Off } }
+    /// a router miss with Elisa's own rules off: every tool group, and the servers named in the words
+    /// (`servers_named`), as on a router answer
+    pub fn router_miss(others: Vec<String>) -> Route {
+        let g = Groups(ALL & !TIME & !OTHER);
+        Route { groups: if others.is_empty() { g } else { g.with(OTHER) }, others, why: Why::RouterMiss }
+    }
     pub fn describe(&self) -> String {
         let mut s = self.groups.describe();
         if !self.others.is_empty() { s += &format!(" + {}", self.others.join(", ")); }

@@ -31,6 +31,22 @@ impl<'f> Session<'f> {
         }
     }
 
+    /// `/router`: the intent router and Elisa's own intent rules. `/router rules off|fallback`: `elisa_rules` set for
+    /// this session and saved to providers.toml `[router]` (`router::save_rules`).
+    fn router_command(&mut self, arg: &str) {
+        let mut a = arg.split_whitespace();
+        match (a.next(), a.next(), a.next()) {
+            (None, ..) => {}
+            (Some("rules"), Some(v), None) if crate::router::RULES.contains(&v) => {
+                let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
+                if let Err(e) = crate::router::save_rules(&home, v) { return self.fe.error(&e); }
+                if let Some(t) = self.router.target.as_mut() { t.fallback = v == "fallback"; }
+            }
+            _ => return self.fe.error("usage: /router · /router rules off|fallback"),
+        }
+        self.fe.info(&self.router.describe());
+    }
+
     /// Estimated tokens of this request's tool definitions by owner: Elisa's own, then each MCP server whose tools
     /// are offered this turn; largest first.
     pub(super) fn tool_costs(&self) -> Vec<(String, usize)> {
@@ -695,8 +711,9 @@ impl<'f> Session<'f> {
                 self.fe.info(&format!("tools by owner (this turn): {} · /mcp for each server", by.join(" · ")));
                 self.fe.info(&format!("route (last turn): {} · config route = \"{}\"", self.route.describe(), self.cfg.route));
                 if self.router.on() {
-                    let said = self.routed.as_ref().map_or("no answer: word rules used".to_string(), |a| a.describe());
-                    self.fe.info(&format!("intent router (last turn): {said}"));
+                    let miss = if self.own_rules() { "no answer: word rules used" } else { "no answer: every tool, no rules" };
+                    let said = self.routed.as_ref().map_or(miss.to_string(), |a| a.describe());
+                    self.fe.info(&format!("intent router (last turn): {said} · {}", self.router.describe()));
                 }
                 if self.cfg.route == "auto" && self.mcp.has_gated() {
                     let on = |srv: &str| if self.tools.iter().any(|t| self.mcp.gated_server(&t.name) == Some(srv)) { "offered" } else { "not offered" };
@@ -854,6 +871,7 @@ impl<'f> Session<'f> {
             "/full" => self.full(),
             "/copy" => self.copy_last(),
             "/model" => self.model_command(line[cmd.len()..].trim()),
+            "/router" => self.router_command(line[cmd.len()..].trim()),
             "/chat" | "/code" | "/mode" => self.fe.info("modes were removed: each turn gets the tools its words call for (config route = \"auto\"; /context shows the last turn's groups)"),
             "/water" | "/feed" | "/food" | "/play" | "/toy" | "/poke" => self.fe.info("Elisa's character lives in the full-screen view (not in plain mode)"),
             "/stats" => {

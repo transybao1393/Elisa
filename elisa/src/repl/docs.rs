@@ -18,10 +18,12 @@ impl<'f> Session<'f> {
         let mine = |vi: bool| context::no_picture_line("this", &model, vi, true, false).unwrap_or_default();
         let last = self.history.last().filter(|m| m.role == Role::Assistant).map(texts).unwrap_or_default();
         let after = last.trim() == mine(false) || last.trim() == mine(true);
-        // the router's `refused_picture` replaces the word check when it answered
+        // the router's `refused_picture` replaces the word check when it answered; with Elisa's own rules off, a miss
+        // leaves only the fact of a picture refused now
         match self.router_says("refused_picture") {
             Some(asked) => (now || asked).then(|| context::no_picture_text(&model, vi)),
-            None => context::no_picture_line(input, &model, vi, now, after),
+            None if self.own_rules() => context::no_picture_line(input, &model, vi, now, after),
+            None => now.then(|| context::no_picture_text(&model, vi)),
         }
     }
 
@@ -73,13 +75,15 @@ impl<'f> Session<'f> {
     /// what the picture turns learned (`last_pic_seen`). Later, when other talk came between, a follow-up of the last
     /// turn is about that talk: only a message that names a picture or is close in meaning to what was learned
     /// about it (`context::about_picture_later`), the pictures' answers alone: the ask that brought them ("what is
-    /// this?") is close in meaning to any other "what is this …?".
+    /// this?") is close in meaning to any other "what is this …?". The word and meaning checks are Elisa's own rules:
+    /// with them off (`router.rs` `elisa_rules`), only the router's follow-up right after the picture turn.
     fn about_last_pictures(&self, input: &str, next: bool) -> bool {
         let seen = &self.last_pic_seen;
-        if !next { return context::about_picture_later(input, seen.strip_prefix(self.last_pic_ask.as_str()).unwrap_or(seen)); }
+        let rules = self.own_rules();
+        if !next { return rules && context::about_picture_later(input, seen.strip_prefix(self.last_pic_ask.as_str()).unwrap_or(seen)); }
         if matches!(self.router_kind(), Some(Some(_))) { return true; }
         if self.router_says("greeting") == Some(true) || self.router_says("closing") == Some(true) { return false; }
-        context::about_picture(input, seen)
+        rules && context::about_picture(input, seen)
     }
 
     /// The isolated picture request (`context::picture_request`): the same model, no system prompt, no history, only

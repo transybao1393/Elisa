@@ -195,6 +195,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/stats", "metrics: the last request's model calls and the session totals"),
     ("/cache", "Elisa's result cache: entries, size, hit rate per kind · /cache clear [web_fetch|web_search|docs]"),
     ("/model", "the model connection in use, and the saved ones · /model NAME switches to that installed model"),
+    ("/router", "the intent router and Elisa's own intent rules · /router rules off|fallback (saved to providers.toml)"),
     ("/yolo", "toggle approve-all for tools"),
     ("/water", "give Elisa water (F2)"),
     ("/feed", "give Elisa a snack (F3)"),

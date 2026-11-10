@@ -21,18 +21,24 @@ impl<'f> Session<'f> {
         self.sync_plugins();
         let mode = crate::mcp_reason::Mode::parse(&self.cfg.reason).unwrap_or(crate::mcp_reason::Mode::Auto);
         let body = context::request_body(input);
-        // the hosted intent router (`router.rs`), when configured: one short call; None = off or a miss (word rules)
+        // the hosted intent router (`router.rs`), when configured: one short call; None = off or a miss (word rules, unless
+        // `elisa_rules = "off"`: `own_rules`)
         self.routed = self.ask_router(body);
         let plan = self.routed.as_ref().map(crate::router::plan);
-        // its `reasoning` turns the reasoning gate on (the word gate still can, so a multi-step task keeps it)
-        let on = crate::mcp_reason::decide(mode, body, self.reason_on) || (mode == crate::mcp_reason::Mode::Auto && plan.as_ref().is_some_and(|p| p.reasoning));
+        let rules = self.own_rules();
+        let reasoning = mode == crate::mcp_reason::Mode::Auto && plan.as_ref().is_some_and(|p| p.reasoning);
+        // its `reasoning` turns the reasoning gate on (the word gate still can, so a multi-step task keeps it; with
+        // Elisa's own rules off only the router's answer, or `reason = "always"`)
+        let on = if rules { crate::mcp_reason::decide(mode, body, self.reason_on) || reasoning } else { mode == crate::mcp_reason::Mode::Always || reasoning };
         // the same check, whatever `reason` is: a simple turn ("hi", "2+2=?") asks the model not to reason and gets a
-        // smaller output cap (config `think_simple`; a follow-up like "ok" keeps the last turn's choice)
-        let simple = crate::mcp_reason::wanted(body).map_or(self.client.simple(), |multi| !multi);
+        // smaller output cap (config `think_simple`; a follow-up like "ok" keeps the last turn's choice); rules off:
+        // a router answer without `reasoning` is simple, a miss is not
+        let simple = if rules { crate::mcp_reason::wanted(body).map_or(self.client.simple(), |multi| !multi) } else { plan.as_ref().is_some_and(|p| !p.reasoning) };
         self.client.set_simple(simple && self.cfg.think_simple == "off");
         self.mcp.new_turn();
         // the documents and security servers: only on turns about them (config `gate_tools`), same once-per-turn rule
-        let gate = crate::mcp_reason::gate(self.cfg.gate_tools == "off", body, &self.recent_text(), self.gate);
+        // (rules off: the router's groups below, both on a miss, which offers every tool)
+        let gate = if rules { crate::mcp_reason::gate(self.cfg.gate_tools == "off", body, &self.recent_text(), self.gate) } else { (plan.is_none(), plan.is_none()) };
         // intent routing (config `route`): the tool groups this turn's words call for (`route::classify`)
         let large_doc = self.docs.iter().any(|d| d.1);
         let doc_text = large_doc || self.doc_req.is_some();
@@ -42,13 +48,15 @@ impl<'f> Session<'f> {
             _ if self.cfg.route != "auto" => crate::route::Route::all(),
             // the router's answer: its groups (`route::from_router`); the widen path still repairs a miss
             Some(p) => crate::route::from_router(p, body, &self.route, crate::route::servers_named(body, &others()), doc_text, large_doc),
+            // a miss with Elisa's own rules off: no word signals, every tool, and the model decides
+            None if !rules => crate::route::Route::router_miss(crate::route::servers_named(body, &others())),
             None => crate::route::classify(body, &self.route, &others()),
         };
         // the documents / security servers follow the router's groups too
         let gate = match &plan { Some(p) => (gate.0 || p.groups.has(crate::route::DOCS), gate.1 || p.groups.has(crate::route::SEC)), None => gate };
         // document text in this turn's message (attached now, or a follow-up's pages): only the tools its own words
         // ask for; one too large to go in whole adds the documents tools (`route::with_documents`)
-        let route = if doc_text && route.why != crate::route::Why::Router {
+        let route = if doc_text && rules && route.why != crate::route::Why::Router {
             let names: Vec<String> = self.kept_docs.iter().map(|k| k.doc.name.clone()).collect();
             crate::route::with_documents(route, body, &names, large_doc)
         } else { route };
@@ -100,12 +108,21 @@ impl<'f> Session<'f> {
         let mut info: Option<String> = None;
         let (a, miss) = self.router.ask(body, &ctx, &mut |l| info = Some(l.to_string()));
         if let Some(l) = info { self.fe.info(&l); }
-        if let Some(e) = miss { self.debug(&format!("[router: no answer ({e}); word rules]")); }
+        if let Some(e) = miss { self.debug(&format!("[router: no answer ({e}); {}]", if self.own_rules() { "word rules" } else { "every tool, no rules" })); }
         a
     }
 
     /// The router said (Some) whether this turn has `label`; None = no router answer this turn (the word rules decide).
     pub(super) fn router_says(&self, label: &str) -> Option<bool> { self.routed.as_ref().map(|a| a.has(label)) }
+
+    /// Elisa's own intent rules (word signals, meaning checks) may decide this turn: no router in use, or providers.toml
+    /// `[router] elisa_rules = "fallback"`. Off, only the router's answer decides, and a miss decides nothing.
+    pub(super) fn own_rules(&self) -> bool { self.router.rules_on() || self.cfg.route != "auto" }
+
+    /// The router's answer for `label`, else (no answer) Elisa's own `rule` when her rules are on; else false.
+    pub(super) fn says_or(&self, label: &str, rule: impl FnOnce() -> bool) -> bool {
+        self.router_says(label).unwrap_or_else(|| self.own_rules() && rule())
+    }
 
     /// Routed (`route = "auto"`): the working directory reaches the model only once a turn carries tools. A chat
     /// first turn leaves the `Working directory:` line out of its header (with it, a model answers
@@ -281,9 +298,11 @@ impl<'f> Session<'f> {
         });
         // what Elisa can do on this model, from the detected caps (a fixed list would claim images with no vision)
         let vision = self.client.caps().vision == Some(true);
-        let about = self.router_says("about_elisa").unwrap_or_else(|| crate::route::about_elisa(&input)).then(|| crate::situation::about(vision));
-        // a question about the model itself ("What can this model do for me?"): its detected facts
+        let about = self.says_or("about_elisa", || crate::route::about_elisa(&input)).then(|| crate::situation::about(vision));
+        // a question about the model itself ("What can this model do for me?"): its detected facts (a meaning check:
+        // Elisa's own rules only)
         let about = about.or_else(|| {
+            if !self.own_rules() { return None; }
             let (m, v, t, th, ctx) = self.facts();
             let own = context::own_words(context::request_body(&input)).unwrap_or(&input).to_string();
             crate::situation::asks_about_model(&m, v, t, th, ctx, &own).then(|| crate::situation::about_model(&m, v, t, th, ctx))
@@ -316,7 +335,7 @@ impl<'f> Session<'f> {
         let small = match &self.routed {
             // the router: a greeting or a closing (a bare "ok" to an offer is a yes: closing only without one)
             Some(a) => a.has("greeting") || (a.has("closing") && !offer),
-            None => crate::route::small_talk(&input) || (crate::route::ack(&input) && !offer),
+            None => self.own_rules() && (crate::route::small_talk(&input) || (crate::route::ack(&input) && !offer)),
         };
         self.small_talk_turn = self.cfg.route == "auto" && self.route.groups.tool_free() && self.route.others.is_empty() && small;
         self.input = input;
@@ -373,7 +392,7 @@ impl<'f> Session<'f> {
     /// answers: memory was searched (`recalled`: what it found) and the notes, pinned facts and conversation hold no
     /// word of X. The note says so, so the answer is "you haven't told me" (`situation::unknown_fact_note`).
     fn unknown_fact_note(&self, input: &str, recalled: &[String]) -> Option<String> {
-        if !self.route.groups.tool_free() { return None; }
+        if !self.route.groups.tool_free() || !self.own_rules() { return None; }
         let subject = crate::situation::own_fact_asked(input)?;
         let mut known = recalled.join("\n");
         for t in [self.first_notes(), self.state_block()].into_iter().flatten() { known += "\n"; known += &t; }
@@ -386,7 +405,7 @@ impl<'f> Session<'f> {
     /// A call to one of Elisa's own MCP tools with its "true for …" switches set from the user's words
     /// (`mcp_args::set_by_meaning`): web_search's `recent` for an ask about news or the latest, whatever the model sent.
     pub(super) fn set_by_meaning(&mut self, name: &str, input: serde_json::Value) -> serde_json::Value {
-        if !self.mcp.builtin_owns(name) { return input; }
+        if !self.mcp.builtin_owns(name) || !self.own_rules() { return input; }
         let Some(def) = self.tools.iter().find(|t| t.name == name) else { return input };
         let (out, set) = crate::mcp_args::set_by_meaning(&def.input_schema, &input, context::request_body(&self.input));
         if !set.is_empty() { self.debug(&format!("[{name}: {} set by Elisa from the ask]", set.join(", "))); }
@@ -396,19 +415,22 @@ impl<'f> Session<'f> {
     fn ask_note(&self, input: &str) -> Option<String> {
         let has = |n: &str| self.tools.iter().any(|t| t.name == n);
         // the router's answer: its web_search_now / save_file / read_file (and `file`) instead of the word checks
+        // (the file name from the words only when Elisa's own rules are on)
+        let rules = self.own_rules();
         if let Some(a) = &self.routed {
             if a.has("web_search_now") && has("web_search") { return Some(WEB_ASK_NOTE.to_string()); }
             if a.has("save_file") && has("write") {
-                if let Some(f) = a.file.clone().or_else(|| crate::route::save_ask(input)) {
+                if let Some(f) = a.file.clone().or_else(|| crate::route::save_ask(input).filter(|_| rules)) {
                     return Some(format!("{}to save it to {f}: call write now with the full content; never say it is saved before write succeeds.)", crate::route::ASK_PREFIX));
                 }
             }
             if a.has("read_file") && has("read") {
-                let f = a.file.clone().or_else(|| crate::route::file_ask(input))?;
+                let f = a.file.clone().or_else(|| crate::route::file_ask(input).filter(|_| rules))?;
                 return Some(format!("{}to read {f}: call read on it now, then answer from what it returns; never guess what it says.)", crate::route::ASK_PREFIX));
             }
             return None;
         }
+        if !rules { return None; }
         if crate::route::web_ask(input) && has("web_search") { return Some(WEB_ASK_NOTE.to_string()); }
         if let Some(f) = crate::route::save_ask(input).filter(|_| has("write")) {
             // without it, "save that plan to plan.md" can get "I've saved it" with no write call
@@ -430,7 +452,7 @@ impl<'f> Session<'f> {
             Some(a) if a.has("resume_last") => Some(crate::route::Resume::Continue),
             Some(a) if a.has("recap") => Some(crate::route::Resume::Recap),
             Some(_) => None,
-            None => crate::route::resume_intent(input),
+            None => crate::route::resume_intent(input).filter(|_| self.own_rules()),
         };
         let Some(kind) = kind else { return Ok(None) };
         // the newest earlier session with something to continue: not one that only said hello or asked this already
@@ -519,8 +541,10 @@ impl<'f> Session<'f> {
         // (not after a greeting or the generic intro either: nothing to go deeper into)
         let answered = last.content.iter().any(|b| matches!(b, Block::Text { text } if !text.trim().is_empty() && !text.trim_start().starts_with('[') && !context::is_intro(text)));
         // a bare "yes" to an answer that offered several options: ask which one (the model picked the first and wrote code)
-        if answered { if let Some(h) = crate::followup::pick_option(input, &texts(last)) { return Some(h.to_string()); } }
-        let k = self.router_kind().unwrap_or_else(|| crate::followup::kind(input)).filter(|_| answered)?;
+        // (both word checks are Elisa's own rules: with them off, only the router's follow-up labels)
+        let rules = self.own_rules();
+        if answered && rules { if let Some(h) = crate::followup::pick_option(input, &texts(last)) { return Some(h.to_string()); } }
+        let k = self.router_kind().unwrap_or_else(|| crate::followup::kind(input).filter(|_| rules)).filter(|_| answered)?;
         let chat = self.route.groups.tool_free() && self.route.others.is_empty();
         // about an attached document: the hint keeps to what it says (otherwise "go deeper" can get content that is not in it)
         let doc = !self.kept_docs.is_empty() || self.doc_req.is_some() || self.route.groups.has(crate::route::DOCS)
@@ -543,7 +567,7 @@ impl<'f> Session<'f> {
     /// The situation line for this turn (`situation.rs`): only on a small-talk turn routed as chat ("hey", "thanks",
     /// "chào"), with `greet_context` on, and only when there is context to give.
     fn situation(&self, input: &str) -> Option<String> {
-        if !self.cfg.greet_context || !self.route.groups.tool_free() || !self.route.others.is_empty() || !self.router_says("greeting").unwrap_or_else(|| crate::route::greeting(input)) { return None; }
+        if !self.cfg.greet_context || !self.route.groups.tool_free() || !self.route.others.is_empty() || !self.says_or("greeting", || crate::route::greeting(input)) { return None; }
         let now = crate::situation::now_secs();
         let vi = crate::reply_lang::detect(input) == Some(crate::reply_lang::Lang::Vi);
         let mut f = crate::situation::Facts { now, hour: crate::situation::local_hour(now), vi, ..Default::default() };

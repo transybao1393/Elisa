@@ -271,6 +271,8 @@ impl<'f> Session<'f> {
             max_ctx: self.max_ctx, notes: self.notes.clone(), resumed, vision: self.vision,
         };
         self.fe.banner(&b);
+        // the intent router, when one is set: on, and whether Elisa's own intent rules still decide (`elisa_rules`)
+        if self.router.on() { let l = self.router.describe(); self.fe.info(&l); }
     }
 
     fn run_repl(&mut self) {
