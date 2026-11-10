@@ -27,8 +27,8 @@ pub fn estimate_messages(msgs: &[Message]) -> usize { msgs.iter().map(message_to
 /// A context window this small (tokens) is tiny (`tiny_window`).
 pub const TINY_CTX: usize = 4096;
 
-/// A window too small for Elisa's usual prompt (BUGS #41, #42: moondream:1.8b's 2,048 tokens were mostly the system
-/// prompt, tool rules and the first message's header, and the model read them back as its answer). Decided by the
+/// A window too small for Elisa's usual prompt (in a 2,048-token window the system
+/// prompt, tool rules and the first message's header fill most of it, and a model reads them back as its answer). Decided by the
 /// window size alone, never by the model's name: such a session gets `TINY_SYSTEM`, no tools, no first-message
 /// header and no per-turn hint lines.
 pub fn tiny_window(max_ctx: usize) -> bool { max_ctx < TINY_CTX }

@@ -224,7 +224,7 @@ final class AppModel: ObservableObject {
     /// the pictures of the message just sent, shown on its `user` line when Elisa echoes it
     var sentImages: [NSImage] = []
     /// pictures refused at attach time since the last message (the model has no vision): the next `send` says so in
-    /// `images_refused`, so Elisa answers a question about them honestly instead of the model making one up (BUGS #61)
+    /// `images_refused`, so Elisa answers a question about them honestly instead of the model making one up
     var refusedImages = 0
     /// documents waiting to go with the next message (any model: Elisa reads them, src/attach.rs)
     @Published var documents: [DocAttachment] = []
@@ -316,14 +316,14 @@ final class AppModel: ObservableObject {
         // on the welcome screen there is no session yet: the next folder opened uses the new connection
         guard !welcome else { return }
         let extra = extraArgs
-        // the conversation open now, whatever was said in it (BUGS #63: a short chat was skipped as not worth continuing)
+        // the conversation open now, whatever was said in it (a short chat too, never skipped as not worth continuing)
         extraArgs.removeAll { $0 == "--continue" }
         extraArgs.append("--continue-open")
         start()
         extraArgs = extra
     }
 
-    /// `/model NAME` (BUGS #85): the active connection set to that installed model (`--provider-use-model`, the same file
+    /// `/model NAME`: the active connection set to that installed model (`--provider-use-model`, the same file
     /// change as clicking it in Model Connections), then the picker's restart on the open conversation (`reconnect`).
     /// Only the typed name counts; an unknown one is said plainly, with the installed models.
     func useModel(_ name: String) {

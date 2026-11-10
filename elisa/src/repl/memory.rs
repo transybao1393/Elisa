@@ -127,7 +127,7 @@ impl<'f> Session<'f> {
         let t0 = Instant::now();
         let show = self.save_slow;
         if show { self.fe.progress(Some(&Progress { label: "saving session".into(), ..Default::default() })); }
-        // who wrote each reply, kept in the session (bug #66: the next model must not take them as its own)
+        // who wrote each reply, kept in the session (the next model must not take them as its own)
         context::stamp_model(&mut self.history, &self.cfg.model);
         if let Err(e) = self.store.save_session(&self.history) { self.fe.error(&format!("session not saved: {e}")); }
         self.store.save_cards(&self.topic_cards);
@@ -382,7 +382,7 @@ impl<'f> Session<'f> {
     /// over). Returns whether the request fits max_ctx with MIN_OUT of output after the safety margin; when it does
     /// not, the caller stops the turn instead of sending a request the server would refuse (run2 call 30).
     ///
-    /// Over the limit, the room is made in this order, and the turn goes on by itself (BUGS #41: a 2K window stopped
+    /// Over the limit, the room is made in this order, and the turn goes on by itself (rather than stopping
     /// with "say continue" every turn): earlier documents' text becomes their reference lines (`context::drop_doc_text`),
     /// then the fold, then the oldest turns go (`context::drop_old_turns`; their words stay in memory and the notes),
     /// then this turn's own document text is cut to fit.
@@ -741,7 +741,7 @@ impl<'f> Session<'f> {
         for h in hits {
             if h.score < min || !context::recall_passes(h.lex, h.support, mid, min, min_support) { continue; }
             // only a clear match, never a refusal / failed tool / error answer, and of the user's own words only what
-            // they told about themselves (an old question or command adds nothing; BUGS #16, #27, #34)
+            // they told about themselves (an old question or command adds nothing)
             if !context::strong_recall(query, &h.text) || context::unfit_memory(&h.text) { continue; }
             if asked.contains(&h.id) && context::user_facts(&h.text).is_empty() { continue; }
             if h.kind == HitKind::Turn && !asked.contains(&h.id) && !context::has_tool_line(&h.text) { continue; }

@@ -875,8 +875,8 @@ const CODE_EXTS: &[&str] = &["swift", "rs", "py", "js", "mjs", "cjs", "ts", "tsx
     "hpp", "m", "mm", "cs", "sh", "bash", "zsh", "sql", "r", "lua", "dart", "scala", "pl", "ex", "exs", "hs", "vue", "svelte"];
 
 /// the kind the extension promises (for the mismatch warning)
-/// why a binary file is refused: a text name with binary bytes says so (measured on qwen3-vl:2b: "it reads … text
-/// files" for a .txt made the reply "it is a text file but I don't have access to its content")
+/// why a binary file is refused: a text name with binary bytes says so (otherwise a model, told only that Elisa
+/// reads text files, says a .txt is a text file it has no access to)
 fn not_readable(name: &str, ext: &str) -> String {
     if ext_kind(ext) == Some("text") { return format!("{name} is named .{ext} but holds binary data, not text, so Elisa cannot read it"); }
     let hint = if matches!(ext, "doc" | "ppt" | "pptx" | "pages" | "key" | "numbers" | "rtfd") { " (save it as PDF or .docx and attach that)" } else { "" };
@@ -1205,8 +1205,8 @@ fn part_refs(d: &Doc, q: &str) -> Vec<usize> {
 /// Result tables that PDF extraction flattens into rows of bare numbers ("Ours TradingAgents 26.62 30.5 8.21 0.91
 /// 24.36 …" under "CR%↑ ARR%↑ SR↑ MDD%↓ CR%↑ …" and "… AAPL GOOGL AMZN"): each row is written out with its group and
 /// column names ("TradingAgents — AAPL: CR% 26.62, ARR% 30.5, SR 8.21, MDD% 0.91; GOOGL: …"), the abbreviations
-/// the document itself defines named once above them ("SR = Sharpe Ratio"). Measured on qwen3-vl:2b: from the bare
-/// row it quoted the right line and read the wrong column. Pages without such a table are unchanged.
+/// the document itself defines named once above them ("SR = Sharpe Ratio"). From the bare
+/// row a small model quotes the right line and reads the wrong column. Pages without such a table are unchanged.
 fn label_tables(pages: Vec<String>) -> Vec<String> {
     let abbr = abbreviations(&pages.join("\n"));
     pages.into_iter().map(|p| label_page(&p, &abbr)).collect()

@@ -351,7 +351,7 @@ impl Table {
 fn serial_date(v: f64, duration: bool) -> String {
     if duration || !(0.0..2_958_466.0).contains(&v) { return format!("{v}"); }
     let secs = (v.fract() * 86400.0).round() as i64;
-    // 1899-12-30 is serial 0 (it absorbs Lotus' 1900 leap-year bug for dates after February 1900)
+    // 1899-12-30 is serial 0 (it absorbs Lotus' 1900 leap-year quirk for dates after February 1900)
     let days = v.trunc() as i64 + secs / 86400 - 25569;
     let (y, m, d) = civil(days);
     let t = secs % 86400;
@@ -402,7 +402,7 @@ fn parse_delimited(text: &str, sep: char) -> Vec<Vec<String>> {
 }
 
 /// the table of one sheet, the names of all sheets, and a note when the asked-for sheet was not the one read.
-/// Small models invent `sheet: "Sheet1"` (QA 2026-11-08: every call, then a loop on the error): a CSV / TSV ignores
+/// Small models invent `sheet: "Sheet1"` (on every call, then loop on the error): a CSV / TSV ignores
 /// `sheet`, and a workbook with one sheet reads that sheet whatever the name; with several, a wrong name is an error
 /// that lists them.
 fn load_sheet(p: &str, path: &Path, sheet: Option<&str>) -> Result<(String, Vec<String>, Table, Option<String>), String> {

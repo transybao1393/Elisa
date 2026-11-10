@@ -108,8 +108,8 @@ impl<'f> Session<'f> {
     pub(super) fn router_says(&self, label: &str) -> Option<bool> { self.routed.as_ref().map(|a| a.has(label)) }
 
     /// Routed (`route = "auto"`): the working directory reaches the model only once a turn carries tools. A chat
-    /// first turn leaves the `Working directory:` line out of its header (measured on qwen3-vl:2b: with it, "what can
-    /// you do?" was answered as a coding helper for "your current project"); the first tool turn after it starts with
+    /// first turn leaves the `Working directory:` line out of its header (with it, a model answers
+    /// "what can you do?" as a coding helper for "your current project"); the first tool turn after it starts with
     /// that line instead, so file paths still resolve. The history stays append-only (no rewrite, no cache loss).
     fn route_cwd(&self, text: String) -> String {
         if self.cfg.route != "auto" || self.tiny() { return text; }
@@ -201,7 +201,7 @@ impl<'f> Session<'f> {
             for l in std::mem::take(&mut self.tool_lines) { reply += &format!("\n{l}"); }
             // the user's words are kept; the answer only when it came from tools that ran (a plain-chat answer is the
             // model's guess: "You are Johnathan…", a wrong "9"), and never a refusal, a failed tool's or an error
-            // turn's (BUGS #16, #27; an empty turn keeps the exchange's place in memory and is never recalled)
+            // turn's (an empty turn keeps the exchange's place in memory and is never recalled)
             if !used_tools || !matches!(end, TurnEnd::Done) || said_no || context::unfit_memory(&reply) { reply.clear(); }
             let ids: Vec<u64> = [self.record(MRole::User, &format!("{input}{attached}")), self.record(MRole::Assistant, reply.trim())].into_iter().flatten().collect();
             self.exchanges += 1;
@@ -209,12 +209,12 @@ impl<'f> Session<'f> {
             let o = context::Outside::of(&self.history);
             let card = self.new_card.take().map(|c| if o.is_empty() { c } else { context::quarantine_card(&c, &o) }).filter(|c| !c.trim().is_empty());
             match card {
-                // plain chat carries no card (BUGS #22: a card from a no-tool turn was carried and repeated); a turn
+                // plain chat carries no card (a card from a no-tool turn would be carried and repeated); a turn
                 // about an attached document keeps its card: the document's topic card (`topics.rs`)
                 Some(c) if used_tools || !attached.is_empty() => self.set_card(c, &ids),
                 None if self.card_broken && used_tools && matches!(end, TurnEnd::Done) => {
                     let keep = self.card_id.map_or("none yet".to_string(), |k| format!("keeping card #{k}"));
-                    // internal: never in the chat (BUGS #23)
+                    // internal: never in the chat
                     self.debug(&format!("[no state card in this reply; {keep}]"));
                 }
                 _ => {}
@@ -233,8 +233,8 @@ impl<'f> Session<'f> {
         let mut lines = if self.doc_refused.is_some() { Vec::new() } else { self.recall(&input) };
         if !lines.is_empty() { self.fe.recalled(&lines); }
         // the first turn of a resumed session: what the user told about themself, in the third person, with the
-        // recalled lines (BUGS #43: gemma3:1b, resumed, answered "Where do I live and what's my name?" with "You are
-        // Elisa. You live in Hanoi."; the old turns' "my name is Linh" no longer read as the user's)
+        // recalled lines (resumed, a model may no longer
+        // read the old turns' "my name is Linh" as the user's and answer with its own name)
         if std::mem::take(&mut self.resumed_facts) { lines.extend(self.resumed_facts()); }
 
         let text = if self.history.is_empty() && self.tiny() {
@@ -248,8 +248,8 @@ impl<'f> Session<'f> {
         // a turn about the time / date: the local clock as one line (the first message's header has it already), so
         // the model answers directly, conversions included, with no tool (the time server only through the widen path)
         if self.route.groups.has(crate::route::TIME) {
-            // before the user's words (measured on qwen3-vl:2b: after them, the model redid the offset arithmetic and got
-            // Tokyo wrong; right after the local line it read the answer off 3 of 3 times)
+            // before the user's words (after them, a model redoes the offset arithmetic and can get
+            // it wrong; right after the local line it reads the answer off)
             // (a what_about's new subject from the router: "and in Osaka?" → its clock line)
             let topic = self.routed.as_ref().and_then(|a| a.topic.clone()).unwrap_or_default();
             let lines = crate::route::time_lines(&format!("{input} {topic}"));
@@ -260,8 +260,8 @@ impl<'f> Session<'f> {
                 None => text = format!("{lines}\n\n{text}"),
             }
         }
-        // a session mixing English and Vietnamese: a short hint after the user's words (`reply_lang.rs`; measured on
-        // qwen3-vl:2b, a time turn in English after a Vietnamese one was answered in Vietnamese)
+        // a session mixing English and Vietnamese: a short hint after the user's words (`reply_lang.rs`; otherwise
+        // a turn in English after a Vietnamese one may be answered in Vietnamese)
         let earlier = self.history.iter().filter(|m| m.role == Role::User).flat_map(|m| &m.content)
             .filter_map(|b| match b { Block::Text { text } => Some(context::request_body(text)), _ => None });
         // a small-talk turn with context: one situation line right before the user's words (`situation.rs`), in this
@@ -270,8 +270,8 @@ impl<'f> Session<'f> {
         // (`followup.rs`); a new session gets none
         let resume_hint = resumed.map(|r| match r {
             crate::route::Resume::Continue if self.last_failed => crate::followup::RESUME_RETRY.to_string(),
-            // a task (its last turn ran tools): go on with it; a plain chat: recap it and offer to go on (measured on
-            // qwen3-vl:2b: a chat ending in "just reply OK" turns got a bare "OK." to "continue our last conversation")
+            // a task (its last turn ran tools): go on with it; a plain chat: recap it and offer to go on (a plain
+            // "continue" after a chat ending in "just reply OK" turns gets a bare "OK.")
             crate::route::Resume::Continue if crate::situation::last_turn_flags(&self.history).0 => crate::followup::RESUME_CONTINUE.to_string(),
             crate::route::Resume::Continue | crate::route::Resume::Recap => {
                 let asks: Vec<String> = self.history.iter().filter(|m| m.role == Role::User).flat_map(|m| &m.content)
@@ -279,26 +279,26 @@ impl<'f> Session<'f> {
                 crate::followup::resume_recap(&asks)
             }
         });
-        // what Elisa can do on this model, from the detected caps (bug #46: the fixed list claimed images with no vision)
+        // what Elisa can do on this model, from the detected caps (a fixed list would claim images with no vision)
         let vision = self.client.caps().vision == Some(true);
         let about = self.router_says("about_elisa").unwrap_or_else(|| crate::route::about_elisa(&input)).then(|| crate::situation::about(vision));
-        // a question about the model itself ("What can this model do for me?"): its detected facts (BUGS #47)
+        // a question about the model itself ("What can this model do for me?"): its detected facts
         let about = about.or_else(|| {
             let (m, v, t, th, ctx) = self.facts();
             let own = context::own_words(context::request_body(&input)).unwrap_or(&input).to_string();
             crate::situation::asks_about_model(&m, v, t, th, ctx, &own).then(|| crate::situation::about_model(&m, v, t, th, ctx))
         });
-        // (a tiny window gets none: a small model there read such lines back as its answer, BUGS #42)
+        // (a tiny window gets none: a small model there read such lines back as its answer)
         let hint = if self.tiny() { None } else { resume_hint.or(about).or_else(|| self.situation(&input)).or_else(|| self.follow_up_hint(&input)) };
         if let Some(l) = hint {
             if text.ends_with(input.as_str()) { let at = text.len() - input.len(); text.insert_str(at, &format!("{l}\n\n")); }
         }
         // an explicit "search the web: …" or "read notes.txt" with that tool offered: one line after the user's words,
         // in this turn's own message (so every request of the turn is byte-identical up to it), stripped from saved
-        // views by `context::request_body` (measured on qwen3-vl:2b: without it the model answered from memory, 0/3
-        // web calls and "I don't see notes.txt"; with it 3/3)
+        // views by `context::request_body` (without it a
+        // model answers from memory instead of searching, or says it doesn't see the file)
         let lang_hint = crate::reply_lang::hint(earlier, &input);
-        // a picture the model cannot see: Elisa says so herself, so no model invents one (BUGS #36)
+        // a picture the model cannot see: Elisa says so herself, so no model invents one
         if let Some(line) = self.no_picture_line(&input) {
             self.input = input;
             if self.interactive { self.fe.text_delta(&line); }
@@ -335,7 +335,7 @@ impl<'f> Session<'f> {
             }
         }
         // picture text belongs to the turn that looked: earlier turns' is dropped before this turn's message is added
-        // (BUGS #57: it stuck to later turns and small models copied it into replies)
+        // (kept, it sticks to later turns and small models copy it into replies)
         if context::drop_picture_blocks(&mut self.history) { self.debug("[earlier picture text dropped from the history]"); }
         let mut content = vec![Block::Text { text }];
         content.extend(picture.map(|text| Block::Text { text }));
@@ -385,7 +385,7 @@ impl<'f> Session<'f> {
         }
         if crate::route::web_ask(input) && has("web_search") { return Some(WEB_ASK_NOTE.to_string()); }
         if let Some(f) = crate::route::save_ask(input).filter(|_| has("write")) {
-            // measured on qwen3-vl:2b: "save that plan to marketing-plan.md" got "I've saved it" with no write call
+            // without it, "save that plan to plan.md" can get "I've saved it" with no write call
             return Some(format!("{}to save it to {f}: call write now with the full content; never say it is saved before write succeeds.)", crate::route::ASK_PREFIX));
         }
         let f = crate::route::file_ask(input).filter(|_| has("read"))?;
@@ -527,7 +527,7 @@ impl<'f> Session<'f> {
             f.last_turn = self.last_turn_at.or(Some(now));
             (f.last_tools, f.last_failed) = { let (t, failed) = crate::situation::last_turn_flags(&self.history); (t, failed || self.last_failed) };
             // the topic: the latest request of this conversation that was not small talk or a short follow-up, from the
-            // last few user turns only (bug #8: an old one is stale)
+            // last few user turns only (an old one is stale)
             f.topic = self.history.iter().rev().filter(|m| m.role == Role::User)
                 .filter_map(|m| m.content.iter().find_map(|b| match b { Block::Text { text } => Some(context::request_body(text).trim()), _ => None }))
                 .take(crate::situation::TOPIC_TURNS)

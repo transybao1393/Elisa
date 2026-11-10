@@ -519,7 +519,7 @@ pub fn tool_note(name: &str, o: &str, err: bool) -> (String, bool, Vec<String>, 
 }
 
 /// The one-line note for a result with no tool-specific note (MCP tools and the rest): for JSON (an MCP server's
-/// pretty-printed answer, whose first line is only "{" — QA 2026-11-08) its first scalar fields (`timezone: Asia/Tokyo
+/// pretty-printed answer, whose first line is only "{") its first scalar fields (`timezone: Asia/Tokyo
 /// · datetime: 2026-11-08T19:46:00+09:00`) or its item count; else the first line with a letter or digit.
 pub fn first_note(o: &str) -> Option<String> {
     let t = o.trim();
@@ -918,7 +918,7 @@ mod tests {
         assert!(bad(vec![Block::image("image/png", "AAAA"); IMAGES_MAX + 1]).contains("at most"));
     }
 
-    /// BUGS #61: the app refuses a picture at attach time (no vision) and says so in the `send`; the agent learns it
+    /// The app refuses a picture at attach time (no vision) and says so in the `send`; the agent learns it
     #[test]
     fn a_send_says_how_many_pictures_the_app_refused() {
         let c = Cmd::SendRefused("what colour are its ears?".into(), Vec::new(), 1);
@@ -1004,7 +1004,7 @@ b"}"#] {
 
     #[test]
     fn mcp_json_results_get_a_real_note() {
-        // QA 2026-11-08: the time server's pretty JSON showed only "{"
+        // the time server's pretty JSON, whose first line is only "{"
         let time = "{\n  \"timezone\": \"Asia/Tokyo\",\n  \"datetime\": \"2026-11-08T19:46:00+09:00\",\n  \"is_dst\": false\n}";
         assert_eq!(tool_note("time_get_current_time", time, false).0, "timezone: Asia/Tokyo · datetime: 2026-11-08T19:46:00+09:00");
         assert_eq!(tool_note("x", "{\n  \"result\": {\n    \"count\": 3\n  }\n}", false).0, "count: 3");

@@ -25,8 +25,8 @@ fn user_clauses(text: &str) -> Vec<String> {
 }
 
 /// A sentence's clauses with the subject of an "I'm …" clause carried into the next ones that have none ("I'm Linh,
-/// from Hanoi" → "I'm Linh", "I'm from Hanoi"; BUGS #69: "from Hanoi" alone was no fact, so a reply's "I'm Elisa
-/// from Hanoi" was not checked for it). Only after an "I'm" clause that states a fact ("I'm tired, from work" carries
+/// from Hanoi" → "I'm Linh", "I'm from Hanoi"; "from Hanoi" alone is no fact, so a reply's "I'm Elisa
+/// from Hanoi" would not be checked for it). Only after an "I'm" clause that states a fact ("I'm tired, from work" carries
 /// nothing), and only into a clause that starts lower-case or with a number (no subject of its own).
 fn with_subject(clauses: Vec<String>) -> Vec<String> {
     static IM: OnceLock<regex::Regex> = OnceLock::new();
@@ -87,8 +87,8 @@ pub fn user_fact_values(text: &str) -> Vec<String> {
     v
 }
 
-/// The user's fact values (`user_fact_values`) a reply says as Elisa's own (bug #69: "I'm Elisa, and I live in
-/// Hanoi. My meeting code is ORCHID-42."; "I'm from Hanoi too"): a clause of the reply with a first-person word and,
+/// The user's fact values (`user_fact_values`) a reply says as Elisa's own ("I'm Elisa, and I live in
+/// Hanoi.", "I'm from Hanoi too"): a clause of the reply with a first-person word and,
 /// after it, a value, and no "you" / "your" (that clause speaks to the user: "I'm glad you're from Hanoi"). Only
 /// the session's own fact values are looked for, never fixed words of a reply. Empty when none is claimed.
 // a few first- and second-person words, English and Vietnamese, kept short on purpose (user 2026-11-09: "can be
@@ -248,7 +248,7 @@ impl Ledger {
     /// Whether a sentence saying a file was saved is about a file Elisa's tools really wrote this session: the file it
     /// names (`named`, as `route::file_name` found it) changed, or, naming none, it says a changed file's name or
     /// stem ("I saved the poem to the file" after `write poem.md`). A recall turn's true "I saved the poem to
-    /// poem.md" is then no false claim (BUGS #87).
+    /// poem.md" is then no false claim.
     pub fn backs(&self, sentence: &str, named: Option<&str>) -> bool {
         if let Some(n) = named { return !self.matching(n).is_empty(); }
         let s = sentence.to_lowercase();

@@ -81,8 +81,8 @@ pub fn first_message_full(cwd: &Path, notes: Option<&str>, state: Option<&str>, 
 }
 
 /// A first message without the Working directory / OS / Date / clock header: notes, `[state]`, recalled memories and
-/// the request. A tiny window's first message (`tiny_window`; BUGS #42: moondream:1.8b with a 2K window answered
-/// "hi" with "Date: OS: macos xterm …", the header read back).
+/// the request. A tiny window's first message (`tiny_window`; a small model
+/// there reads the header back as its answer).
 pub fn first_message_bare(notes: Option<&str>, state: Option<&str>, memory: &[String], input: &str) -> String {
     let mut s = String::new();
     let notes = notes.map(str::trim).filter(|n| !n.is_empty());
@@ -160,7 +160,7 @@ pub fn stale_lookup(text: &str, code: bool, web: bool) -> bool {
     re.captures_iter(text).any(|c| if c[1].starts_with("web_") { web } else { code })
 }
 
-/// What memory must not keep as an answer, nor bring back (BUGS #16, #27): a refusal or "I don't know" ("I can't run
+/// What memory must not keep as an answer, nor bring back: a refusal or "I don't know" ("I can't run
 /// scripts directly…", "I don't have access…"), the "Okay, I didn't do that" of a denied tool, a cancelled / denied /
 /// interrupted / unknown tool, an error placeholder (`[cancelled]`, `[no output]`), or leaked card text.
 pub fn unfit_memory(text: &str) -> bool {
@@ -176,9 +176,8 @@ pub fn unfit_memory(text: &str) -> bool {
         || t.lines().any(failed_tool_line) || t.contains("[state]") || t.contains("<state>")
 }
 
-/// Elisa's own answer, with no model call, on a model without vision when no picture is in the conversation (BUGS
-/// #36: gemma3:1b, the image refused at attach, then "what colour are the insides of its ears?" got "Pink!"; a note
-/// in the request did not stop it, 0/3): when the message came with the refused picture (`refused_now`), names a
+/// Elisa's own answer, with no model call, on a model without vision when no picture is in the conversation (a small
+/// model asked about a refused picture makes up an answer, and a note in the request does not stop it): when the message came with the refused picture (`refused_now`), names a
 /// picture ("the photo", "this image"), or follows this same answer (`after_line`) and says "it" / "this" / "they".
 pub fn no_picture_line(input: &str, model: &str, vi: bool, refused_now: bool, after_line: bool) -> Option<String> {
     (refused_now || picture_words(input, after_line)).then(|| no_picture_text(model, vi))
@@ -200,7 +199,7 @@ pub fn no_picture_text(model: &str, vi: bool) -> String {
     else { format!("I can't see pictures with {model}, so no picture reached me and I can't tell what it shows. Pick a model with vision to ask about images.") }
 }
 
-/// Whether a remembered text clearly matches the question (BUGS #34: unrelated old prompts came back): it shares at
+/// Whether a remembered text clearly matches the question (so unrelated old prompts don't come back): it shares at
 /// least 2 of the question's content words and half of them, or the question's only content word ("what's my name?"
 /// finds "My name is Linh").
 pub fn strong_recall(query: &str, hit: &str) -> bool {

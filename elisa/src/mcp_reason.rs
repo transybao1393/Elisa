@@ -60,8 +60,8 @@ pub fn call(name: &str, args: &Value, st: &mut State) -> (String, bool) {
     let arg = |k: &str| args[k].as_str().map(str::trim).filter(|s| !s.is_empty());
     match name {
         "think" => {
-            // every call counts, an empty one too (QA 2026-11-08: a 2B model sent 16 empty thinks in one turn, each
-            // answered "missing thought" and never capped); an empty one is not an error to retry but a push to act
+            // every call counts, an empty one too (a small model can send many empty thinks in
+            // one turn, and uncapped they never end); an empty one is not an error to retry but a push to act
             st.thoughts += 1;
             if st.thoughts > THINK_MAX { return (ENOUGH.into(), false); }
             if arg("thought").is_none() { return (EMPTY_THOUGHT.into(), false); }
@@ -310,7 +310,7 @@ const DOC_WORDS: &[&str] = &[
 ];
 /// everyday nouns that name a document only when they point at one that exists ("the sheet", "this document", "my
 /// sheets"); "a markdown cheat sheet" or "write a document about X" asks for new text, and the `docs` tools only
-/// read files (BUGS #30: "Show me a markdown cheat sheet." got the documents tools and a `docs_sheet("cheatsheet.md")`)
+/// read files (a cheat sheet request must not get the documents tools and a `docs_sheet` call)
 const DOC_NOUNS: &[&str] = &["document", "documents", "sheet", "sheets"];
 /// words that point at something that exists (a definite or possessive determiner)
 const POINTING: &[&str] = &["the", "this", "that", "these", "those", "my", "your", "our", "his", "her", "their", "its"];
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn an_everyday_noun_is_a_document_only_when_it_points_at_one() {
-        // BUGS #30: asking for new text that is called a sheet / document
+        // asking for new text that is called a sheet / document
         for m in ["Show me a markdown cheat sheet.", "write a document about the history of tea", "make me a git cheat sheet",
             "document how this function works", "give me another cheat sheet, for vim"] {
             assert!(!about_docs(m), "{m:?}");
@@ -476,10 +476,10 @@ mod tests {
         let mut st = State::default();
         let (t, e) = call("step_done", &json!({"n": 1}), &mut st);
         assert!(e && t.contains("no steps"), "{t}");
-        let (t, e) = call("steps", &json!({"list": "read the code; 2. fix the bug;  ; run the tests; update docs"}), &mut st);
+        let (t, e) = call("steps", &json!({"list": "read the code; 2. fix the average;  ; run the tests; update docs"}), &mut st);
         assert!(!e);
         assert_eq!(t, "4 steps. Next: 1) read the code. Call step_done when it is done.");
-        assert_eq!(call("step_done", &json!({"n": 1}), &mut st).0, "Done 1/4. Next: 2) fix the bug");
+        assert_eq!(call("step_done", &json!({"n": 1}), &mut st).0, "Done 1/4. Next: 2) fix the average");
         assert_eq!(call("step_done", &json!({"n": "2"}), &mut st).0, "Done 2/4. Next: 3) run the tests");
         assert_eq!(call("step_done", &json!({"n": "step 3"}), &mut st).0, "Done 3/4. Next: 4) update docs");
         let (t, e) = call("step_done", &json!({"n": 9}), &mut st);

@@ -678,7 +678,7 @@ fn rel_slash(root: &Path, p: &Path) -> String {
 /// lists that directory, or matches that one file), so the outside-the-project rules see it (`outside::check`) and an
 /// absolute pattern inside the project works. Otherwise `path` (default ".") and the pattern as given.
 /// A leading `/` that names no real directory (`/`, `/*`, `/**/*.py`, `/src/*.py` with no `/src`) is the project
-/// root as a small model writes it ("list the files in this folder" → `/*` searched the whole disk, BUGS #25): it is
+/// root as a small model writes it ("list the files in this folder" → `/*` would search the whole disk): it is
 /// relative to `path`, so only an explicit outside path reaches the outside-the-project rules.
 pub fn glob_args(input: &Value) -> (String, String) {
     let pat = sv(input, "pattern").trim();

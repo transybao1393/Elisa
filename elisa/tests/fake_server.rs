@@ -307,7 +307,7 @@ fn api_text_split_mid_word_with_cache_read() {
 
 #[test]
 fn a_model_without_vision_never_gets_image_parts() {
-    // BUGS #62: an old saved session's image part, resumed on a model without vision
+    // an old saved session's image part, resumed on a model without vision
     let msgs = vec![Message::new(Role::User, vec![Block::image("image/png", "iVBORw0KGgo="), Block::Text { text: "what is this?".into() }]),
         Message::assistant_text("A cat."), Message::user_text("tell me a short joke")];
     let f = Fake::start(vec![text_reply("ok"), text_reply("ok"), text_reply("ok")]);
@@ -600,8 +600,8 @@ fn a_saved_claim_after_a_denied_write_is_not_shown() {
     let reqs = f.messages();
     assert_eq!(reqs.len(), 3, "{}", o.stderr);
     assert!(!has_tools(&reqs[2]), "the retry offers no tools");
-    // the note is Elisa's line inside the last tool result, never a user text of its own after it (BUGS #86: there it
-    // read as the user speaking and was answered "You're right, …")
+    // the note is Elisa's line inside the last tool result, never a user text of its own after it (there it
+    // reads as the user speaking)
     let (c, _) = last_tool_result(&reqs[2]);
     assert!(c.contains("[elisa: For this reply: nothing was saved in this message (the user said no)"), "{c}");
     let last = reqs[2]["messages"].as_array().unwrap().last().unwrap();
@@ -838,7 +838,7 @@ fn watcher_view_parse_and_lines() {
 #[test]
 fn watcher_notes_on_card_and_fold() {
     let d = tmpdir("watch-notes");
-    // (a card comes only from a turn that ran a tool: plain chat carries none, BUGS #22)
+    // (a card comes only from a turn that ran a tool: plain chat carries none)
     let f = Fake::start_watch(vec![
         Sse::new(5, 0).tool_input("t", "glob", json!({"pattern": "*.md"})).end("tool_use", 3),
         text_reply("Hi.<state>goal: greet the user\nnow: waiting</state>"),
@@ -1047,10 +1047,10 @@ fn write_cut_by_output_limit_is_not_saved() {
     assert!(d.join("game.html").exists());
 }
 
-/// The same call a third time in a turn does not run (session 1793540068 ran one failing command ~15 times; chat QA
-/// ran one web search 14 times with slightly different results): the model is told to use the earlier result, and a
+/// The same call a third time in a turn does not run (a model can run one failing command, or one web search,
+/// over and over): the model is told to use the earlier result, and a
 /// second blocked step ends the tool loop (`loop_guard.rs`). The model is then asked once, with no tools, for an
-/// answer from what it has (BUGS #54: the turn showed only the stop line and no reply); calling a tool anyway stops.
+/// answer from what it has (so the turn never shows only the stop line and no reply); calling a tool anyway stops.
 #[test]
 fn repeated_identical_tool_call_stops_the_turn() {
     let d = tmpdir("repeat");
@@ -2429,8 +2429,8 @@ fn web_tools_go_away_when_the_web_server_is_disabled_or_web_is_off() {
     assert!(!web(tool_names(&g.messages()[0])), "{:?}", tool_names(&g.messages()[0]));
 }
 
-/// QA 2026-11-08 (H1): a model that lists a .env file as `- DB_PASSWORD: value` (or YAML / JSON / `KEY = value`)
-/// put the raw value into the saved session and the memory log. Every form is redacted on disk.
+/// A model that lists a .env file as `- DB_PASSWORD: value` (or YAML / JSON / `KEY = value`)
+/// must not put the raw value into the saved session and the memory log. Every form is redacted on disk.
 #[test]
 fn reformatted_secrets_never_reach_sessions_or_memory() {
     let d = tmpdir("secret-forms");
@@ -2562,7 +2562,7 @@ fn an_empty_visible_reply_is_retried_once_then_noted() {
     let s = std::fs::read_to_string(sess).unwrap();
     assert!(s.contains("You're welcome!") && !s.contains("one plain sentence"), "{s}");
 
-    // empty twice: one retry, the user's words once alone (BUGS #42), then a note instead of silence
+    // empty twice: one retry, the user's words once alone, then a note instead of silence
     let d = tmpdir("empty-reply2");
     let f = Fake::start(vec![text_reply(card), text_reply(card), text_reply(card), text_reply("unused")]);
     let o = run_elisa(&["-p", "2+2=?", "--base-url", &f.url()], &d, None);
@@ -2580,7 +2580,7 @@ fn an_empty_visible_reply_is_retried_once_then_noted() {
 #[test]
 fn state_card_is_carried_only_into_a_continued_session() {
     let d = tmpdir("card-carry");
-    // (a card comes only from a turn that ran a tool: plain chat carries none, BUGS #22)
+    // (a card comes only from a turn that ran a tool: plain chat carries none)
     let f = Fake::start(vec![Sse::new(5, 0).tool_input("t", "glob", json!({"pattern": "*.md"})).end("tool_use", 3),
         text_reply("ok\n<state>\ngoal: OLD-GOAL-X\ndone: …\nkeep: must-not-lose facts\nnext: OLD-NEXT-X\n</state>")]);
     let o = run_elisa(&["--base-url", &f.url()], &d, Some("glob the markdown files R1\n/exit\n"));
@@ -2645,8 +2645,8 @@ fn jsonl_clear_shrinks_the_context_and_keeps_clean_notes() {
     s.quit();
 }
 
-/// BUGS #27: Esc at a tool's approval ends the turn with nothing kept: no "[cancelled]" stand-in reply, no cancelled
-/// call, so the next request is that next message alone (granite3.2-vision:2b answered "[cancelled]" to the next asks).
+/// Esc at a tool's approval ends the turn with nothing kept: no "[cancelled]" stand-in reply, no cancelled
+/// call, so the next request is that next message alone (a model copies "[cancelled]" into the next replies).
 #[test]
 fn jsonl_a_cancelled_tool_turn_leaves_no_trace_in_the_next_request() {
     let dir = tmpdir("jsonl-esc-tool");
@@ -2932,7 +2932,7 @@ fn seed_session(d: &std::path::Path, id: u64, notes: &str) -> std::path::PathBuf
     p
 }
 
-/// The old Python-async task of the bug report (2026-11-09): notes of an earlier session.
+/// The old Python-async task of a problem report: notes of an earlier session.
 const OLD_TASK_NOTES: &str = "## Goal\nFix a Python async example that raises RuntimeError with asyncio.run. OLD-TASK-GOAL\n\n\
     ## Current state / next step\nCheck the directory for the async file. OLD-TASK-NEXT\n\n## Facts to remember\n- OLD-TASK-FACT\n";
 
@@ -3696,7 +3696,7 @@ fn reply_cut_at_output_limit_is_continued() {
     assert!(o.stderr.contains("[reply was long; say \"continue\" for more]"), "{}", o.stderr);
 }
 
-/// BUGS #57, #58: the picture flow through `--serve-jsonl`. Picture text a model copies into its reply is never shown;
+/// The picture flow through `--serve-jsonl`. Picture text a model copies into its reply is never shown;
 /// on the turn after (about the picture), a picture answer that is a refusal is not carried (the read ask keeps its tools and runs), the
 /// earlier turn's picture text has left the history, and the turn after that asks no picture request at all.
 #[test]
@@ -3743,7 +3743,7 @@ fn picture_text_is_never_a_reply_and_only_its_own_turn_carries_it() {
     assert_prefix_rule(&reqs[3..5]);
 }
 
-/// BUGS #57: the turn after a picture looks at it again only when it is about it. "Tell me a joke." gets no picture
+/// The turn after a picture looks at it again only when it is about it. "Tell me a joke." gets no picture
 /// request and no picture text (the model answers the ask); "what color are its eyes?" after the next picture does.
 #[test]
 fn only_a_turn_about_the_picture_sends_it_again() {
@@ -3781,7 +3781,7 @@ fn only_a_turn_about_the_picture_sends_it_again() {
     assert!(body(&reqs[6]).contains("[picture: Blue.]"), "the eyes turn carries its picture text");
 }
 
-/// BUGS #42: a reply that copies an earlier reply to another ask, or has no words, is asked once more with the user's
+/// A reply that copies an earlier reply to another ask, or has no words, is asked once more with the user's
 /// words alone (no history), and that answer is shown and kept.
 #[test]
 fn a_copied_or_wordless_reply_is_asked_again_alone() {
@@ -3821,7 +3821,7 @@ fn a_copied_or_wordless_reply_is_asked_again_alone() {
     assert!(later.contains("salad dressing") && !later.contains("More of the same"), "{later}");
 }
 
-/// BUGS #60: a reply that names a saved file on a turn with no write at all is corrected: asked once more in words
+/// A reply that names a saved file on a turn with no write at all is corrected: asked once more in words
 /// with no tools, and a reply that still claims it gets the plain line. A plain reply is left alone.
 #[test]
 fn a_saved_claim_with_no_write_is_corrected() {
@@ -3849,7 +3849,7 @@ fn a_saved_claim_with_no_write_is_corrected() {
     assert!(!dir.join("marketing-plan.md").exists());
 }
 
-/// BUGS #87: a later turn's reply that recalls a save Elisa's tools really made this session ("I also saved the poem
+/// A later turn's reply that recalls a save Elisa's tools really made this session ("I also saved the poem
 /// to poem.md") is no false claim: it stays, with no retry and no "nothing was saved" note.
 #[test]
 fn a_recalled_save_from_an_earlier_turn_stands() {

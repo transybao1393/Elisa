@@ -112,7 +112,7 @@ extension AppModel {
 
     func attach(_ images: [(NSImage, String)]) {
         if let why = imagesBlocked {
-            // no vision: the core is told with the next message (`send.images_refused`, BUGS #61)
+            // no vision: the core is told with the next message (`send.images_refused`)
             if attachBlocked == nil { refusedImages += images.count }
             note(why); return
         }

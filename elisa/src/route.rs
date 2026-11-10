@@ -224,9 +224,8 @@ pub fn about_elisa(msg: &str) -> bool {
 }
 
 /// The user explicitly asks for a web search ("search the web: …", "look up X online", "google it"): `repl.rs` then
-/// tells the model, in the turn's first request only, to call `web_search`. Measured on qwen3-vl:2b: with the web
-/// tools offered, "search the web: what is the capital of Australia?" was answered from memory 3/3 without the note,
-/// a web_search call 3/3 with it. A plain question ("what is the capital of France?") is not an explicit ask.
+/// tells the model, in the turn's first request only, to call `web_search`. Without that note a small model,
+/// even with the web tools offered, answers such a request from memory. A plain question ("what is the capital of France?") is not an explicit ask.
 pub fn web_ask(msg: &str) -> bool {
     let lower = msg.to_lowercase();
     let w = words(&lower);
@@ -249,8 +248,8 @@ pub fn strip_ask(text: &str) -> &str {
 
 /// The user explicitly asks to save or write something to a named file ("save that plan to plan.md", "write it into
 /// notes.txt", "export the list as list.csv"): that file name. The save target is the file named after the saving
-/// word, not the first one in the message (BUGS #88: "read notes.txt and budget.py … then save a short trip summary
-/// to summary.md" got a note to save to notes.txt); only when none comes after it, the first one.
+/// word, not the first one in the message ("read notes.txt and budget.py … then save a short trip summary
+/// to summary.md" saves to summary.md, not notes.txt); only when none comes after it, the first one.
 pub fn save_ask(msg: &str) -> Option<String> {
     const VERBS: [&str; 5] = ["save", "write", "put", "export", "store"];
     let lower = msg.to_lowercase();
@@ -296,7 +295,7 @@ pub fn claims_saved(reply: &str) -> bool {
 
 /// A reply that says a named file was saved or written ("Okay, here's the marketing plan saved to marketing-plan.md",
 /// "I've written it to notes.txt", "the file has been saved"), in a sentence that does not say it was not: the check
-/// on a turn where no write / edit was made at all (`repl.rs` `denied_claim_retry`, BUGS #60). Narrower than
+/// on a turn where no write / edit was made at all (`repl.rs` `denied_claim_retry`). Narrower than
 /// `claims_saved` (a saving word next to a file name or "file"), so a plan that says "keep your menu updated" is no claim.
 pub fn claims_file_saved(reply: &str) -> bool { !file_claims(reply).is_empty() }
 
@@ -322,18 +321,18 @@ pub fn file_ask(msg: &str) -> Option<String> {
     file_name(msg)
 }
 
-/// Text from one of Elisa's request-only notes that a model repeated as its reply (granite3.2-vision:2b replied "The
-/// user asked to save the marketing plan to marketing-plan.md: call write now…"): those sentences removed. A reply that
+/// Text from one of Elisa's request-only notes that a model repeated as its reply (e.g. "The
+/// user asked to save the plan to plan.md: call write now…"): those sentences removed. A reply that
 /// is only that comes back empty (the empty-reply retry then asks again).
-/// What the history keeps for a reply with no text (BUGS #80): never the stop reason itself. "[end_turn]" there was
-/// copied by moondream:1.8b as its next replies, word for word.
-/// (A cancelled reply with no text never gets one: that turn leaves the history, BUGS #27.)
+/// What the history keeps for a reply with no text: never the stop reason itself. "[end_turn]" there gets
+/// copied by small models as their next replies, word for word.
+/// (A cancelled reply with no text never gets one: that turn leaves the history.)
 pub fn no_answer_note(_stop_reason: &str) -> &'static str { NO_ANSWER }
 
 /// the history's stand-in for a reply with no text (`no_answer_note`)
 pub const NO_ANSWER: &str = "[no answer]";
 
-/// Stop reasons and end-of-turn tokens written as reply text (BUGS #80): a small model copies an old "[end_turn]",
+/// Stop reasons and end-of-turn tokens written as reply text: a small model copies an old "[end_turn]",
 /// or a template token gets through. Never reply text: taken out wherever they stand (`strip_stop_markers`).
 const STOP_MARKERS: &[&str] = &["[end_turn]", "[tool_use]", "[max_tokens]", "[stop_sequence]", "[no output]", "[no answer]", "[cancelled]",
     "<|endoftext|>", "<|im_end|>", "<|eot_id|>", "<end_of_turn>", "<|end|>"];
@@ -380,9 +379,9 @@ pub fn strip_echoed_notes(reply: &str) -> String {
     out.join("\n").trim().to_string()
 }
 
-/// A reply's lines that only restate the user's own message, removed (BUGS #38: granite3.2-vision:2b began a
-/// document follow-up's reply with "1. What is the main contribution of the paper?", or "The user's new question
-/// is: '…'", and the next replies copied it). A line goes when it holds the start of the message, word for word (at
+/// A reply's lines that only restate the user's own message, removed (a small model may begin a
+/// document follow-up's reply with the question itself, or "The user's new question
+/// is: '…'", and the next replies copy it). A line goes when it holds the start of the message, word for word (at
 /// least 4 words and 80% of them), and little else (at most 8 more words); a message under 4 words is never looked
 /// for. No wording of a reply is fixed here: only the user's own words are matched.
 pub fn strip_echoed_ask(reply: &str, ask: &str) -> String {
@@ -544,8 +543,8 @@ pub fn from_router(p: &crate::router::Plan, msg: &str, prev: &Route, others: Vec
 /// A turn whose message carries document text (an attached document, or a follow-up's pages: `attach.rs`) carries
 /// only the tools its own words ask for: none carried over from the last turn's work, none from the default set, and
 /// the documents' own names (`names`) left out of the words, since such a name is the text already in the turn, not a
-/// file to open (BUGS #18: a document question got the working directory and the web tools; #54: granite4.2:3b read
-/// and outlined the attached files until the loop guard stopped it). A document too large to go in whole (`large`)
+/// file to open (otherwise a document question gets the working directory and the web tools, and a model reads
+/// and outlines the attached files until the loop guard stops it). A document too large to go in whole (`large`)
 /// adds the documents tools (and `read`, in the docs group too). `route = "off"` keeps every tool.
 pub fn with_documents(r: Route, msg: &str, names: &[String], large: bool) -> Route {
     if r.why == Why::Off { return r; }
@@ -650,7 +649,7 @@ mod tests {
 
     #[test]
     fn a_stop_reason_is_never_reply_text() {
-        // BUGS #80: moondream:1.8b answered "[end_turn]", copied from the history's old stand-in
+        // a model may answer "[end_turn]", copied from the history's old stand-in
         for r in ["[end_turn]", " [END_TURN]\n", "[end_turn][end_turn]", "<|im_end|>", "[no answer]", "[max_tokens]"] {
             assert_eq!(strip_echoed_notes(r), "", "{r:?}");
         }
@@ -667,7 +666,7 @@ mod tests {
 
     #[test]
     fn a_reply_that_restates_the_message_loses_that_part() {
-        // BUGS #38, granite3.2-vision:2b on a document follow-up
+        // a document follow-up's reply that starts with the question
         let ask = "What is the main contribution of the paper?";
         assert_eq!(strip_echoed_ask("1. What is the main contribution of the paper?\nThe main contribution is Kronos, a foundation model.", ask),
             "The main contribution is Kronos, a foundation model.");
@@ -692,7 +691,7 @@ mod tests {
         }
         assert_eq!(save_ask("save that plan to marketing-plan.md").as_deref(), Some("marketing-plan.md"));
         assert_eq!(save_ask("write it into notes.txt please").as_deref(), Some("notes.txt"));
-        // BUGS #88: the file after the saving word, not the first one in the message
+        // the file after the saving word, not the first one in the message
         assert_eq!(save_ask("step by step: read notes.txt and budget.py, add up the budget, then save a short trip summary to summary.md").as_deref(), Some("summary.md"));
         assert_eq!(save_ask("write a summary of notes.txt to summary.md").as_deref(), Some("summary.md"));
         assert_eq!(save_ask("save the plan to plan.md and write a short note in the chat").as_deref(), Some("plan.md"));
@@ -767,7 +766,7 @@ mod tests {
 
     #[test]
     fn a_turn_with_document_text_carries_only_what_its_own_words_ask_for() {
-        // BUGS #18 / #54: decided by the attached document (structure), whatever the words
+        // decided by the attached document (structure), whatever the words
         let names = vec!["sales.xlsx".to_string(), "plan.ods".to_string()];
         let after_tools = Route { groups: Groups(CODE), others: vec!["fake".into()], why: Why::FollowUp };
         for (msg, prev) in [("what's in these two files?", &after_tools), ("and what about these?", &after_tools),

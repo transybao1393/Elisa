@@ -94,7 +94,7 @@ pub const AKA: &[&str] = &[
     "config file = settings file = {}",
     "RAM cap = memory limit = indexer memory budget",
     "JSON parser = JSON library = decode payloads",
-    "flaky crash = intermittent segfault = crash bug",
+    "flaky crash = intermittent segfault = crash issue",
     "release deadline = ship date = due date",
     "parser reviewer = code review owner = PR approver",
     "storage backend = database = persistence layer",

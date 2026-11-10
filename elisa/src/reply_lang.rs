@@ -1,8 +1,8 @@
 //! Reply language: Elisa answers in the language the user writes in (English or Vietnamese).
 //!
-//! The model already does this on its own for a turn in one language (measured on qwen3-vl:2b-instruct, 2026-11-09:
-//! "xin chào", "thủ đô của Pháp là gì", "tell me a joke" … all answered in kind). It slipped on a SWITCH: after a
-//! Vietnamese turn, "what time is it in Tokyo?" (a routed time turn with the clock line) came back in Vietnamese. So
+//! The model already does this on its own for a turn in one language (a turn
+//! in Vietnamese or English is answered in kind). It slips on a SWITCH: after a
+//! Vietnamese turn, "what time is it in Tokyo?" (a routed time turn with the clock line) can come back in Vietnamese. So
 //! no system prompt line (it is near its size cap, and the old "use the session's language" line went on 2026-11-08):
 //! only in a mixed session (an earlier user turn was in the other language) a turn carries a short hint after the
 //! user's words (`repl.rs`), ~6 tokens per such turn; a one-language session never pays. `context::request_body`
@@ -49,8 +49,8 @@ pub fn detect(text: &str) -> Option<Lang> {
 }
 
 /// The hint for a user turn in `now` given the session's earlier user turns: only in a mixed session, when an earlier
-/// turn was in the other known language (measured: one hint on the switch turn alone was not enough, the turn after
-/// it, in the same language, drifted back), so a one-language session never pays for it.
+/// turn was in the other known language (one hint on the switch turn alone is not enough: the turn after
+/// it, in the same language, drifts back), so a one-language session never pays for it.
 pub fn hint<'a>(earlier: impl IntoIterator<Item = &'a str>, now: &str) -> Option<&'static str> {
     let n = detect(now)?;
     if !earlier.into_iter().any(|t| detect(t).is_some_and(|p| p != n)) { return None; }

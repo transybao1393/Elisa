@@ -107,8 +107,8 @@ pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
 }
 
 /// `web_search {query, recent}`: the top results as numbered lines. `recent` (the model's choice, for news): only pages
-/// from the past week, each engine's own time filter (bug #6: "latest news about Apple" found only the news sites'
-/// front pages, whose snippets say "the latest Apple news", so the reply could only list sites). A recent search with
+/// from the past week, each engine's own time filter (otherwise "latest news about Apple" finds only the news sites'
+/// front pages, whose snippets say "the latest Apple news", so the reply can only list sites). A recent search with
 /// no results falls back to a plain one.
 pub fn search(query: &str, recent: bool, cfg: &WebCfg) -> Result<String, String> {
     let q = query.trim();
@@ -297,8 +297,8 @@ fn fetch_page(url: &str, max_chars: usize, a: &ureq::Agent, public_only: bool) -
             url = join(&url, loc);
             continue;
         }
-        // a site that refuses automated reading: say what to do instead (bug #6: the model searched the same query
-        // again after two 403s and was stopped as a loop, with no answer)
+        // a site that refuses automated reading: say what to do instead (otherwise the model searches the same query
+        // again and is stopped as a loop, with no answer)
         if matches!(st, 401 | 403 | 429) { return Err(format!("{url}: HTTP {st} (this site blocks automated reading: answer from the search results' titles and snippets, or fetch another result)")); }
         if !(200..300).contains(&st) { return Err(format!("{url}: HTTP {st}")); }
         let ct = r.headers().get("content-type").and_then(|c| c.to_str().ok()).unwrap_or("").to_ascii_lowercase();
@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(urls_in("https://a.example/1 https://a.example/2 https://a.example/3", 2).len(), 2);
     }
 
-    /// bug #6: a news search asks each engine for the past week only
+    /// A news search asks each engine for the past week only
     #[test]
     fn a_recent_search_uses_each_engines_week_filter() {
         assert_eq!(week_param(DUCKDUCKGO, true), "&df=w");
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn brave_url_override_is_local_only() {
-        // QA 2026-11-08 (B5): any host was honoured and the key sent there
+        // only a local host is honoured: any other would get the key
         assert_eq!(brave_base_from(None), BRAVE_URL);
         assert_eq!(brave_base_from(Some("http://127.0.0.1:8123/")), "http://127.0.0.1:8123");
         assert_eq!(brave_base_from(Some("http://localhost:9000")), "http://localhost:9000");

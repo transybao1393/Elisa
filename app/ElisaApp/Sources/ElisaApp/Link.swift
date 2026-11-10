@@ -44,8 +44,8 @@ final class ElisaProcess {
         p.standardOutput = out
         p.standardInput = inp
         p.standardError = FileHandle.standardError
-        // events and the exit of a core that was replaced (a model switch restarts it: BUGS #64, the old core's exit
-        // arrived after the new one started and the window said "elisa exited" while the new core ran) are dropped:
+        // events and the exit of a core that was replaced (a model switch restarts it, and the old core's exit
+        // can arrive after the new one started, so the window would say "elisa exited" while the new core runs) are dropped:
         // only the current process speaks
         out.fileHandleForReading.readabilityHandler = { [weak self] h in
             let d = h.availableData

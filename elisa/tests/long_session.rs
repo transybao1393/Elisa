@@ -12,7 +12,7 @@
 //!   and `FILE:` paths found in what Elisa sent. So whatever survives a summary is what Elisa put in front of it.
 //!
 //! Run: `cargo test --test long_session -- --nocapture` (prints the survival table).
-//! Known bugs are `#[ignore]`d tests named `bug_*`: `cargo test --test long_session -- --ignored`.
+//! Known issues are `#[ignore]`d tests named `known_*`: `cargo test --test long_session -- --ignored`.
 use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, VecDeque};
@@ -243,7 +243,7 @@ fn project(tag: &str) -> PathBuf {
         std::fs::write(d.join(format!("data/big{i}.txt")), big).unwrap();
     }
     std::fs::write(d.join(".elisa/checks.toml"), "commands = [\"sh check.sh\"]\n").unwrap();
-    std::fs::write(d.join("check.sh"), "if grep -q BUG src/wc.py; then echo \"src/wc.py:1:1: error: BUG left in src/wc.py\"; exit 1; fi\nexit 0\n").unwrap();
+    std::fs::write(d.join("check.sh"), "if grep -q FIXME src/wc.py; then echo \"src/wc.py:1:1: error: FIXME left in src/wc.py\"; exit 1; fi\nexit 0\n").unwrap();
     d
 }
 
@@ -321,7 +321,7 @@ fn run1_turns() -> Vec<Turn> {
     ];
     for (i, q) in (9..=16).enumerate() { v.push(filler(q, i, i % 3 == 0)); }
     v.push(turn(17, "update main in src/wc.py to print a table", vec![read("data/big3.txt"), read("data/big4.txt"),
-        write("src/wc.py", &format!("{WC2}# BUG\n")), say("done Q17-A"),
+        write("src/wc.py", &format!("{WC2}# FIXME\n")), say("done Q17-A"),
         write("src/wc.py", WC2), say("DEC-D4: main prints via format_table. DONE-O2. Q17-R")]).edits(&["src/wc.py"]).adds(&["DEC-D4"]));
     v.push(turn(18, "add a --top flag to main using top_n in src/wc.py", vec![read("data/big1.txt"), write("src/wc.py", WC2),
         say_card("STEP-S3 done. OPEN-O3: tests for --top.", "tests for --top")])
@@ -611,11 +611,11 @@ fn long_session_context_and_memory() {
 /// A turn whose last user text is Elisa's check-fix note: the boundary fold keeps "the last exchange" from that note
 /// on, so the user's actual request of that turn leaves the window.
 #[test]
-fn bug_fold_after_check_fix_drops_the_request() {
+fn known_fold_after_check_fix_drops_the_request() {
     let d = project("fixnote");
     let f = Fake::start(vec![
         read("data/big1.txt"), read("data/big2.txt"),
-        write("src/wc.py", &format!("{WC0}# BUG\n")), say("done"),
+        write("src/wc.py", &format!("{WC0}# FIXME\n")), say("done"),
         write("src/wc.py", WC0), say("fixed it"),
         say("next answer"),
     ]);
@@ -631,7 +631,7 @@ fn bug_fold_after_check_fix_drops_the_request() {
 
 /// /reset drops the state card for this run only: a restart reloads it from elisa-mem (latest_card).
 #[test]
-fn bug_reset_card_comes_back_after_restart() {
+fn known_reset_card_comes_back_after_restart() {
     let d = project("reset");
     let f = Fake::start(vec![say_card("ok", "OLD-TASK-NEXT")]);
     let o = run(&d, &f.url(), "first question here R1\n/reset\n/exit\n");
@@ -647,7 +647,7 @@ fn bug_reset_card_comes_back_after_restart() {
 /// /clear keeps writing the same run's session file: the pre-/clear conversation is
 /// overwritten by the post-clear history, so /resume can never get back to it.
 #[test]
-fn bug_clear_overwrites_the_resumable_session() {
+fn known_clear_overwrites_the_resumable_session() {
     let d = project("clear-resume");
     let f = Fake::start(vec![write("src/report.py", "x = 1\n"), say("STEP-X done"), say("after clear")]);
     let o = run(&d, &f.url(), "add a format_table function for the report PRE-CLEAR-1\n/clear\nsomething new POST-1\n/exit\n");
@@ -731,8 +731,8 @@ fn many_reads_in_one_request_keep_the_prompt_reusable() {
     let total: usize = a.iter().skip(1).map(|r| r.total).sum();
     eprintln!("ten reads in one request: {} agent calls · {rn} rewrites re-prefill {rp} tokens · reused {:.0}% · trimmed lines {}",
         a.len(), 100.0 * reused as f64 / total as f64, o.stderr.matches("trimmed to fit the context").count());
-    // 2026-11-04 measured: before (shrink older results whenever a step did not fit) 5 rewrites / 12,469 tokens
-    // re-prefilled; append-only cuts 4 / 6,201 (the rest are the folds a full window needs)
+    // append-only cuts rewrite less than shrinking older results whenever a step did not fit, and re-prefill about
+    // half the tokens (the rest are the folds a full window needs)
     assert!(rn <= 4 && rp < 9000, "{rn} rewrites, {rp} tokens re-prefilled in one request: {}", o.stderr);
 }
 

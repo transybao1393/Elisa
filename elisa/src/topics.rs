@@ -233,7 +233,7 @@ pub fn pick(q: &str, docs: &[DocTopic], cards: &[Card], last: &Pick, new_doc: Op
 
 /// `pick`, with `model`: the content words of the model facts (`situation::model_words`). A message whose content
 /// words are all among them ("What can this model do for me?") is about the model Elisa runs on: its words pick no
-/// document or card (BUGS #47); a document named by file name, by order or by "the paper" still counts.
+/// document or card; a document named by file name, by order or by "the paper" still counts.
 pub fn pick_for(q: &str, docs: &[DocTopic], cards: &[Card], last: &Pick, new_doc: Option<usize>, model: &HashSet<String>) -> Pick {
     if let Some(d) = new_doc.filter(|&d| d < docs.len()) { return doc_pick(docs, cards, d, Why::Attached); }
     let q = q.trim();
@@ -253,7 +253,7 @@ pub fn pick_for(q: &str, docs: &[DocTopic], cards: &[Card], last: &Pick, new_doc
         return p;
     }
     // a page or section named ("what does page 5 say?", "summarize section 3"): the last document (or the only one);
-    // its pages are in no other topic (measured on qwen3-vl:2b: with no text the model made page 5 up)
+    // its pages are in no other topic (with no text the model makes the page up)
     // a page number past the last document's end ("page 5" after a one-line note) means the newest one that long
     if crate::attach::names_part(q) {
         let want = crate::attach::page_refs(q).into_iter().max().map(|p| p + 1);
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn a_question_about_the_model_in_use_picks_no_document() {
-        // BUGS #47: the Kronos paper's title has "model"; the facts' words are the model's, not the paper's
+        // the Kronos paper's title has "model"; the facts' words are the model's, not the paper's
         let one = vec![docs()[1].clone()];
         let c = vec![cards()[1].clone()];
         let last = Pick { doc: Some(0), card: Some(0), why: Why::Attached };

@@ -556,8 +556,8 @@ mod tests {
         );
     }
 
-    /// The shapes a model (or a config file) writes a secret in besides `KEY=value` (QA 2026-11-08: a 2B model
-    /// listed a .env file as `- DB_PASSWORD: value` and the raw value reached the saved session).
+    /// The shapes a model (or a config file) writes a secret in besides `KEY=value` (a model
+    /// may list a .env file as `- DB_PASSWORD: value`, and the raw value must not reach the saved session).
     #[test]
     fn reformatted_assignments() {
         let v = "TPcpXk9q2LmR7vWz4bNs";

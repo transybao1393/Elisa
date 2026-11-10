@@ -234,7 +234,7 @@ pub struct Client {
     /// the turn in progress is a simple one (`set_simple`): no reasoning where the connection can switch it off
     simple: AtomicBool,
     /// the rest of this turn's agent calls ask the model not to reason, with the full output budget (`stop_reasoning`,
-    /// BUGS #78); cleared by the next `set_simple`
+    /// after a reply that only reasoned); cleared by the next `set_simple`
     think_off: AtomicBool,
     /// what the backend is and can do (`backend::detect`, `set_caps`)
     caps: crate::backend::Caps,
@@ -243,7 +243,7 @@ pub struct Client {
     text_tools: AtomicBool,
     /// Gemini's explicit cache of the system prompt and tools (`backend::GeminiCache`)
     gemini: Mutex<crate::backend::GeminiCache>,
-    /// the model has no vision (`set_vision`): image parts never go out (`context::without_images`, BUGS #62)
+    /// the model has no vision (`set_vision`): image parts never go out (`context::without_images`)
     blind: AtomicBool,
 }
 
@@ -410,7 +410,7 @@ impl Client {
         self.think_off.store(false, Ordering::Relaxed);
     }
 
-    /// A reply spent its whole budget reasoning and wrote nothing (BUGS #78): the rest of this turn's agent calls ask
+    /// A reply spent its whole budget reasoning and wrote nothing: the rest of this turn's agent calls ask
     /// the model not to reason (as a simple turn does, `ollama::no_think`) but keep the full output budget. True when
     /// that changes the next request: a connection that can switch reasoning off (Ollama's native API, a model with
     /// the "thinking" capability) that is not already asked not to reason.
@@ -779,7 +779,7 @@ mod tests {
 
     #[test]
     fn a_reasoning_stop_asks_once_more_without_reasoning() {
-        // BUGS #78: only where reasoning can be switched off (an Ollama model with the "thinking" capability), once
+        // only where reasoning can be switched off (an Ollama model with the "thinking" capability), once
         // per turn, and not on a simple turn (already asked not to reason)
         let c = Client::new(&Config::default());
         assert!(!c.stop_reasoning());

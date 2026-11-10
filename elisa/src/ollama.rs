@@ -58,13 +58,13 @@ fn messages(system: &str, msgs: &[Message]) -> Vec<Value> {
 pub const REASONING_ROOM: usize = 3072;
 
 /// A simple turn's prefill (`no_think`): a closed, short reasoning block the model continues after. qwen3-vl's
-/// thinking variant ignores `think: false` (measured: 1,100 chars of reasoning for a bare "hi" either way; with
-/// Elisa's prompt "hi" reasoned 3,000 tokens for 30-150 s and still answered nothing). With this prefill it answers in
-/// well under a second and still calls a tool when the request needs one. The wording was picked from six tried on
-/// Elisa's real request: without the hint about a plain first sentence the 2B model often answered with only the
-/// state card. 2026-11-09 (BUGS #30, #50, #52): "my reply is a plain, natural sentence or two" made a request to write
-/// a plan or a story get a one-line promise ("Sure! I'll help draft… What would you like to focus on?"), and the user's
-/// facts came back as "My name is Elisa, and my meeting code is ORCHID-42". (A version "speaking to them as you" made
+/// thinking variant ignores `think: false` (it reasons at length even for a bare "hi", and with
+/// Elisa's prompt can reason for minutes and still answer nothing). With this prefill it answers in
+/// well under a second and still calls a tool when the request needs one. The wording was picked from several tried on
+/// Elisa's real request: without the hint about a plain first sentence a small model often answered with only the
+/// state card. "my reply is a plain, natural sentence or two" made a request to write
+/// a plan or a story get a one-line promise instead of the content, and the user's
+/// facts came back as the model's own. (A version "speaking to them as you" made
 /// replies open with "You're the one who…" and repeat across turns.)
 pub const NO_THINK_PREFILL: &str = "<think>\nNo long reasoning needed. My reply is plain, natural text for the user: short for chat (a greeting or thanks: one friendly line); if they asked me to write something, the full text now. If it truly needs a tool, I call it instead.\n</think>\n\n";
 
@@ -118,8 +118,8 @@ pub struct Stream {
 
 impl Stream {
     /// The reply has reasoned for `REASONING_ROOM` tokens and written nothing else yet (no answer text, no call). A
-    /// small model past that mostly goes round in circles until the whole budget is gone (BUGS #78: qwen3-vl:2b on a
-    /// long pasted message, 5,119 tokens of reasoning in 69 s and no answer), so the stream stops here (`cap`) and the
+    /// small model past that mostly goes round in circles until the whole budget is gone (on a long pasted message it can
+    /// spend the whole output budget reasoning and give no answer), so the stream stops here (`cap`) and the
     /// turn asks again without reasoning (`Client::stop_reasoning`).
     pub fn over_reasoning(&self) -> bool { self.thinking >= REASONING_ROOM && self.text.is_empty() && self.calls.is_empty() }
 
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn reasoning_past_its_room_with_no_answer_stops_as_the_output_limit() {
-        // BUGS #78: the stream stops once the reasoning alone fills REASONING_ROOM, and reads as max_tokens
+        // the stream stops once the reasoning alone fills REASONING_ROOM, and reads as max_tokens
         let mut s = Stream::default();
         let mut on = |_: &str| {};
         let think = r#"{"message":{"content":"","thinking":"x"},"done":false}"#;

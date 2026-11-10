@@ -10,7 +10,7 @@ fn is_request_msg(m: &Message) -> bool {
 }
 
 /// `msgs[..end]` with every attached document's text cut to its reference line (`[Attached: report.pdf, 12 pages ·
-/// …]`): the first room-maker when a request is over the window (BUGS #41). A later question about the document
+/// …]`): the first room-maker when a request is over the window. A later question about the document
 /// gets its parts again (`attach::follow_up`). None when there is nothing to cut.
 pub fn drop_doc_text(msgs: &[Message], end: usize) -> Option<Vec<Message>> {
     let mut out = msgs.to_vec();
@@ -30,7 +30,7 @@ pub fn drop_doc_text(msgs: &[Message], end: usize) -> Option<Vec<Message>> {
 
 /// `msgs` without its oldest whole turns (a turn: a request and everything up to the next one), dropped until at
 /// least `free` tokens are gone, never the turn at `end` (the current request) or after it: the second room-maker
-/// (BUGS #41: a 2K window stopped with "say continue" instead). The first message's notes / `[state]` / recalled
+/// (so a small window goes on by itself instead of stopping with "say continue"). The first message's notes / `[state]` / recalled
 /// lines (the part before `## Request`) move to the new first message, so the notes stay in the request. None when
 /// nothing can go.
 pub fn drop_old_turns(msgs: &[Message], end: usize, free: usize) -> Option<Vec<Message>> {
@@ -66,10 +66,10 @@ pub fn picture_block(answer: &str) -> String { format!("{PICTURE_MARK}{}]", answ
 /// a user message block that is a picture's text (`picture_block`), not the user's words
 pub fn is_picture_block(text: &str) -> bool { text.starts_with(PICTURE_MARK) }
 
-/// A picture answer that tells nothing about the picture (BUGS #57, #58): a refusal (`unfit_memory`: "I'm sorry, but
-/// I can't assist with that." from granite3.2-vision:2b asked "Use your read tool on …" with the picture) or a
+/// A picture answer that tells nothing about the picture : a refusal (`unfit_memory`: "I'm sorry, but
+/// I can't assist with that.") or a
 /// non-answer ("I'm sorry, I'm not sure what you're asking", "I didn't understand your question"). Carried into the
-/// turn, the main model took it as the answer and repeated it on later turns.
+/// turn, the main model would take it as the answer and repeat it on later turns.
 pub fn picture_non_answer(answer: &str) -> bool {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| regex::Regex::new(r"(?i)not sure what you(?:'re| are) asking|(?:didn't|did not|don't|do not) understand (?:your|the) question|\bunanswerable\b").unwrap());
@@ -79,8 +79,8 @@ pub fn picture_non_answer(answer: &str) -> bool {
     t.is_empty() || re.is_match(&t) || t.split_inclusive(['.', '!', '?', '\n']).any(|s| unfit_memory(s.trim()))
 }
 
-/// A reply without any `[picture: …]` text a model copied from the turn's message (BUGS #57: moondream:1.8b began
-/// replies with "[picture: The image shows a black cat face…"): each such span removed through its `]` (an unclosed
+/// A reply without any `[picture: …]` text a model copied from the turn's message (a small model may begin
+/// replies with "[picture: …"): each such span removed through its `]` (an unclosed
 /// one through the end of its line). Picture text is Elisa's request-only context, never reply text.
 pub fn strip_picture_echo(reply: &str) -> String {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
@@ -93,7 +93,7 @@ pub fn strip_picture_echo(reply: &str) -> String {
     s.trim().to_string()
 }
 
-/// The history without the picture text of earlier turns (BUGS #57): a picture's text belongs to the turn that looked
+/// The history without the picture text of earlier turns: a picture's text belongs to the turn that looked
 /// at it (`picture_request`); later turns have the reply that answered it. Run before a new turn's message is added,
 /// never within a turn (the prefix rule). Whether anything was removed.
 pub fn drop_picture_blocks(history: &mut [Message]) -> bool {
@@ -122,9 +122,9 @@ pub fn meaning_similarity(a: &str, b: &str) -> Option<f32> {
     Some(x.iter().zip(y.iter()).map(|(p, q)| p * q).sum())
 }
 
-/// Whether `msg`, the turn right after a picture turn, is about that picture (BUGS #57: the picture was resent and
-/// its answer put into every next turn, so "Tell me a joke." got moondream:1.8b's "A black cat with big blue eyes…"
-/// and qwen3-vl:2b-instruct's "That's a clever pun!"). `seen`: what the picture turn learned (the picture's answer
+/// Whether `msg`, the turn right after a picture turn, is about that picture (otherwise the picture is resent and
+/// its answer goes into every next turn, so an unrelated ask like "Tell me a joke." gets the picture answered).
+/// `seen`: what the picture turn learned (the picture's answer
 /// and the ask). About it when the message names a picture or points back at something ("its eyes", "that one":
 /// `picture_words`), is a short follow-up of the last answer (`followup::kind`), shares a content word with `seen`
 /// (`topics::words`), or is close to it in meaning (`meaning_similarity`, when the embedding model is present).
@@ -142,8 +142,7 @@ pub fn shares_meaning(a: &str, b: &str) -> bool {
 }
 
 /// A reply on a turn with picture text that has nothing to do with what the picture showed (`pic`: the picture's
-/// answer), BUGS #57: moondream:1.8b answered "What do you see here?" with the picture with "I hope you find this
-/// information helpful…", carried on from its own earlier replies.
+/// answer), such as a small model carrying on from its own earlier replies instead of answering about the picture.
 pub fn off_picture(reply: &str, pic: &str) -> bool { !reply.trim().is_empty() && !shares_meaning(reply, pic) }
 
 /// a reply's text for comparing: lowercase, whitespace collapsed
@@ -159,11 +158,10 @@ fn word_grams(t: &str) -> std::collections::HashSet<String> {
     w.windows(4).map(|g| g.join(" ")).collect()
 }
 
-/// What a reply to one request must not be (BUGS #42, moondream:1.8b with a 2K window): a copy of an earlier reply
-/// to another ask (seven different asks got the same "[0.0, 0.13, 0.12, 0.24]"; its first reply "I hope this email
-/// finds you well…" was repeated for the next three asks), a reply with no word while the ask has words and no number
-/// ("hello" → "[0.0, 0.17, 0.99, 0.29]", a box from its detection mode), or the wording of a heading or tag Elisa put
-/// in the request ("[Elisa, not the user] [Linh, not the user]" from "…recalled by Elisa…, not written by the
+/// What a reply to one request must not be (small models in a small window repeat themselves): a copy of an
+/// earlier reply to another ask, a reply with no word while the ask has words and no number (such as a box
+/// "[0.0, 0.17, 0.99, 0.29]" from a vision model's detection mode), or the wording of a heading or tag Elisa put
+/// in the request ("[Elisa, not the user]" from "…recalled by Elisa…, not written by the
 /// user…"). Built from the request that was sent, so it holds for any heading Elisa adds; no reply wording is listed.
 #[derive(Debug, Default)]
 pub struct ReplyGuard {
@@ -220,9 +218,9 @@ impl ReplyGuard {
 /// what an image part becomes in a request to a model without vision (`without_images`)
 pub const IMAGE_STUB: &str = "[a picture was shared here; this model can't see pictures]";
 
-/// The messages with every image part replaced by `IMAGE_STUB`, for a model without vision (BUGS #62: a session saved
-/// before pictures went in their own request still held image parts, and after a switch to granite4.2:3b / gemma3:1b
-/// every turn failed with "image input is not supported" / "Multimodal data provided"). None when there is none. The
+/// The messages with every image part replaced by `IMAGE_STUB`, for a model without vision (a session saved
+/// by an older Elisa may still hold image parts, and a model without vision
+/// rejects every request that has one). None when there is none. The
 /// same messages always give the same request, so the prefix stays stable.
 pub fn without_images(msgs: &[Message]) -> Option<Vec<Message>> {
     if !msgs.iter().any(|m| m.content.iter().any(|b| matches!(b, Block::Image { .. }))) { return None; }
@@ -235,8 +233,8 @@ pub fn without_images(msgs: &[Message]) -> Option<Vec<Message>> {
     }).collect())
 }
 
-/// The line after a resumed conversation's restored turns (BUGS #65: after a model switch, the capabilities and
-/// "resumed N messages" were drawn above the history, so only the model chip showed the change): which model now
+/// The line after a resumed conversation's restored turns (after a model switch, the capabilities and
+/// "resumed N messages" drawn above the history leave only the model chip showing the change): which model now
 /// answers and what it can do, e.g. "Now on granite4.2:3b · no vision · tools · thinking".
 pub fn now_on(model: &str, vision: bool, native_tools: bool, thinking: bool) -> String {
     let mut s = format!("Now on {model} · {}", if vision { "vision" } else { "no vision" });
@@ -245,12 +243,11 @@ pub fn now_on(model: &str, vision: bool, native_tools: bool, thinking: bool) -> 
     s
 }
 
-/// The isolated picture request (BUGS #37, #17): no system prompt, no history, the pictures alone in one message and
-/// then the question (the user's words, or `PICTURE_QUESTION` when there are none). Measured on Ollama 2026-11-09:
-/// granite3.2-vision:2b answered "unanswerable" or "I can't … corrupted image" with any system prompt, with earlier
-/// history, and even with the question in the pictures' own message, and read the picture with this shape;
-/// qwen3-vl:2b-instruct and moondream:1.8b read it the same way. The question ends with a line break: moondream:1.8b
-/// ended its answer at once (empty reply) on a question ending in "?" without one.
+/// The isolated picture request: no system prompt, no history, the pictures alone in one message and
+/// then the question (the user's words, or `PICTURE_QUESTION` when there are none). Some small vision models refuse
+/// or call the image corrupted with any system prompt, with earlier history, or with the question in the pictures'
+/// own message, and read the picture with this shape. The question ends with a line break: without one, a model
+/// may end its answer at once (empty reply) on a question ending in "?".
 pub fn picture_request(question: &str, pics: &[Block]) -> Vec<Message> {
     let q = question.trim();
     let q = if !q.is_empty() { q } else if pics.len() > 1 { PICTURES_QUESTION } else { PICTURE_QUESTION };
@@ -645,7 +642,7 @@ pub fn loaded(mut h: Vec<Message>) -> Vec<Message> {
 }
 
 /// A saved session's cancelled turns (an older Elisa ended them with a "[cancelled]" stand-in reply), each from its
-/// user message to that line, so a resumed chat never shows the model the stand-in to copy (BUGS #27). The first turn
+/// user message to that line, so a resumed chat never shows the model the stand-in to copy. The first turn
 /// stays (its message carries the conversation's header); there only the stand-in goes.
 pub fn drop_cancelled_turns(h: Vec<Message>) -> Vec<Message> {
     let stand_in = |m: &Message| m.role == Role::Assistant && m.content.iter().all(|b| matches!(b, Block::Text { text } if text.trim() == "[cancelled]"));
@@ -665,7 +662,7 @@ pub fn drop_cancelled_turns(h: Vec<Message>) -> Vec<Message> {
     out
 }
 
-/// The assistant messages written in this run (no model recorded yet) get `model` (bug #66).
+/// The assistant messages written in this run (no model recorded yet) get `model`.
 pub fn stamp_model(h: &mut [Message], model: &str) {
     for m in h.iter_mut().filter(|m| m.role == Role::Assistant && m.model.is_none()) { m.model = Some(model.to_string()); }
 }
@@ -675,14 +672,14 @@ pub const EARLIER_OPEN: &str = "[earlier in this chat";
 /// an earlier ask in that block, at most this many chars
 pub const EARLIER_ASK_CHARS: usize = 200;
 
-/// The request's messages when the history holds turns another model answered (bug #66: after a model switch,
-/// small models took the old model's replies in the assistant role as their own and copied them, the old model's
-/// name included: granite, gemma and granite3.2-vision each said "I'm Qwen3-VL"). Each such turn leaves the
+/// The request's messages when the history holds turns another model answered (after a model switch,
+/// small models take the old model's replies in the assistant role as their own and copy them, the old model's
+/// name included). Each such turn leaves the
 /// assistant role and its reply leaves the request: the user's words (as Elisa writes them, `users_words`: a fact in
 /// the third person, other first-person words quoted) become one line in an `[earlier in this chat …]` block at the
-/// front of the next turn this model answers (the first message's header stays first). Measured: the old replies
-/// kept in that block, labelled "Elisa on granite4.2:3b: …", were continued as a transcript by gemma3:1b ("Elisa on
-/// granite4.2:3b: No, I cannot see pictures."); with the replies left out every model answered as itself. A turn
+/// front of the next turn this model answers (the first message's header stays first). The old replies, kept in
+/// that block with a label like "Elisa on <model>: …", were continued as a transcript; with the replies left out
+/// every model answers as itself. A turn
 /// whose ask the user repeats later is left out too. `now` is the current model's facts (`situation::model_now`).
 /// A tiny window gets the user's lines only. Decided from the recorded models alone, never from reply wording; for
 /// requests only (the history is unchanged). None when no turn was answered by another model.
@@ -765,8 +762,8 @@ pub const MEMORY_OPEN_YOU: &str = "[memory: recalled by Elisa from earlier sessi
 
 /// Recalled memories as a block that goes in front of the user's text (in the USER message, never the system prompt).
 /// A fact about the user is said to the user ("your name is Linh", `fact_to_you`), never "The user's name is Linh"
-/// (bug #69: in the user's own message, next to "what's my name?", the third person came back as "My name is
-/// Elisa, and I live in Hanoi"; measured, 2B models answered "your …" more often with the facts already in that form).
+/// (in the user's own message, next to "what's my name?", the third person can come back as "My name is
+/// Elisa…"; small models answer "your …" more often with the facts already in that form).
 pub fn with_memory(lines: &[String], text: &str) -> String {
     if lines.is_empty() { return text.to_string(); }
     let lines: Vec<(String, bool)> = lines.iter().map(|l| fact_to_you(l).map_or((l.clone(), false), |y| (y, true))).collect();

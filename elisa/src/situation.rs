@@ -12,7 +12,7 @@
 //! `(Situation: last task stopped: "run ./test.sh and tell me what…" · reply like "Hi! Last task stopped. Try again or something new?")`
 //!
 //! Only on an opening greeting ("hey", "chào", "good morning"): a thanks / bye / "cool" reads well from the history
-//! alone (measured: a line there made the model repeat the whole plan), so it never gets one.
+//! alone (a line there makes the model repeat the whole plan), so it never gets one.
 //!
 //! Sources: the clock (`ELISA_FAKE_NOW`, unix seconds, for tests only); this conversation's last turn (its time, its
 //! tool calls in the history, a failed end); the current state card (the memory store's latest card on
@@ -24,12 +24,12 @@
 /// how every situation line starts (`strip` keys on it)
 pub const PREFIX: &str = "(Situation: ";
 /// a turn asking what Elisa can do or who she is: the capability list, on that turn only (the system prompt has none,
-/// so a small model does not tack it onto every reply; measured on qwen3-vl:2b, "What's my name?" got it instead of
-/// the user's name)
-/// The "what can you do?" line for this model (bug #46: the fixed `ABOUT` claimed images on a model with no vision).
+/// so a small model does not tack it onto every reply, or give it instead of
+/// the user's name to "What's my name?")
+/// The "what can you do?" line for this model (a fixed `ABOUT` would claim images on a model with no vision).
 /// Search, reading files and pages, saving and running commands are Elisa's own (`route::intent`): every model.
 pub fn about(vision: bool) -> String {
-    // bug #69: "you can: chat …" was copied as the reply ("You can: - chat…"): the line says it in Elisa's own voice
+    // "you can: chat …" gets copied as the reply: the line says it in Elisa's own voice
     format!("(Situation: asked about you · answer as Elisa, in the first person, \"I can …\": {} · list only these, in that order, briefly; \
         claim nothing else)", can_list(vision))
 }
@@ -46,10 +46,10 @@ pub fn model_now(model: &str, vision: bool) -> String {
     format!("you are Elisa on {model} · vision: {}", if vision { "yes" } else { "no" })
 }
 
-/// One system-prompt line with the model's detected facts (bug #47: "what can this model do?" was answered about an
-/// attached paper's "Kronos model"). From the connection's detection only, fixed for the session (byte-stable).
+/// One system-prompt line with the model's detected facts (otherwise "what can this model do?" can be answered about
+/// a model an attached paper describes). From the connection's detection only, fixed for the session (byte-stable).
 pub fn model_facts(model: &str, vision: bool, native_tools: bool, thinking: bool, ctx: usize) -> String {
-    // bug #66: after a model switch a small model copied the old model's answers from the history ("I am Qwen3-vl"):
+    // after a model switch a small model may copy the old model's answers from the history:
     // the line says that earlier replies may be another model's and are never copied
     // ("you run on gemma3:1b" made gemma3:1b call itself Gemma: the model is what Elisa runs on, she stays Elisa)
     format!("Model facts (detected, true now): {}. \
@@ -65,8 +65,8 @@ fn facts_head(model: &str, vision: bool, native_tools: bool, thinking: bool, ctx
 
 /// The content words of the model facts (`model_facts`: "model", the model's name, what it has: "vision", "tool",
 /// "context" …; `topics::words`). A question made only of these is about the model Elisa runs on, not about an
-/// attached document that happens to use the same words (BUGS #47: "What can this model do for me?" after the Kronos
-/// paper got the paper's pages and was answered about the Kronos model).
+/// attached document that happens to use the same words ("What can this model do for me?" after a paper
+/// about a model must not get the paper's pages and be answered about that model).
 /// The message's content words are all the model facts' words (`model_words`): "What can this model do for me?",
 /// "which model is this?", "does this model have vision?".
 pub fn asks_about_model(model: &str, vision: bool, native_tools: bool, thinking: bool, ctx: usize, msg: &str) -> bool {
@@ -76,9 +76,8 @@ pub fn asks_about_model(model: &str, vision: bool, native_tools: bool, thinking:
 
 /// The situation line of a turn asking about the model itself (`model_words_of`): the facts again, in this turn's
 /// message only, with the model named as what "this model" means and what Elisa can do on it (`about`'s list).
-/// BUGS #47: with the facts in the system prompt alone, "What can this model do for me?" after a summary of the
-/// Kronos paper was answered about Kronos (qwen3-vl:2b-instruct, granite4.2:3b, gemma3:1b). Replayed on granite4.2:3b:
-/// a line with the facts alone, 2 of 5 right; this one, 5 of 5.
+/// With the facts in the system prompt alone, "What can this model do for me?" after a summary of a paper about a
+/// model gets answered about the paper's model; a line with the facts alone is often still wrong, this one is not.
 pub fn about_model(model: &str, vision: bool, native_tools: bool, thinking: bool, ctx: usize) -> String {
     format!("(Situation: \"this model\" here means {model}, the AI model you run on, never a model from a document or an \
         earlier reply · {} · say what {model} lets you do here: {})", facts_head(model, vision, native_tools, thinking, ctx), can_list(vision))
@@ -154,8 +153,8 @@ fn clip(s: &str, n: usize) -> String {
 }
 
 /// The line for these facts, or None when there is no context worth a line. Each line ends with a short ask the
-/// 2B model follows (measured on qwen3-vl:2b-instruct, 2026-11-09: bare facts, "same conversation · 3 min since last
-/// message", still got "Hey! How can I help you today?"; with the ask: "Yes? More on planning a 3-day Tokyo trip?").
+/// small model follows (with bare facts, such as "same conversation · 3 min since last
+/// message", it still greets as if the chat were new; with the ask it picks up the topic).
 pub fn line(f: &Facts) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     match f.last_turn {
@@ -167,14 +166,14 @@ pub fn line(f: &Facts) -> Option<String> {
             // the part of the day after a long gap (a task's next step outweighs it within the ~40 tokens)
             if long && !task { parts.push(part_of_day(f.hour).into()); }
             // a stopped task (the loop guard, a step limit, an error): said briefly, with its goal, and the ask names
-            // no tool or retry. The model may still call tools on such a turn (measured on qwen3-vl:2b, 2026-11-09:
-            // 6 of 6 runs looped at 10-31K tokens when a line named the task); `repl.rs` runs no tool on a
+            // no tool or retry. The model may still call tools on such a turn (and loops for
+            // thousands of tokens when a line names the task); `repl.rs` runs no tool on a
             // small-talk turn, so that can no longer loop.
             // The line is only that (no gap, no part of the day): its goal and the ask fill the ~40 tokens.
             if f.last_failed {
                 let goal = f.next_step.as_deref().or(f.topic.as_deref()).filter(|t| !t.trim().is_empty());
                 let what = match goal { Some(g) => format!("last task stopped: \"{}\"", clip(g, 30)), None => "last task stopped".into() };
-                // the example in the greeting's language (measured: an English one made "chào" answer half in English)
+                // the example in the greeting's language (an English one makes "chào" get an answer half in English)
                 let ex = match (f.vi, long) {
                     (true, _) => "Chào bạn! Việc trước đã dừng. Thử lại hay việc khác?",
                     (false, true) => "Welcome back! Last task stopped. Try again or something new?",
@@ -185,7 +184,7 @@ pub fn line(f: &Facts) -> Option<String> {
             if f.last_tools { parts.push("after a task".into()); }
             let next = f.next_step.as_deref().filter(|_| task);
             // a topic is offered only when there is something to go on with: a question already got its answer
-            // (bug #8: "hey" after "what's your favourite colour?" got "Hi! More on what's your favourite colour?")
+            // ("hey" after "what's your favourite colour?" must not get "Hi! More on what's your favourite colour?")
             let topic = f.topic.as_deref().filter(|t| offer_topic(t));
             match next {
                 Some(n) => parts.push(format!("next: {}", clip(n, 48))),
@@ -194,7 +193,7 @@ pub fn line(f: &Facts) -> Option<String> {
             let has_topic = topic.is_some();
             parts.push(match (long, next.is_some(), has_topic) {
                 (true, true, _) => "reply like \"Welcome back! Want me to <next>?\"",
-                // a greeting mid-chat is greeted back, briefly (bug #45: "hey" after a name question got "Linh."; #8: "Yes? More on …")
+                // a greeting mid-chat is greeted back, briefly (not with a topic or an old answer)
                 (false, true, _) => "greet back briefly, e.g. \"Hi! Want me to <next>?\"",
                 (true, false, true) => "reply like \"Welcome back! More on <topic>?\"",
                 (true, false, false) => "reply like \"Welcome back!\"",
@@ -221,7 +220,7 @@ pub fn offer_topic(topic: &str) -> bool {
     !t.is_empty() && !t.trim_end_matches(['"', '\'', ')', ' ']).ends_with(['?', '？'])
 }
 
-/// A mid-chat greeting's topic comes from the last this-many user turns only: an older request is stale (bug #8).
+/// A mid-chat greeting's topic comes from the last this-many user turns only: an older request is stale.
 pub const TOPIC_TURNS: usize = 3;
 
 /// `text` without a leading situation line (and the blank line after it)
@@ -298,7 +297,7 @@ mod tests {
 
     #[test]
     fn a_question_about_the_model_is_told_by_the_facts_words() {
-        // BUGS #47
+        // a question made only of the model facts' words
         let asks = |m: &str| asks_about_model("granite4.2:3b", false, true, true, 16384, m);
         for m in ["What can this model do for me?", "which model is this?", "does this model have vision?", "does this model do tool calling?"] {
             assert!(asks(m), "{m:?}");
@@ -349,7 +348,7 @@ mod tests {
         let vi = line(&Facts { now: NOW, hour: 14, last_turn: Some(NOW - 60), last_failed: true, topic: Some("chạy ./test.sh".into()), vi: true, ..Default::default() }).unwrap();
         assert_eq!(vi, "(Situation: last task stopped: \"chạy ./test.sh\" · reply like \"Chào bạn! Việc trước đã dừng. Thử lại hay việc khác?\")");
         assert!(short(&vi), "{vi}");
-        // a question already got its answer: no "More on <topic>?" (bug #8: "Hi! More on what's your favourite colour?")
+        // a question already got its answer: no "More on <topic>?"
         let asked = line(&Facts { now: NOW, hour: 10, last_turn: Some(NOW - 120), topic: Some("what's your favourite colour?".into()), ..Default::default() }).unwrap();
         assert_eq!(asked, "(Situation: same chat, 2 min later · greet back briefly, e.g. \"Hi! What's next?\")");
         assert!(!offer_topic("thủ đô của Pháp là gì？") && !offer_topic("  ") && offer_topic("tell me about Hanoi"));

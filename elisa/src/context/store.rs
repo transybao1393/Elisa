@@ -145,8 +145,8 @@ impl Store {
 
     /// The newest earlier session with any message, up to 20 back: the conversation that was open last, whatever was
     /// said in it. `--continue-open` takes it: the app's restart of the open conversation (a model switch, a
-    /// reconnect, a dev reload) (BUGS #63: a one-turn "hi" chat was skipped as not
-    /// `real_content`, and the switch said "no saved session to continue", 6 of 10 quick switches).
+    /// reconnect, a dev reload), even a one-turn "hi" chat that is not `real_content`, so a switch never says
+    /// "no saved session to continue".
     pub fn newest_session(&self) -> Option<(u64, PathBuf)> {
         let own = run_id();
         let mut v: Vec<(u64, PathBuf)> = fs::read_dir(self.sessions_dir()).ok()?.filter_map(|e| {

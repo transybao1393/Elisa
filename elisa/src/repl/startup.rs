@@ -205,7 +205,7 @@ pub fn run_session(args: Args, fe: &mut dyn Frontend) -> i32 {
     if args.cont {
         // the saved session's mtime: when its last turn ended (the situation line's "back after …")
         // --continue-open (the app's restart on a model switch) takes the open conversation: the newest session, whatever
-        // was said in it (BUGS #63); plain --continue skips a dead session (`newest_real_session`)
+        // was said in it; plain --continue skips a dead session (`newest_real_session`)
         let newest = if args.cont_open { s.store.newest_session() } else { s.store.newest_real_session() }.map(|(_, p)| p);
         let at = newest.as_deref().and_then(crate::situation::mtime);
         if let Some((h, notes)) = newest.as_deref().and_then(|p| Some((s.store.load_session(p).map(context::loaded)?, s.store.load_session_notes(p)))) {

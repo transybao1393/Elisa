@@ -52,7 +52,7 @@ pub struct Message {
     pub content: Vec<Block>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// the model that wrote an assistant message (bug #66), never sent to the API. None: written in this run (stamped
+    /// the model that wrote an assistant message, never sent to the API. None: written in this run (stamped
     /// with the session's model on save); "" = unknown (a session saved before models were recorded)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

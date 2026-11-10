@@ -154,8 +154,8 @@ fn a_server_that_cannot_restart_says_so() {
     }
 }
 
-/// QA 2026-11-08 (B6): "not started: the MCP server exited" said nothing more; now the exit code and the last
-/// stderr line (secrets redacted)
+/// "not started: the MCP server exited" alone says nothing: the exit code and the last
+/// stderr line (secrets redacted) go with it
 #[test]
 fn a_server_that_exits_at_start_says_how_and_why() {
     let d = dir("exitnote");

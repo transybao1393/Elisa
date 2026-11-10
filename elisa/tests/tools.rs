@@ -193,7 +193,7 @@ fn glob_caps_at_200() {
 
 #[test]
 fn glob_over_a_huge_tree_stops_early_with_a_hint() {
-    // BUGS #25: glob over the whole disk ran 151 s; an explicit huge tree now stops at the time / file cap
+    // glob over a whole disk can run for minutes; an explicit huge tree stops at the time / file cap
     let t0 = Instant::now();
     let o = run("glob", json!({"pattern": "**/*", "path": "/usr"}), &ToolCtx { cwd: PathBuf::from("/"), ..ToolCtx::default() });
     assert!(t0.elapsed().as_secs() < 15, "took {:?}", t0.elapsed());
@@ -519,7 +519,7 @@ fn glob_with_an_absolute_pattern_names_its_directory() {
     assert_eq!(tools::glob_args(&json!({"pattern": "*.py", "path": "src"})), ("src".to_string(), "*.py".to_string()));
     let lit = tools::glob_args(&json!({"pattern": format!("{root}/src")}));
     assert_eq!(lit, (format!("{root}/src"), "*".to_string()));
-    // BUGS #25: a leading `/` that names no real directory is the project root, not the whole disk
+    // a leading `/` that names no real directory is the project root, not the whole disk
     let o = run("glob", json!({"pattern": "/*"}), &ctx);
     assert_eq!(o.content, "src/a.py", "/* lists the project");
     for p in ["/*", "/", "/**/*.py", "/src/*.py"] {

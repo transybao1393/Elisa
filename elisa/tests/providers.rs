@@ -500,7 +500,7 @@ fn usage_without_cache_fields_is_the_whole_prompt() {
     assert_eq!((u.input_tokens, u.cache_read_input_tokens, u.output_tokens), (2280, 0, 84));
 }
 
-// BUGS #85: `/model NAME` switches the active connection to that installed model; only the typed name counts
+// `/model NAME` switches the active connection to that installed model; only the typed name counts
 #[test]
 fn model_name_switches_the_active_connection_to_that_installed_model() {
     let names: Vec<String> = ["granite4.2:3b", "gemma3:1b", "llama3.2:latest"].iter().map(|s| s.to_string()).collect();

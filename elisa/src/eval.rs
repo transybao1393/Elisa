@@ -718,7 +718,7 @@ fn metrics(turns: &[TurnLog], m: &mut Metrics) {
 }
 
 /// an info line saying the loop guard (or the same-result repeat check) stopped the turn's tool loop: the turn's stop,
-/// or the stop that asks the model once for an answer with no tools (`repl::agent_loop`, BUGS #54)
+/// or the stop that asks the model once for an answer with no tools (`repl::agent_loop`)
 fn loop_stop(t: &str) -> bool {
     (t.starts_with("[stopped: ") || (t.starts_with("[loop guard: ") && t.contains("asking the model to answer")))
         && (t.contains("kept repeating") || t.contains("kept cycling") || t.contains("returned the same result") || t.contains("paged the file"))

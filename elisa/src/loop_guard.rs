@@ -13,8 +13,8 @@
 //!   that path at all; the model gets the reason and what to use instead. Paging through a long file (different
 //!   results) is never blocked. A change to the file resets this like the counts above.
 //! - **Attached document.** A `read` / `outline` / `read_symbol` / `grep` of a document attached to this turn, whose
-//!   text is already in the user's message, does not run; the model is told the text is above (BUGS #54: granite4.2:3b
-//!   read and outlined two attached spreadsheets until the turn stopped with no reply).
+//!   text is already in the user's message, does not run; the model is told the text is above (otherwise a small
+//!   model can read and outline attached documents until the turn stops with no reply).
 //! - **No progress.** After `NUDGE_STEPS` tool steps without a successful change, one soft note asks the model to
 //!   answer with what it has or say what blocks it.
 use serde_json::Value;
@@ -23,7 +23,7 @@ use std::collections::HashMap;
 /// the call that would be the Nth identical one in a turn does not run
 pub const SAME_CALL_MAX: usize = 3;
 /// the same for a tool that is not Elisa's own (an MCP server's: `web_search`, `web_fetch`): its second identical call
-/// in a turn does not run, the first result is already in the context (BUGS #86: web_search ×4 with one query)
+/// in a turn does not run, the first result is already in the context
 pub const SAME_REMOTE_CALL_MAX: usize = 2;
 /// steps in a turn whose calls were blocked as repeats, before the turn stops
 pub const BLOCKED_STEPS_MAX: usize = 2;
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn an_mcp_call_repeated_does_not_run_the_second_time() {
-        // BUGS #86: qwen3-vl:2b-instruct ran web_search 4 times with one query
+        // a small model can run web_search again and again with one query
         let mut g = Guard::default();
         let q = json!({"query": "what's the weather in Hanoi today"});
         assert_eq!(g.check("web_search", &q, false), Verdict::Run);
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn a_file_call_on_an_attached_document_says_the_text_is_already_there() {
-        // BUGS #54: granite4.2:3b with sales.xlsx + plan.ods attached called outline / read on them
+        // with sales.xlsx + plan.ods attached, a model may still call outline / read on them
         let mut g = Guard::default();
         g.attached(vec!["sales.xlsx".into(), "Plan.ods".into()]);
         let (v, a) = step(&mut g, "read", json!({"path": "sales.xlsx"}), false);

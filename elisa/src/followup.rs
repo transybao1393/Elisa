@@ -3,16 +3,16 @@
 //! situation line, `situation.rs`), so the cached prefix stays warm. `context::request_body` strips it from titles,
 //! history views and memory. <= 25 tokens.
 //!
-//! Why: measured on qwen3-vl:2b-instruct (2026-11-09), after a 3-day Tokyo plan "more", "the second one" and
-//! "tiếp đi" got the whole plan again word for word, "why?" got "I can't provide the answer you're looking for", and
-//! "and in Osaka?" the same list with the city swapped.
+//! Why: without it, after a long answer (say, a 3-day Tokyo plan) a small model answers "more", "the second one"
+//! or "tiếp đi" with the whole answer again word for word, "why?" with a refusal, and "and in Osaka?" with the same
+//! list, the city swapped.
 //!
-//! Wording measured on the same model: "continue with new details. Don't repeat what you said." still got the plan
-//! again 4 of 4; "go deeper: add new tips and details beyond your last answer, no repeats." got an expanded answer
-//! 5 of 6. "tell more about that item" beat "answer about that item only", which often just restated the item.
+//! Wording: "don't repeat what you said" still gets the answer again; asking to go deeper beyond the last answer,
+//! with no repeats, gets an expanded one. "tell more about that item" works better than "answer about that item
+//! only", which often just restates the item.
 //!
-//! 2026-11-09 (a PDF chat): "add new tips and details beyond your last answer" got "details that are not in the
-//! original paper" and an unrequested code example. "More" no longer asks for new tips; about an attached document
+//! About an attached document, asking for new tips and details got details that are not in the document and
+//! unrequested extras. "More" no longer asks for new tips; about an attached document
 //! the hints say to stay with what the document says (`line_for`). A bare "yes" / "ok" after an answer that offered
 //! several options gets a hint to ask which one (`pick_option`), not the model's own pick of the first (it wrote code).
 //!
@@ -23,16 +23,15 @@
 pub const PREFIX: &str = "(Follow-up: ";
 
 /// The hint of an explicit "continue the last one" in a new session, once `repl.rs` loaded the last session
-/// (measured on qwen3-vl:2b: "continue your last answer or task" got the last answer again word for word)
+/// (a bare "continue your last answer or task" gets the last answer again word for word)
 pub const RESUME_CONTINUE: &str = "(Follow-up: the user is back to this chat: go on from your last answer with concrete details, no repeats.)";
 /// The same when that session's last turn stopped (the loop guard, an error): the task again
 pub const RESUME_RETRY: &str = "(Follow-up: the user is back to this chat: try the task that stopped again.)";
 /// The hint of "what were we talking about?" (and of "continue our last conversation" after a plain chat) in a new
-/// session, once the last session is loaded: `resume_recap` puts the user's own earlier messages in it (measured on
-/// qwen3-vl:2b, a chat "my name is Linh…", a joke, then two "just reply OK: <filler>" turns: "continue from your last
-/// answer" got a bare "OK." 1 of 1; "recap this chat in 2-3 lines" only the filler topic 3 of 3; this wording with the
-/// messages listed: a recap naming the earlier topics and "Want to go on?" in 6 of 6 fresh sessions, name / code in 3;
-/// quoting the first message alone, or "from its first message on", made it repeat its first reply ("I'm Elisa…"))
+/// session, once the last session is loaded: `resume_recap` puts the user's own earlier messages in it (asked to
+/// continue or recap without them, a small model answers only the last turns' topic, or a bare "OK." after a chat
+/// that ended in "just reply OK" turns; with the messages listed it names the earlier topics; quoting the first
+/// message alone, or "from its first message on", makes it repeat its first reply)
 pub const RESUME_RECAP: &str = "(Follow-up: the user is back after a break. Talking to them directly, tell them in 1-2 short sentences what this chat covered: every topic, and details they gave such as their name or codes; then end with: Want to go on?)";
 
 /// RESUME_RECAP with the user's own short earlier messages (`asks`, oldest first) named in it: those of <= 25 words

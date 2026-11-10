@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(bad["error"]["code"], -32601);
     }
 
-    /// bug #6: the model says whether a search is for news (`recent`, required so a small model decides every time)
+    /// The model says whether a search is for news (`recent`, required so a small model decides every time)
     #[test]
     fn web_search_asks_whether_the_search_is_for_news() {
         let t = tools();

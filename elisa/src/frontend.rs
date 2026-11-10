@@ -10,7 +10,7 @@ pub struct Args {
     pub yes: bool,
     pub cont: bool,
     /// --continue-open: `--continue` on the conversation that was open last, the newest saved session whatever was
-    /// said in it (the app's restart on a model switch, BUGS #63); plain `--continue` skips a dead session
+    /// said in it (the app's restart on a model switch); plain `--continue` skips a dead session
     pub cont_open: bool,
     pub base_url: Option<String>,
     pub model: Option<String>,

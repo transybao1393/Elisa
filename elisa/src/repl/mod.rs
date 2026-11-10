@@ -96,7 +96,7 @@ struct Session<'f> {
     last_pics: Vec<Block>,
     pics_next: bool,
     /// what the last picture turn learned about its pictures (the picture's answer and the ask), for telling whether
-    /// the next turn is about them (`context::about_picture`, BUGS #57)
+    /// the next turn is about them (`context::about_picture`)
     last_pic_seen: String,
     /// this turn's picture text answer, new or carried (the stand-in for a reply that was only the picture text)
     turn_pic: Option<String>,
@@ -257,7 +257,7 @@ struct Session<'f> {
     /// summary's "done" claims
     ledger: context::Ledger,
     /// the loop guard of the user turn in progress (`loop_guard.rs`): one per turn, shared by the turn's retries
-    /// (`denied_claim_retry`, `claimed_facts_retry`), so a retry never runs the same calls afresh (BUGS #86)
+    /// (`denied_claim_retry`, `claimed_facts_retry`), so a retry never runs the same calls afresh
     pub(super) turn_guard: crate::loop_guard::Guard,
     /// the audit log (`audit.rs`; config `audit`): off = records nothing
     audit: crate::audit::Log,
@@ -425,7 +425,7 @@ impl<'f> Session<'f> {
         self.system.push_str(&facts);
         self.system.push('\n');
         // a tiny window (`context::tiny_window`, from its size alone): a few lines of prompt and no tools, or the
-        // prompt alone fills the window (BUGS #41, #42)
+        // prompt alone fills the window
         if self.tiny() { (self.system, self.tools) = (context::TINY_SYSTEM.to_string(), Vec::new()); }
         // + the chat template's tool preamble (Qwen: ~236 tokens, measured with count_tokens)
         self.tools_tokens = if self.tools.is_empty() { 0 } else { estimate_tokens(&serde_json::to_string(&self.tools).unwrap_or_default()) + TOOL_PREAMBLE };

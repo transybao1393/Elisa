@@ -4,7 +4,7 @@ use super::startup::help_text;
 
 impl<'f> Session<'f> {
 
-    /// `/model`: the connection in use and the saved ones. `/model NAME` (BUGS #85): the active connection set to that
+    /// `/model`: the connection in use and the saved ones. `/model NAME`: the active connection set to that
     /// installed model (`provider::use_model`); the app restarts its session on it, a terminal session on its next start.
     fn model_command(&mut self, name: &str) {
         use crate::provider::{path_in, summary, Providers};

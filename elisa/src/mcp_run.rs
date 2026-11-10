@@ -631,7 +631,7 @@ fn trimmed(b: &[u8], total: usize, max: usize, what: &str) -> String {
 }
 
 /// stderr in at most `max` characters: when cut, its first quarter and its end (a traceback's last line says what
-/// went wrong; QA 2026-11-08: a head-only cut dropped `urllib.error.URLError: …`)
+/// went wrong; a head-only cut would drop e.g. `urllib.error.URLError: …`)
 fn trimmed_ends(b: &[u8], total: usize, max: usize) -> String {
     let s = String::from_utf8_lossy(b);
     let s = s.trim_end_matches('\n');

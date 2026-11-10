@@ -39,7 +39,7 @@ pub fn split_state(text: &str) -> (String, Option<String>, bool) {
 }
 
 /// the card block's tags: the reply's own `<state>`, and the first message's `[state]` a small model copies
-/// (BUGS #22: "echo first-run [state] goal: … keep: … [/state]" as the reply, 3 turns in a row)
+/// (a small model may echo the first message's `[state]` block as its reply)
 const CARD_OPEN: [&str; 2] = ["<state>", "[state]"];
 const CARD_CLOSE: [&str; 2] = ["</state>", "[/state]"];
 
@@ -59,8 +59,8 @@ fn card_prefix(p: &str) -> bool {
 
 /// Hides state-card text from a reply, as it streams (tags and lines may be split across deltas) and in the final
 /// text (`split_state`): `<state>…</state>` and `[state]…[/state]` blocks, the copied card instruction line
-/// (`CARD_ECHO`), and a run of bare card lines (3+, or 2 with a `now:` / `keep:` one; BUGS #12: an approved write's
-/// reply was "done: wrote "hello" to deny.txt / now: … / keep: …"). A single `next: …` line stays: it may be prose.
+/// (`CARD_ECHO`), and a run of bare card lines (3+, or 2 with a `now:` / `keep:` one, as in a reply that is
+/// only "done: … / now: … / keep: …"). A single `next: …` line stays: it may be prose.
 #[derive(Default)]
 pub struct CardFilter { buf: String, inside: bool, mid: bool, cards: String, n: usize, strong: bool }
 

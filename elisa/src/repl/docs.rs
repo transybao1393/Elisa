@@ -18,7 +18,7 @@ impl<'f> Session<'f> {
         let mine = |vi: bool| context::no_picture_line("this", &model, vi, true, false).unwrap_or_default();
         let last = self.history.last().filter(|m| m.role == Role::Assistant).map(texts).unwrap_or_default();
         let after = last.trim() == mine(false) || last.trim() == mine(true);
-        // the router's `refused_picture` replaces the word check when it answered (BUGS #36)
+        // the router's `refused_picture` replaces the word check when it answered
         match self.router_says("refused_picture") {
             Some(asked) => (now || asked).then(|| context::no_picture_text(&model, vi)),
             None => context::no_picture_line(input, &model, vi, now, after),
@@ -28,7 +28,7 @@ impl<'f> Session<'f> {
     /// the pictures sent with the line just read; a model without vision gets none, and the user is told why
     pub(super) fn take_attached(&mut self) -> Vec<Block> {
         let imgs = self.fe.take_images();
-        // refused by the display already (the app blocks pictures at attach on a model without vision, BUGS #61)
+        // refused by the display already (the app blocks pictures at attach on a model without vision)
         if self.fe.take_refused_images() > 0 && !self.vision { self.pic_refused = true; }
         if imgs.is_empty() || self.vision { return imgs; }
         self.fe.error(&format!("{} can't see images, so the {} attached {} not sent. Choose a model with vision in Model Connections, or set vision = true on this connection if it has it.",
@@ -37,7 +37,7 @@ impl<'f> Session<'f> {
         Vec::new()
     }
 
-    /// The pictures this turn asks about (BUGS #37, #17), and whether they came with it: the ones sent with it, else,
+    /// The pictures this turn asks about, and whether they came with it: the ones sent with it, else,
     /// on the one turn right after a picture turn, that turn's pictures again when `input` is about them
     /// (`about_last_pictures`); the pictures are dropped after that turn. An answer there that tells nothing about the
     /// picture is not carried (`look`).
@@ -57,8 +57,8 @@ impl<'f> Session<'f> {
         None
     }
 
-    /// Whether the turn right after a picture turn is about its pictures (BUGS #57: resent with every next turn, the
-    /// picture's answer went into "Tell me a joke." and the model answered the picture). The router's answer when it
+    /// Whether the turn right after a picture turn is about its pictures (resent with every next turn, the
+    /// picture's answer would go into an unrelated ask and the model would answer the picture). The router's answer when it
     /// gave one: a follow-up of the last turn (why / more / a pick / "what about …") is about it, a greeting or a
     /// closing is not; else, and for anything the router leaves open, `context::about_picture` on the message and
     /// what the picture turn learned (`seen`).
@@ -70,11 +70,11 @@ impl<'f> Session<'f> {
 
     /// The isolated picture request (`context::picture_request`): the same model, no system prompt, no history, only
     /// the pictures and the user's question. Its answer is the turn's picture text (`context::picture_block`), so the
-    /// conversation itself never carries a picture: no re-sending every turn (BUGS #17: the first token took ~30 s by
-    /// turn 7), and a small vision model that reads pictures only when asked alone still reads them (BUGS #37).
+    /// conversation itself never carries a picture: no re-sending every turn (that
+    /// slows every turn down), and a small vision model that reads pictures only when asked alone still reads them.
     /// An answer that tells nothing about the picture (`context::picture_non_answer`: a refusal, "I'm not sure what
-    /// you're asking") is never carried as what the picture shows (BUGS #57, #58: granite3.2-vision:2b's "I'm sorry,
-    /// but I can't assist with that." to the read ask after a picture became that turn's reply): on the turn the
+    /// you're asking") is never carried as what the picture shows (it would become
+    /// that turn's reply): on the turn the
     /// pictures came with, they are asked about once more with the plain describe question, and still nothing gives
     /// `PICTURE_UNSEEN`; on the turn after, there is no picture text (Ok(None)). Ok(Some((block, answer))): `answer`
     /// is the picture's real answer, None for `PICTURE_UNSEEN`.
@@ -125,8 +125,8 @@ impl<'f> Session<'f> {
         Ok(new.then(|| (context::picture_block(context::PICTURE_UNSEEN), None)))
     }
 
-    /// The safety net on the turn a picture came with (BUGS #59: granite3.2-vision:2b, picture text "cat", replied
-    /// "I'm sorry, I don't have the ability to view or interpret images. However, … shows a cat."): a reply that is a
+    /// The safety net on the turn a picture came with (a small vision model may say it
+    /// cannot view images though its own picture answer told what the picture shows): a reply that is a
     /// refusal (`context::picture_non_answer`) while the picture's own answer told what it shows is replaced by that
     /// answer, the model's own words about the picture.
     pub(super) fn picture_refusal_fix(&mut self, answer: &str) {
@@ -202,11 +202,11 @@ impl<'f> Session<'f> {
             }
         }
         // the text goes before the user's words in the request (`agent_loop::with_turn_extras`), with one line saying
-        // what it is (BUGS #54: replayed mid-chat request, granite4.2:3b 5/5 and gemma3:1b 5/5 answered from it; with
-        // the words first and no line, granite said "only attachment metadata" 5/5)
+        // what it is (with the
+        // words first and no line, a model may take the attachments for metadata only)
         if !req.is_empty() { self.set_doc_req(Some(format!("{}\n{ATTACHED_NOTE}", req.join("\n\n")))); }
         // nothing could be read: the model hears it in this turn's message, so it never answers from an earlier file
-        // (measured on qwen3-vl:2b: a locked PDF got "The PDF says the code word is WORD8", from the n8.txt before it)
+        // (otherwise a model answers from an earlier file)
         else if !refused.is_empty() { self.doc_refused = Some(crate::attach::refused_note(&refused)); }
     }
 
@@ -357,7 +357,7 @@ impl<'f> Session<'f> {
         let vague = crate::attach::is_vague(&q);
         let few = q.split_whitespace().count() <= 4 && !vague;
         // a general first question ("what is this paper about?") is not carried: merged in, it picked the overview again
-        // and the model repeated its summary instead of answering the follow-up (measured on qwen3-vl:2b)
+        // and the model repeated its summary instead of answering the follow-up
         let query = if (carry || few) && !crate::attach::is_vague(&k.query) { format!("{} {q}", k.query) } else { q.clone() };
         if !carry && !vague && !few { k.query = q.clone(); }
         let (block, pick) = crate::attach::block_for(&k.doc, &query, budget, &[]);
@@ -366,10 +366,10 @@ impl<'f> Session<'f> {
         self.doc_retry = Some((k.doc.name.clone(), r));
         self.debug(&format!("[documents in this request: {log} · budget {budget}]"));
         // a follow-up about a document already discussed: answer that question, not the whole document again
-        // (measured on qwen3-vl:2b: "what kind of data does it work with?" got its first summary repeated). The parts
+        // (otherwise the model repeats its first summary). The parts
         // go before the user's words, so the question is what the model reads last; the line after them says what they
-        // are for without naming "the user" or "the question" to repeat (BUGS #38: granite3.2-vision:2b answered "The
-        // user's new question is: '…'" to the old note after the text, "Answer only the user's new question …")
+        // are for without naming "the user" or "the question" to repeat (a note that names them gets
+        // echoed back as the reply)
         self.set_doc_req(Some(format!("{block}\n(Only the parts of the document that the message below asks about: answer that message in a few sentences, not with a summary of the whole document.)")));
     }
 
@@ -393,10 +393,9 @@ impl<'f> Session<'f> {
     }
 
     /// The safety net for a reply that says a file was saved when no write / edit succeeded this turn: one was denied
-    /// or failed (`route::claims_saved`; measured on qwen3-vl:2b: "save the word hello to deny.txt", the user said
-    /// no, and the reply was "I've saved "hello" to deny.txt for you."), or none was made at all and the reply names
-    /// the saved file (`route::claims_file_saved`; BUGS #60, gemma3:1b: "Okay, here's the marketing plan saved to
-    /// marketing-plan.md" with no write call). It checks the reply against the turn's tool calls, not the user's
+    /// or failed (`route::claims_saved`: the user said no to a write
+    /// and the reply still says it was saved), or none was made at all and the reply names
+    /// the saved file (`route::claims_file_saved`: "here's the plan saved to plan.md" with no write call). It checks the reply against the turn's tool calls, not the user's
     /// words. The reply is replaced: asked once more in words, with no tools and a note saying nothing was written; a
     /// reply that still claims it gets a plain line.
     pub(super) fn denied_claim_retry(&mut self) -> Option<TurnEnd> {
@@ -410,9 +409,8 @@ impl<'f> Session<'f> {
         let claims = |h: &[Message]| h.last().is_some_and(|m| m.role == Role::Assistant && claim(&texts(m)));
         if !claims(&self.history) { return None; }
         // no write this turn, but every file the reply says is saved was written earlier in this session (the
-        // ledger): a true recall, not a claim to correct (BUGS #87: "what do you remember about me?" after `write
-        // poem.md` got "…I saved the poem to poem.md", was retried with "nothing was saved", and answered "we
-        // couldn't write to it")
+        // ledger): a true recall, not a claim to correct (retried as a false claim, a true
+        // "I saved the poem to poem.md" would turn into "we couldn't write to it")
         if none {
             let said = self.history.last().map(texts).unwrap_or_default();
             let backed = crate::route::file_claims(&said).iter().all(|s| self.ledger.backs(s, crate::route::file_name(s).as_deref()));
@@ -446,11 +444,11 @@ impl<'f> Session<'f> {
         Some(end)
     }
 
-    /// A reply that says the user's own facts as Elisa's (`context::claimed_user_facts`; bug #69: "I'm Elisa, and I
-    /// live in Hanoi. My meeting code is ORCHID-42.", "I'm from Hanoi too") is asked once more in words with a note
+    /// A reply that says the user's own facts as Elisa's (`context::claimed_user_facts`: "I'm Elisa, and I
+    /// live in Hanoi.", "I'm from Hanoi too") is asked once more in words with a note
     /// naming those facts. The values come from what the user told in this conversation and what recall brought back
-    /// (`recalled_values`), never from fixed words. Measured on qwen3-vl:2b(-instruct): about a third of the replies
-    /// to "I'm Linh, from Hanoi…" claimed a fact, and one retry with the note fixed 9 of 11. The retry stands whatever
+    /// (`recalled_values`), never from fixed words. Small models often claim such a fact, and one
+    /// retry with the note mostly fixes it. The retry stands whatever
     /// it says (one extra request, only on such a reply).
     pub(super) fn claimed_facts_retry(&mut self) -> Option<TurnEnd> {
         let mut values = self.recalled_values.clone();
@@ -466,7 +464,7 @@ impl<'f> Session<'f> {
         let mut claimed = context::claimed_user_facts(&texts(last), &values);
         // a value this turn's tool calls or results carry is what the tools searched, wrote or found, not the user's
         // fact taken as Elisa's own ("I found some weather information for Hanoi" after a web search for Hanoi,
-        // "I wrote a poem about Hanoi" after that write; BUGS #86)
+        // "I wrote a poem about Hanoi" after that write)
         let from = self.history.iter().rposition(is_request).unwrap_or(0);
         let found: String = self.history[from..].iter().flat_map(|m| &m.content).filter_map(|b| match b {
             Block::ToolResult { content, is_error: false, .. } => Some(content.to_lowercase()),
@@ -478,12 +476,10 @@ impl<'f> Session<'f> {
         self.history.pop();
         self.fe.reply_retracted();
         self.debug(&format!("[retry: the reply said the user's facts as Elisa's own ({}); asked again in words]", claimed.join(", ")));
-        // worded as a plain fact, never as a verdict on a reply the model cannot see (it was taken back): "Your reply
-        // was not sent…" got "You're right, I should…" (BUGS #86); "For this reply: … the user's own, not yours"
-        // got an apology for text the user never saw and claims again ("I live in Hanoi too", 1 of 5 replays on
-        // qwen3-vl:2b-instruct, 2026-11-10); "about the person writing to you, not about you" got "I'm in Hanoi too"
-        // 2 of 5 and once a 2048-token description of the chat. This wording: no claim, no apology, short, 5 of 5.
-        // No "the user" in the third person either (BUGS #52).
+        // worded as a plain fact, never as a verdict on a reply the model cannot see (it was taken back): a verdict
+        // gets "You're right, I should…", or an apology for text the user never saw and the claim again, and other
+        // wordings still brought the claim back. This one gets no claim, no apology, and a short reply.
+        // No "the user" in the third person either.
         let (is, facts, them) = if claimed.len() == 1 { ("is", "fact", "it") } else { ("are", "facts", "them") };
         self.retry_note = Some(format!("({} {is} their {facts}, not yours: in a short reply, say {them} with \"you\" or \"your\", \
             never \"I\" or \"my\".)", claimed.join(", ")));

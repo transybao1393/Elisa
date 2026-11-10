@@ -4,8 +4,8 @@ use super::memory::{is_request, texts};
 impl<'f> Session<'f> {
 
     /// The user's words of this turn asked once more alone: the same model and system prompt, no history, no tools,
-    /// and this turn's picture text when it has one (BUGS #42: moondream:1.8b copied an earlier reply into every later
-    /// turn, or answered Elisa's bracketed blocks with a box "[0.0, 0.17, 0.99, 0.29]"; asked alone it answers the
+    /// and this turn's picture text when it has one (a small model may copy an earlier reply into every later
+    /// turn, or answer Elisa's bracketed blocks instead of the ask; asked alone it answers the
     /// ask, as the picture request does). The answer when it is usable (`guard`), else None.
     fn isolated_reply(&mut self, max_tokens: usize, guard: &context::ReplyGuard) -> Option<String> {
         let mut text = context::request_body(&self.input).trim().to_string();
@@ -100,9 +100,9 @@ impl<'f> Session<'f> {
         // one correction per turn when a reply writes a tool call as text
         let mut nudged = false;
         let mut repeat = Repeat::default();
-        // a document whose text is in this turn's message is not opened with a file tool (BUGS #54)
+        // a document whose text is in this turn's message is not opened with a file tool
         if self.doc_req.is_some() { guard.attached(self.kept_docs.iter().map(|k| k.doc.name.clone()).collect()); }
-        // a loop stop asks the model once for an answer with no tools before the turn stops (BUGS #54): its reason
+        // a loop stop asks the model once for an answer with no tools before the turn stops: its reason
         let mut final_ask: Option<String> = None;
         // a reply with no visible text (only its state card): asked once more, with this nudge after the history for
         // that one request (it never enters the history, so the next requests' prefix is unchanged)
@@ -150,7 +150,7 @@ impl<'f> Session<'f> {
             let switched = context::other_model_view(&self.history, &self.cfg.model, &now_line, context::tiny_window(self.max_ctx));
             let base: &[Message] = switched.as_deref().unwrap_or(&self.history);
             // earlier turns' corrections ("nothing ran", "nothing was saved") and the attempts they corrected: left
-            // out, so a later turn never takes a fixed failure for the outcome (`drop_old_nudges`, BUGS #87)
+            // out, so a later turn never takes a fixed failure for the outcome (`drop_old_nudges`)
             let fresh = drop_old_nudges(base);
             let base: &[Message] = fresh.as_deref().unwrap_or(base);
             let dedup = context::drop_repeated_replies(base);
@@ -185,7 +185,7 @@ impl<'f> Session<'f> {
             first = false;
             // a reply cut by the output limit is continued from this same request (`continue_reply`)
             let sent: Option<Vec<Message>> = (reply.stop_reason == "max_tokens").then(|| messages.to_vec());
-            // what a reply to this request must not be (`context::ReplyGuard`, BUGS #42)
+            // what a reply to this request must not be (`context::ReplyGuard`)
             let reply_guard = context::ReplyGuard::new(&self.input, messages);
             let prompt_real = reply.usage.input_tokens + reply.usage.cache_read_input_tokens;
             // a cancelled (Esc) or unreported reply has no usage: the partial output's estimate stands in for it
@@ -219,8 +219,8 @@ impl<'f> Session<'f> {
                 return TurnEnd::Stopped;
             }
             // small talk ("hey", "thanks", "ok") routed as chat: a tool call there (a real one, or one written as text)
-            // is not run and does not widen the route (measured on qwen3-vl:2b: "hey" after a turn the loop guard
-            // stopped called tools, the widen path ran them, and the turn looped to 11-31K tokens). It is asked once
+            // is not run and does not widen the route (otherwise a "hey" after a turn the loop guard
+            // stopped can call tools, the widen path runs them, and the turn loops for thousands of tokens). It is asked once
             // more in words with no tools; still calls: a plain fallback line instead of a loop.
             if self.small_talk_turn && stop_reason != "cancelled" && (has_tools || context::looks_like_text_tool_call(&texts(&Message::new(Role::Assistant, content.clone())))) {
                 if let Some(st) = pending_done.take() { self.fe.reply_done(&st); }
@@ -257,8 +257,8 @@ impl<'f> Session<'f> {
                 }
                 let (vis, card, broken) = context::split_state(&raw);
                 // one of Elisa's request-only notes repeated as the reply: never shown (`route::strip_echoed_notes`)
-                // picture text copied into the reply too (`context::strip_picture_echo`, BUGS #57)
-                // and a line that only restates the user's message (`route::strip_echoed_ask`, BUGS #38)
+                // picture text copied into the reply too (`context::strip_picture_echo`)
+                // and a line that only restates the user's message (`route::strip_echoed_ask`)
                 let clean = crate::route::strip_echoed_ask(&crate::route::strip_echoed_notes(&context::strip_picture_echo(&vis)), &self.input);
                 let vis = if clean != vis.trim() && clean != vis {
                     self.fe.reply_retracted();
@@ -287,15 +287,15 @@ impl<'f> Session<'f> {
                     self.fe.info(&format!("[the reply used its whole {max_tokens}-token simple-turn budget and wrote no text for you; asking once more without that limit]"));
                     continue;
                 }
-                // reasoned through its whole budget, no answer (BUGS #78): once more without reasoning, full budget
+                // reasoned through its whole budget, no answer: once more without reasoning, full budget
                 if !wrote && cut.is_none() && stop_reason == "max_tokens" && reasoning > 0 && self.client.stop_reasoning() {
                     stashed_card = self.new_card.take().or(stashed_card);
                     empty_retry = Some(REASONED_OUT_NUDGE);
                     self.fe.info("[the model spent its whole budget reasoning and wrote no answer; asking once more without reasoning]");
                     continue;
                 }
-                // a reply that copies an earlier one, has no words or repeats Elisa's headings (`context::ReplyGuard`,
-                // BUGS #42), or still none after the nudge: the user's words asked once more alone (`isolated_reply`)
+                // a reply that copies an earlier one, has no words or repeats Elisa's headings (`context::ReplyGuard`),
+                // or still none after the nudge: the user's words asked once more alone (`isolated_reply`)
                 // (and on a turn with picture text, a reply with nothing of what the picture's answer to this ask said)
                 let off_pic = |t: &str| self.turn_pic.as_deref().is_some_and(|p| context::off_picture(t, p));
                 let why = if !wrote { Some("empty") }
@@ -312,8 +312,8 @@ impl<'f> Session<'f> {
                             t
                         }
                         // nothing usable alone either: a turn with a picture has the model's own words about it
-                        // (BUGS #57: moondream:1.8b's whole reply was the picture text, removed as an echo; alone it
-                        // answered "[Picture: A black cat…" again)
+                        // (a reply that was only the picture text is removed as an echo, and asked alone a model may
+                        // answer with it again)
                         None => match self.turn_pic.clone() {
                             Some(p) => {
                                 self.debug(&format!("[the reply was unusable ({why}); showed the picture's own answer]"));
@@ -554,9 +554,9 @@ impl<'f> Session<'f> {
                 self.drop_cancelled_turn();
                 return TurnEnd::Stopped;
             }
-            // the same call and the same result again (Test 2026-11-01 ran one failing command ~15 times until the
-            // context was full), or the loop guard's stop: the model is asked once to answer with what it has, with no
-            // tools (BUGS #54: the turn ended with no reply); a second stop ends the turn
+            // the same call and the same result again (a failing command can be run over and over until the
+            // context is full), or the loop guard's stop: the model is asked once to answer with what it has, with no
+            // tools (so the turn never ends with no reply); a second stop ends the turn
             // the step limit after a tool step: the same one no-tools answer, so the turn never ends with no reply
             let at_limit = step + 1 >= max_steps;
             let stop = if repeat.max >= REPEAT_MAX { Some(repeat.why()) } else { guard_stop };
@@ -582,8 +582,8 @@ impl<'f> Session<'f> {
 
     /// A turn the user cancelled (Esc) with no words of a reply: it leaves the history whole, from the user's message
     /// on (its tool calls and their "cancelled by user" results too), and is not recorded in memory (`unsent`). Never
-    /// a "[cancelled]" stand-in reply (BUGS #27: granite3.2-vision:2b answered the next three unrelated asks with
-    /// "[cancelled]", and the /clear notes kept the cancelled fetch as the next step). The chat on screen keeps it.
+    /// a "[cancelled]" stand-in reply (a model copies it into the next
+    /// unrelated replies, and the /clear notes would keep the cancelled call as the next step). The chat on screen keeps it.
     fn drop_cancelled_turn(&mut self) {
         let at = self.turn_cap(&self.history).min(self.history.len());
         self.history.truncate(at);
@@ -792,10 +792,10 @@ pub(super) fn api_error_line(e: &str) -> String {
 /// The error a call to a tool this request did not offer gets: what to do instead and a few names that exist (those
 /// that look like it first: `sec_malware` → `sec_secrets`, …). `reason` = a reasoning tool the gate left out this turn.
 /// The one-time retry after a reply with no visible text (`agent_loop`), and the one request after a reply that
-/// reasoned through its whole budget (BUGS #78, sent with reasoning off; without it qwen3-vl:2b answered a long pasted
-/// "just reply OK" message with a copy of its earlier greeting, 2 of 2 retries): request-only notes (`with_note`),
+/// reasoned through its whole budget (sent with reasoning off; without it a small model may answer a long pasted
+/// message with a copy of an earlier reply): request-only notes (`with_note`),
 /// after the user's words or in the last tool result. Never a user message of their own, and never "the user" in
-/// the third person (BUGS #52: gemma3:1b mirrored that wording back: "Please provide the user's question.").
+/// the third person (small models mirror that wording back).
 const REASONED_OUT_NUDGE: &str = "(Answer this message now, directly, doing what it asks; no long reasoning first.)";
 const EMPTY_REPLY_NUDGE: &str = "(Answer this message in one plain sentence first; a <state> card, if any, goes after it.)";
 
@@ -806,15 +806,14 @@ const SMALL_TALK_NOTE: &str = "(Reply in words; no tools for this message.)";
 /// (`with_note`); worded as how to answer, never as a reaction to what the model did
 const FINAL_ANSWER_NOTE: &str = "(No more tool calls for this reply: answer the user's message in words from the tool results and any document text in the conversation; if something is still missing, say what.)";
 /// The note of a turn whose user explicitly asked to search the web (`route::web_ask`; `agent_loop`): after the user's
-/// words, in the requests before a tool runs only. Measured on qwen3-vl:2b with the web tools offered: "search the web:
-/// what is the capital of Australia?" was answered from memory 3/3 without it (a system-prompt rule alone: 0/3), a
-/// web_search call 3/3 with it.
+/// words, in the requests before a tool runs only. Without it (or with a system-prompt rule alone) a small model
+/// answers an explicit search request from memory; with it, it calls web_search.
 pub(super) const WEB_ASK_NOTE: &str = "\n\n(The user asked for a web search: call web_search now, then answer from its results, even if you know the answer.)";
 
 /// The history with `note` added for one request (a copy; the history is unchanged), always to the last message so
 /// the prefix stays the same: after a tool step, inside the last tool result, as Elisa's `[elisa: …]` line like the
 /// loop guard's; otherwise after the user's words. Never a user message of its own after the tool results: there it
-/// read as the user speaking, and the model answered it ("You're right, I should reframe my response…", BUGS #86).
+/// read as the user speaking, and the model answered it ("You're right, I should reframe my response…").
 fn with_note(history: &[Message], note: &str) -> Vec<Message> {
     let mut h = history.to_vec();
     let last_result = h.last_mut().filter(|m| m.role == Role::User).and_then(|m| m.content.iter_mut().rev().find_map(|b| match b {
@@ -836,10 +835,9 @@ fn with_note(history: &[Message], note: &str) -> Vec<Message> {
 
 /// The history with this turn's request-only blocks in the turn's user message (a copy for one request): the
 /// document text (`doc`) goes with the documents' reference lines, before the user's words and Elisa's notes, and
-/// the card (`card`) after them. The words come last, right after the text they ask about (BUGS #54: mid-chat,
-/// after a web search and a denied write, granite4.2:3b read "what is in these two files?" ahead of the text as
-/// being about deny.txt and said the attachments were "only metadata", 5 of 5 replays; the text first, with
-/// `docs::ATTACHED_NOTE` after it: 5 of 5 right, and gemma3:1b 5 of 5).
+/// the card (`card`) after them. The words come last, right after the text they ask about (with the
+/// words first, mid-chat, a model can take them as about an earlier file and call the attachments "only metadata";
+/// the text first, with `docs::ATTACHED_NOTE` after it, is read as the attachments).
 fn with_turn_extras(history: &[Message], doc: Option<&str>, card: Option<&str>) -> Vec<Message> {
     let mut h = history.to_vec();
     // the turn's user message (`turn_cap`): the last one with words that are not Elisa's correction
@@ -919,7 +917,7 @@ mod tests {
 
     #[test]
     fn document_text_goes_before_the_users_words_and_the_card_after() {
-        // BUGS #54
+        // the attached text first, then the words, then the card
         let t = |s: &str| Block::Text { text: s.into() };
         let text = |m: &Message| m.content.iter().map(|b| match b { Block::Text { text } => text.clone(), _ => String::new() }).collect::<Vec<_>>();
         let h = vec![Message::user_text("hi"), Message::assistant_text("hello"),
@@ -936,7 +934,7 @@ mod tests {
 
     #[test]
     fn a_request_note_goes_in_the_last_tool_result_never_a_user_message_after_it() {
-        // BUGS #86: a note as its own user message after the results was answered "You're right, I should…"
+        // a note as its own user message after the results reads as the user speaking
         let h = tool_turn();
         let n = with_note(&h, FINAL_ANSWER_NOTE);
         assert_eq!(n.len(), h.len());
@@ -949,7 +947,7 @@ mod tests {
 
     #[test]
     fn earlier_turns_corrections_are_left_out_of_later_requests() {
-        // BUGS #87: a cut write, its "[elisa] … nothing was saved" note, then the write that worked
+        // a cut write, its "[elisa] … nothing was saved" note, then the write that worked
         let mut h = vec![
             Message::user_text("write a poem to poem.md"),
             Message::assistant_text("[cut off at the 2048-token output limit: `write poem.md` did not run]"),

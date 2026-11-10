@@ -30,7 +30,7 @@ extension AppModel {
         }
     }
 
-    /// the whole session, with what a bug report needs at the top
+    /// the whole session, with what a problem report needs at the top
     func debugTranscript() -> String {
         var head = ["Elisa transcript · \(Date().formatted(date: .abbreviated, time: .standard))"]
         head.append("model: \(model)")

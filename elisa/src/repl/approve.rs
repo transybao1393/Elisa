@@ -211,8 +211,8 @@ fn answer_word(a: &Approval) -> &'static str {
 #[derive(Clone)]
 struct RuleHit { level: Level, pattern: String, source: String }
 
-/// added to a denial: nothing happened, say so, and do not ask again for the same thing (measured on qwen3-vl:2b:
-/// with only "do not call this tool again…; answer without it" a denied write got "I've saved "hello" to deny.txt")
+/// added to a denial: nothing happened, say so, and do not ask again for the same thing (with
+/// only "do not call this tool again…; answer without it", a model may still say a denied write was saved)
 const NO_RETRY: &str = "NOTHING was done: no file was written or changed and no command ran. Tell the user plainly that it was \
     not done and why; never say it was saved or done. Do not call this tool again for this request";
 /// a call the user said no to: nothing happened, and a sample sentence (the 2B model, told only "say why", said

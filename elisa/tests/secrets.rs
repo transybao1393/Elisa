@@ -135,7 +135,7 @@ fn json_redaction_keeps_structure() {
     assert_eq!(v["b"]["c"], "plain");
 }
 
-/// Every way a model reformats `DB_PASSWORD=…` (QA 2026-11-08, H1): none of them reaches notes or a saved session.
+/// Every way a model reformats `DB_PASSWORD=…`: none of them reaches notes or a saved session.
 #[test]
 fn reformatted_secrets_never_reach_notes_or_sessions() {
     let v = ["TPcpXk9q2", "LmR7vWz4bNs"].concat();
