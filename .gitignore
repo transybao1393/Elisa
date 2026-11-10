@@ -44,5 +44,5 @@ decision_models/
 # local self-test inputs (a PDF the self-test reads; not redistributed)
 .selftest/
 
-# the working bug list (local only, never published)
-BUGS.md
+# local working notes (never published)
+.local/

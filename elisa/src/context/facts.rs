@@ -135,8 +135,7 @@ pub fn fact_to_you(fact: &str) -> Option<String> {
         else if let Some(r) = rest.strip_prefix(" is ") { format!("you are {r}") }
         else if let Some(r) = rest.strip_prefix(" wants ") { format!("you want {r}") }
         else if let Some(r) = rest.strip_prefix(" lives ") { format!("you live {r}") }
-        else if let Some(r) = rest.strip_prefix(" works ") { format!("you work {r}") }
-        else { return None };
+        else { format!("you work {}", rest.strip_prefix(" works ")?) };
     Some(you)
 }
 

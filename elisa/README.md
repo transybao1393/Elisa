@@ -5,7 +5,7 @@ first: ask questions, search the web, read attached documents and pictures, keep
 edit and run code in a project, with your approval) is one feature among the rest. It runs on a model you choose:
 local (Ollama, llama.cpp, LM Studio, MLX…) or any OpenAI- or Anthropic-compatible API.
 
-![Elisa reading a file, then fixing a bug after asking permission, on a small model running locally](assets/elisa-demo.gif)
+![Elisa reading a file, then fixing a function after asking permission, on a small model running locally](assets/elisa-demo.gif)
 
 - **You choose the model.** Elisa never picks or recommends one. With none chosen it sends nothing and tells you how
   to choose.

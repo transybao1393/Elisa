@@ -1318,7 +1318,7 @@ fn the_oldest_turns_go_and_the_notes_move_along() {
         Message::user_text(first),
         Message::assistant_text("Hi Linh!"),
         Message::user_text("tell me a long story"),
-        Message::assistant_text(&"once upon a time ".repeat(40)),
+        Message::assistant_text("once upon a time ".repeat(40)),
         Message::user_text("thanks, what's my name?"),
     ];
     let out = context::drop_old_turns(&h, 4, 5).expect("dropped");

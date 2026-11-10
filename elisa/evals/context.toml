@@ -150,7 +150,7 @@ turn = 3
 
 [[case]]
 id = "context.new_session_no_old_card"
-description = "a new session does not inherit the last session's state card; --continue of that new session has none either: cards belong to their session (QA runtime B1, longrun H1); the card comes from a tool turn (plain chat carries none, BUGS #22)"
+description = "a new session does not inherit the last session's state card; --continue of that new session has none either: cards belong to their session; the card comes from a tool turn (plain chat carries none)"
 [[case.script]]
 tool = { name = "glob", input = { pattern = "*.md" } }
 [[case.script]]
@@ -315,7 +315,7 @@ text = "Situation"
 
 [[case]]
 id = "context.greet_mid_conversation"
-description = "\"hey\" a moment after a real request in the same conversation gets a short situation line with the topic that asks for a brief greeting back (BUGS #45); the first turn got none"
+description = "\"hey\" a moment after a real request in the same conversation gets a short situation line with the topic that asks for a brief greeting back; the first turn got none"
 config = "memory = false\n"
 [[case.script]]
 text = "Day 1: Asakusa. Day 2: Shibuya. Day 3: Ginza."
@@ -340,7 +340,7 @@ turn = 2
 
 [[case]]
 id = "context.greet_after_answered_question"
-description = "\"hey\" after a question that was already answered gets no topic to go on with (BUGS #8: \"Hi! More on what's your favourite colour?\")"
+description = "\"hey\" after a question that was already answered gets no topic to go on with (not \"Hi! More on what's your favourite colour?\")"
 config = "memory = false\n"
 [[case.script]]
 text = "I like teal."
