@@ -11,7 +11,7 @@ pub fn tools() -> Value {
     json!([
         {"name": "web_search", "description": "Search the web; returns the top results (title, url, snippet). For news, current facts or anything not in the project. Answer with what the results say (for news: what happened), not a list of the sites.",
          "inputSchema": {"type": "object", "properties": {"query": {"type": "string"},
-             "recent": {"type": "boolean", "description": "true when the user wants news, the latest or what's new (only pages from the past week); false for lasting facts"}}, "required": ["query", "recent"]}},
+             "recent": {"type": "boolean", "description": "true for news, the latest or what's new (only pages from the past week); false for lasting facts"}}, "required": ["query", "recent"]}},
         {"name": "web_fetch", "description": "Read a public web page as plain text (http/https), e.g. a url from web_search.",
          "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
     ])
@@ -22,7 +22,13 @@ pub fn call(name: &str, args: &Value, cfg: &crate::web::WebCfg) -> (String, bool
     let arg = |k: &str| args[k].as_str().map(str::trim).filter(|s| !s.is_empty());
     let r = match name {
         "web_search" => match arg("query") {
-            Some(q) => crate::web::search(q, recent(&args["recent"]), cfg).map(|t| format!("{t}\n(web_fetch a url to read the page)")),
+            Some(q) => {
+                let news = recent(&args["recent"]);
+                // past-week results are the news itself: the reply tells what they say, not where to read it
+                let how = if news { "(a news search: answer now with what these headlines and snippets say happened, not a list of the sites)" }
+                    else { "(web_fetch a url to read the page)" };
+                crate::web::search(q, news, cfg).map(|t| format!("{t}\n{how}"))
+            }
             None => Err("missing query".into()),
         },
         "web_fetch" => match arg("url") { Some(u) => crate::web::fetch(u), None => Err("missing url".into()) },

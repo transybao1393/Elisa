@@ -139,6 +139,35 @@ pub fn part_of_day(hour: u32) -> &'static str {
     }
 }
 
+/// The thing a question asks about the user themself, when the whole question is "what is my X" (any question word,
+/// "is / are / was / 's") or "do you know / remember my X": X ("favourite colour"). None for anything else
+/// ("how do I fix my code?", a statement, a longer ask).
+pub fn own_fact_asked(msg: &str) -> Option<String> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?i)^(?:(?:what|which|who|where|when|how)(?:'s|\s+(?:is|are|was|were))|(?:do|did)\s+you\s+(?:know|remember))\s+my\s+(?P<k>[\p{L}][\p{L}'-]*(?:\s+[\p{L}][\p{L}'-]*){0,3})$").unwrap());
+    let body = crate::context::request_body(msg);
+    let own = crate::context::own_words(body).unwrap_or(body).replace(['’', '‘'], "'");
+    let q = own.trim().trim_end_matches(['?', '.', '!', ' ']).trim();
+    re.captures(q).map(|c| c["k"].to_lowercase())
+}
+
+/// Whether `known` (what this turn's request carries: recalled memories, notes, pinned facts, the conversation)
+/// says anything about `subject`: one of its words there (words of 4+ letters by their first four, so "favorite
+/// color" finds "favourite colour").
+pub fn subject_known(subject: &str, known: &str) -> bool {
+    let key = |w: &str| -> String { if w.chars().count() >= 4 { w.chars().take(4).collect() } else { w.to_string() } };
+    let have: std::collections::HashSet<String> = known.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 3).map(key).collect();
+    subject.split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 3).any(|w| have.contains(&key(w)))
+}
+
+/// The line after a question about the user's own X when memory was searched and nothing Elisa has says it
+/// (`own_fact_asked`, `subject_known`): the answer is that the user has not said it (a small model otherwise names
+/// one: after /forget, "what's my favourite colour?" got "Blue" and "You like purple.").
+pub fn unknown_fact_note(subject: &str) -> String {
+    format!("{}about their {subject}: Elisa searched her memory and this chat and found nothing about it, so they have \
+        not told you. Say you don't know their {subject} yet and ask them; never guess one.)", crate::route::ASK_PREFIX)
+}
+
 /// one line of at most `n` chars, cut at a word boundary (`…` when cut), double quotes made single
 fn clip(s: &str, n: usize) -> String {
     let one = crate::context::one_line(s, usize::MAX).replace('"', "'");
@@ -357,6 +386,28 @@ mod tests {
         let mid = line(&Facts { now: NOW, last_turn: Some(NOW - 60), past: Some((NOW - 60, "old topic".into())), ..Default::default() }).unwrap();
         assert!(!mid.contains("old topic"));
         for l in [&quick, &back, &failed, &task, &stopped] { assert!(short(l), "{l}"); }
+    }
+
+    #[test]
+    fn a_question_about_the_users_own_fact_and_whether_anything_says_it() {
+        assert_eq!(own_fact_asked("What's my favourite colour?").as_deref(), Some("favourite colour"));
+        // such a question is a no-tool turn (the note goes only on those)
+        assert!(crate::route::classify("What's my favourite colour?", &Default::default(), &[]).groups.tool_free());
+        assert_eq!(own_fact_asked("what is my name").as_deref(), Some("name"));
+        assert_eq!(own_fact_asked("Do you remember my meeting code?").as_deref(), Some("meeting code"));
+        assert_eq!(own_fact_asked("Local time now: x\n\nwhere’s my hometown?").as_deref(), Some("hometown"));
+        for m in ["how do I fix my code?", "my favourite colour is green", "what is the capital of France?", "what's my name and where do I live?", "what is your name?"] {
+            assert_eq!(own_fact_asked(m), None, "{m:?}");
+        }
+        // nothing at all (after /forget): unknown; the user said it, in either spelling: known
+        assert!(!subject_known("favourite colour", ""));
+        assert!(!subject_known("favourite colour", "- your name is Linh\nThe user lives in Hanoi"));
+        assert!(subject_known("favourite colour", "- your favorite color is green"));
+        assert!(subject_known("name", "The user's name is Linh"));
+        let n = unknown_fact_note("favourite colour");
+        assert!(n.starts_with(crate::route::ASK_PREFIX) && n.contains("favourite colour") && n.ends_with(')'), "{n}");
+        // views strip it like any ask line
+        assert_eq!(crate::context::request_body(&format!("what's my favourite colour?{n}")), "what's my favourite colour?");
     }
 
     #[test]

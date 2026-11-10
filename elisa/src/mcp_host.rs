@@ -613,6 +613,11 @@ impl Host {
 
     pub fn owns(&self, name: &str) -> bool { self.server_of(name).is_some() }
 
+    /// the tool belongs to one of Elisa's own servers (`builtin_web` …), whose tool descriptions Elisa wrote
+    pub fn builtin_owns(&self, name: &str) -> bool {
+        self.servers.iter().any(|s| s.cfg.builtin && s.tools.iter().any(|t| t.exposed == name))
+    }
+
     /// the server a tool belongs to (its approval key is `tools::mcp_key` of it)
     pub fn server_of(&self, name: &str) -> Option<&str> {
         self.servers.iter().find(|s| s.tools.iter().any(|t| t.exposed == name)).map(|s| s.cfg.name.as_str())

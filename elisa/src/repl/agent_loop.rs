@@ -397,7 +397,11 @@ impl<'f> Session<'f> {
             }
             // `sh`, `shell`, `terminal`: the model meant bash (a small model may call `sh` for "run ls")
             let content: Vec<Block> = content.into_iter().map(|b| match b {
-                Block::ToolUse { id, name, input } => { let (name, input) = self.shell_alias(name, input); Block::ToolUse { id, name, input } }
+                Block::ToolUse { id, name, input } => {
+                    let (name, input) = self.shell_alias(name, input);
+                    let input = self.set_by_meaning(&name, input);
+                    Block::ToolUse { id, name, input }
+                }
                 b => b,
             }).collect();
             let calls: Vec<(String, String, serde_json::Value)> = content.iter().filter_map(|b| match b {

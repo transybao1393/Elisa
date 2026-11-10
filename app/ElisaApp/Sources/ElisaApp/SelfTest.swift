@@ -188,12 +188,14 @@ final class SelfTest {
                 Step(name: "memory-colour", text: "What's my favourite colour?", expect: "(?i)green"),
                 Step(name: "forget-cmd", text: "/forget", cmd: true, infoExpect: "(?i)forg|delet|unpin|no notes"),
                 Step(name: "new-chat-2", text: "", action: "new-chat"),
-                Step(name: "after-forget", text: "What's my favourite colour?", expect: "\\w", notExpect: "(?i)\\b(you (like|love)|your favou?rite colou?r is) (green|blue|red|purple|yellow|pink|orange|black|white)\\b|^\\W*(green|blue|red|purple|yellow|pink|orange|black|white)\\W*$"),
+                // after /forget the honest answer is "I don't know" / "you haven't told me", never a new colour
+                Step(name: "after-forget", text: "What's my favourite colour?", expect: "(?i)\\b(don.?t|do not|can.?t|cannot) (know|remember|recall|have)\\b|\\b(haven.?t|have not|didn.?t|did not) (told|tell|said|say|shared|share|mentioned|mention)\\b|\\bnot sure\\b|\\bno idea\\b", notExpect: "(?i)\\b(you (like|love)|your favou?rite colou?r is) (green|blue|red|purple|yellow|pink|orange|black|white)\\b|^\\W*(green|blue|red|purple|yellow|pink|orange|black|white)\\W*$"),
                 Step(name: "server-down", text: "", action: "break-server"),
                 Step(name: "hey-server-down", text: "hey", expectError: true),
                 Step(name: "server-back", text: "", action: "fix-server"),
                 Step(name: "hey-server-back", text: opener(), expect: "\\w", tools: []),
-                Step(name: "news-search", text: "search the web for the latest news about Apple", expect: "\\w", tools: ["web"]),
+                // the headlines found, not where to read them ("…can be found at various sources like…")
+                Step(name: "news-search", text: "search the web for the latest news about Apple", expect: "\\w", tools: ["web"], notExpect: "(?i)can be found (at|on|in)|sources like"),
             ]
             _ = cwd
         }

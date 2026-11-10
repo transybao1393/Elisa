@@ -306,7 +306,7 @@ impl<'f> Session<'f> {
             self.history.push(Message::assistant_text(line));
             return TurnEnd::Done;
         }
-        if let Some(n) = self.doc_refused.clone().or_else(|| self.ask_note(&input)) { text.push_str(&n); }
+        if let Some(n) = self.doc_refused.clone().or_else(|| self.ask_note(&input)).or_else(|| self.unknown_fact_note(&input, &lines)) { text.push_str(&n); }
         if let Some(h) = lang_hint { text.push_str(h); }
         // a small-talk turn routed as chat runs no tool: a call there is asked again in words (`agent_loop`)
         // (a bare "ok" too, unless it answers an offer: the last answer ended with a question)
@@ -365,6 +365,30 @@ impl<'f> Session<'f> {
         let cmd = ["command", "cmd", "script", "code", "input", "commands"].iter().find_map(|k| input.get(*k).and_then(|v| v.as_str()).map(str::to_string))
             .or_else(|| input.as_str().map(str::to_string)).unwrap_or_default();
         ("bash".to_string(), json!({"command": cmd}))
+    }
+
+    /// A no-tool question about the user's own X ("what's my favourite colour?") that nothing this turn carries
+    /// answers: memory was searched (`recalled`: what it found) and the notes, pinned facts and conversation hold no
+    /// word of X. The note says so, so the answer is "you haven't told me" (`situation::unknown_fact_note`).
+    fn unknown_fact_note(&self, input: &str, recalled: &[String]) -> Option<String> {
+        if !self.route.groups.tool_free() { return None; }
+        let subject = crate::situation::own_fact_asked(input)?;
+        let mut known = recalled.join("\n");
+        for t in [self.first_notes(), self.state_block()].into_iter().flatten() { known += "\n"; known += &t; }
+        // (an earlier asking of the same thing tells nothing: only what was said)
+        for m in self.history.iter().map(texts).filter(|t| crate::situation::own_fact_asked(t).is_none()) { known += "\n"; known += &m; }
+        let known = known.replace(input.trim(), " ");
+        (!crate::situation::subject_known(&subject, &known)).then(|| crate::situation::unknown_fact_note(&subject))
+    }
+
+    /// A call to one of Elisa's own MCP tools with its "true for …" switches set from the user's words
+    /// (`mcp_args::set_by_meaning`): web_search's `recent` for an ask about news or the latest, whatever the model sent.
+    pub(super) fn set_by_meaning(&mut self, name: &str, input: serde_json::Value) -> serde_json::Value {
+        if !self.mcp.builtin_owns(name) { return input; }
+        let Some(def) = self.tools.iter().find(|t| t.name == name) else { return input };
+        let (out, set) = crate::mcp_args::set_by_meaning(&def.input_schema, &input, context::request_body(&self.input));
+        if !set.is_empty() { self.debug(&format!("[{name}: {} set by Elisa from the ask]", set.join(", "))); }
+        out
     }
 
     fn ask_note(&self, input: &str) -> Option<String> {

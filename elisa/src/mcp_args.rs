@@ -72,10 +72,56 @@ fn fits(s: &Value, v: &Value) -> bool {
     true
 }
 
+/// A boolean property's "when true" meaning, from its own description when that says it: the text after "true" and
+/// its linking word, up to the first "(" or ";" ("true for news, the latest or what's new (only pages from the past
+/// week); false for …" → "news, the latest or what's new").
+pub fn true_when(prop: &Value) -> Option<String> {
+    if prop.get("type").and_then(Value::as_str) != Some("boolean") { return None; }
+    let d = prop.get("description")?.as_str()?.trim();
+    let rest = d.get(..5).filter(|h| h.eq_ignore_ascii_case("true "))?;
+    let rest = d[rest.len()..].trim_start();
+    let rest = rest.split_once(char::is_whitespace)?.1;
+    let clause = rest.split(['(', ';']).next()?.trim().trim_end_matches([',', '.']);
+    (!clause.is_empty()).then(|| clause.to_string())
+}
+
+/// `args` with every boolean property set to true whose "when true" meaning (`true_when`) the user's message carries
+/// (`context::shares_meaning`: a shared content word, or close in meaning with the local embedding model), and the
+/// names of those it changed. Elisa decides it from the user's words, so the outcome does not depend on whether
+/// the model set it ("latest news about Apple" searched without web_search's `recent` found only news sites'
+/// front pages). A property the message does not carry keeps the model's value.
+pub fn set_by_meaning(schema: &Value, args: &Value, msg: &str) -> (Value, Vec<String>) {
+    let (Some(props), Some(obj)) = (schema.get("properties").and_then(Value::as_object), args.as_object()) else { return (args.clone(), Vec::new()) };
+    let mut out = obj.clone();
+    let mut set = Vec::new();
+    for (k, p) in props {
+        let Some(when) = true_when(p) else { continue };
+        if out.get(k) == Some(&Value::Bool(true)) || !crate::context::shares_meaning(msg, &when) { continue; }
+        out.insert(k.clone(), Value::Bool(true));
+        set.push(k.clone());
+    }
+    (Value::Object(out), set)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_boolean_is_set_from_the_meaning_its_description_gives() {
+        let schema = crate::mcp_web::tools()[0]["inputSchema"].clone();
+        assert_eq!(true_when(&schema["properties"]["recent"]).as_deref(), Some("news, the latest or what's new"));
+        assert_eq!(true_when(&schema["properties"]["query"]), None);
+        assert_eq!(true_when(&json!({"type": "boolean", "description": "whether to include drafts"})), None);
+        // the model left it false on a news ask: Elisa sets it; a lasting fact keeps the model's value
+        let (a, set) = set_by_meaning(&schema, &json!({"query": "Apple", "recent": false}), "search the web for the latest news about Apple");
+        assert_eq!((a["recent"].clone(), set), (json!(true), vec!["recent".to_string()]));
+        let (a, set) = set_by_meaning(&schema, &json!({"query": "Iceland population"}), "search the web: what is the population of Iceland?");
+        assert!(a.get("recent").is_none() && set.is_empty(), "{a}");
+        let (a, _) = set_by_meaning(&schema, &json!({"query": "x", "recent": true}), "who wrote Hamlet?");
+        assert_eq!(a["recent"], json!(true));
+    }
 
     /// the real `sequentialthinking` schema (@modelcontextprotocol/server-sequential-thinking, descriptions left out)
     fn seq() -> Value {
