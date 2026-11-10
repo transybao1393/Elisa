@@ -117,8 +117,11 @@ jobs:
         with:
           tool: cargo-deny@0.20.2
 
+      # run from elisa/: cargo-deny reads ./deny.toml there by default (0.20 takes no --config after `check`)
       - name: Licences (elisa)
-        run: cargo deny --manifest-path elisa/Cargo.toml --locked check --config elisa/deny.toml licenses
+        working-directory: elisa
+        run: cargo deny --manifest-path Cargo.toml --locked check licenses
 
       - name: Licences (mem)
-        run: cargo deny --manifest-path elisa/mem/Cargo.toml --locked check --config elisa/deny.toml licenses
+        working-directory: elisa
+        run: cargo deny --manifest-path mem/Cargo.toml --locked check licenses

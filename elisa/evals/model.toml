@@ -136,15 +136,15 @@ path = "greet.py"
 text = "def greet(name):"
 
 [[case]]
-id = "model.fix_bug"
-description = "a small bug fix: average() divides by the wrong count"
+id = "model.fix_average"
+description = "a small code fix: average() divides by the wrong count"
 approve = "yes"
 timeout_s = 420
 [[case.files]]
 path = "stats.py"
 content = "def average(xs):\n    return sum(xs) / (len(xs) + 1)\n"
 [[case.turns]]
-send = "average() in stats.py returns the wrong value: average([2, 4]) should be 3. Fix the bug in stats.py."
+send = "average() in stats.py returns the wrong value: average([2, 4]) should be 3. Fix it in stats.py."
 [[case.checks]]
 type = "file_contains"
 path = "stats.py"

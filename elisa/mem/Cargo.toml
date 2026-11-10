@@ -19,7 +19,7 @@ libc = "0.2"
 opt-level = 3
 
 # CI runs `cargo clippy --all-targets --locked -- -D warnings`. Style lints allowed, same policy as engine/Cargo.toml
-# (prototype code; no finding is a bug): `x % n != 0` checks, map_or(false, ..), long tuple types, many-arg
+# (prototype code; none of these findings is a defect): `x % n != 0` checks, map_or(false, ..), long tuple types, many-arg
 # builders, and `add`/`next`-named methods that are not the std traits.
 [lints.clippy]
 manual_is_multiple_of = "allow"

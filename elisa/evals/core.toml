@@ -4,7 +4,7 @@ kind = "fake"
 
 [[case]]
 id = "core.text_reply"
-description = "a plain reply streams; the state card is never shown as text nor kept (plain chat carries no card, BUGS #22); no tools run"
+description = "a plain reply streams; the state card is never shown as text nor kept (plain chat carries no card); no tools run"
 [[case.script]]
 text = "Paris is the capital of France.\n<state>\ngoal: answer\ndone: answered\nnext: none\n</state>"
 [[case.turns]]
@@ -24,7 +24,7 @@ name = "*"
 
 [[case]]
 id = "core.loop_guard_repeat"
-description = "the same failing command a 3rd time does not run; a 2nd blocked step stops the tool loop and the model answers once with no tools (QA chat #1, retest #3, BUGS #54)"
+description = "the same failing command a 3rd time does not run; a 2nd blocked step stops the tool loop and the model answers once with no tools"
 approve = "yes"
 [[case.script]]
 tool = { name = "bash", input = { command = "echo boom; exit 3" } }
