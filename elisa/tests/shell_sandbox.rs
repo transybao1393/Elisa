@@ -350,8 +350,10 @@ mod mac {
         let connect = format!("/usr/bin/python3 -c \"import socket; s=socket.socket(socket.AF_UNIX); s.connect('{}'); print('connected')\"", sock.display());
         let base = Policy { write_dirs: vec![], write_files: vec![], deny: vec![], read_ok: vec![], deny_sockets: vec![], ..Policy::new(Mode::Write, &proj.0) };
         let (code, o) = sh(&base, &connect);
-        // the last line: macOS's python3 shim may first warn that the sandbox kept it from writing its xcrun cache
-        assert_eq!((code, o.trim().lines().last().unwrap_or("")), (0, "connected"), "without the deny entry: {o}");
+        // any line: macOS's python3 shim may warn that the sandbox kept it from writing its xcrun cache, and that
+        // stderr line can land before or after "connected"
+        assert_eq!(code, 0, "without the deny entry: {o}");
+        assert!(o.lines().any(|l| l.trim() == "connected"), "without the deny entry: {o}");
         for mode in [Mode::Write, Mode::Strict] {
             for entry in [sock.clone(), dir.0.clone()] {
                 let p = Policy { mode, socket_dirs: vec![proj.0.clone(), dir.0.clone()], deny_sockets: vec![entry.clone()], ..base.clone() };
