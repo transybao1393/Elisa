@@ -5,10 +5,8 @@
 # Actions are pinned to full commit SHAs (version in the comment); update them deliberately, not by tag drift.
 name: CI
 
+# manual only (Actions > CI > Run workflow): macOS runners are costly, so pushes and pull requests start nothing
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
