@@ -259,7 +259,8 @@ const ELISA_LABEL: &str = "Elisa: ";
 pub fn summary_notes(raw: &str) -> String {
     let labels = [USER_LABEL, ELISA_LABEL].map(|l| l.trim_end().to_lowercase());
     let kept: Vec<&str> = raw.lines().filter(|l| {
-        let body = l.trim().trim_start_matches(['-', '*', '`', '>', ' ']).to_lowercase();
+        // (after any bullet a model writes: "-", "*", "–", "•", a quote mark)
+        let body = l.trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
         let body = body.replace("**", "");
         !labels.iter().any(|lab| body.starts_with(lab.as_str()))
     }).collect();

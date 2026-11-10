@@ -47,11 +47,13 @@ impl<'f> Session<'f> {
         let next = std::mem::take(&mut self.pics_next);
         if !new.is_empty() {
             (self.last_pics, self.pics_next) = (new.clone(), true);
-            self.last_pic_seen = context::request_body(input).trim().to_string();
+            self.last_pic_ask = context::request_body(input).trim().to_string();
+            self.last_pic_seen = self.last_pic_ask.clone();
             return Some((new, true));
         }
         if !self.vision || self.last_pics.is_empty() { return None; }
-        if self.about_last_pictures(input, next) {
+        // a turn that brings its own documents asks about them ("what is this paper about?" with a PDF), not the picture
+        if self.docs.is_empty() && self.about_last_pictures(input, next) {
             self.pics_next = true;
             return Some((self.last_pics.clone(), false));
         }
@@ -61,7 +63,7 @@ impl<'f> Session<'f> {
 
     /// the pictures and what was learned about them are forgotten (/clear, /reset: a fresh start)
     pub(super) fn forget_pictures(&mut self) {
-        (self.last_pics, self.pics_next, self.last_pic_seen) = (Vec::new(), false, String::new());
+        (self.last_pics, self.pics_next, self.last_pic_seen, self.last_pic_ask) = (Vec::new(), false, String::new(), String::new());
     }
 
     /// Whether this turn is about the last pictures (resent with every next turn, the picture's answer would go
@@ -70,10 +72,11 @@ impl<'f> Session<'f> {
     /// about …" — is about it, a greeting or a closing is not), else `context::about_picture` on the message and
     /// what the picture turns learned (`last_pic_seen`). Later, when other talk came between, a follow-up of the last
     /// turn is about that talk: only a message that names a picture or is close in meaning to what was learned
-    /// about it (`context::about_picture_later`).
+    /// about it (`context::about_picture_later`), the pictures' answers alone: the ask that brought them ("what is
+    /// this?") is close in meaning to any other "what is this …?".
     fn about_last_pictures(&self, input: &str, next: bool) -> bool {
         let seen = &self.last_pic_seen;
-        if !next { return context::about_picture_later(input, seen); }
+        if !next { return context::about_picture_later(input, seen.strip_prefix(self.last_pic_ask.as_str()).unwrap_or(seen)); }
         if matches!(self.router_kind(), Some(Some(_))) { return true; }
         if self.router_says("greeting") == Some(true) || self.router_says("closing") == Some(true) { return false; }
         context::about_picture(input, seen)

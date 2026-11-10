@@ -115,9 +115,10 @@ impl Store {
     }
 
     /// The newest earlier session with real content (`real_content`), up to 20 back; a file over 2 MB counts as
-    /// real without being read. A terminal `--continue` and the explicit "continue the last one" use it, so a dead
-    /// session ("continue the last one" → the generic intro) never shadows the real one under it. `/resume` lists
-    /// everything.
+    /// real without being read, and so does one with its own notes (a fold after its last turn leaves only the
+    /// summary's line in its history; the conversation is in the notes). A terminal `--continue` and the explicit
+    /// "continue the last one" use it, so a dead session ("continue the last one" → the generic intro) never shadows
+    /// the real one under it. `/resume` lists everything.
     pub fn newest_real_session(&self) -> Option<(u64, PathBuf)> {
         let own = run_id();
         let mut v: Vec<(u64, PathBuf)> = fs::read_dir(self.sessions_dir()).ok()?.filter_map(|e| {
@@ -127,9 +128,9 @@ impl Store {
             (ts != own).then_some((ts, p))
         }).collect();
         v.sort_by_key(|a| std::cmp::Reverse(a.0));
-        v.into_iter().take(20).find(|(_, p)| {
+        v.into_iter().take(20).find(|(ts, p)| {
             if fs::metadata(p).is_ok_and(|m| m.len() > 2_000_000) { return true; }
-            self.load_session(p).is_some_and(|h| real_content(&h))
+            self.load_session(p).is_some_and(|h| !h.is_empty() && (real_content(&h) || self.session_notes(*ts).is_some()))
         })
     }
 

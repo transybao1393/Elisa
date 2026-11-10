@@ -300,6 +300,14 @@ fn continue_skips_dead_sessions_and_saves_without_turn_lines() {
     // an empty file is no conversation
     std::fs::write(sd.join("4000.json"), "[]").unwrap();
     assert_eq!(st.newest_session().map(|(ts, _)| ts), Some(3000));
+    // a session folded after its last turn: only the summary's line is left, its conversation is in its own notes
+    let folded = vec![Message::user_text("## Notes\nThe user's name is Linh.\n\n## Request\n[earlier turns are summarised in the notes above]")];
+    std::fs::write(sd.join("5000.json"), serde_json::to_string(&folded).unwrap()).unwrap();
+    assert_eq!(st.newest_real_session().map(|(ts, _)| ts), Some(1000), "no notes: not a conversation to continue");
+    std::fs::create_dir_all(st.dir.join("notes")).unwrap();
+    std::fs::write(st.dir.join("notes/5000.md"), "The user's name is Linh.").unwrap();
+    assert_eq!(st.newest_real_session().map(|(ts, _)| ts), Some(5000));
+    std::fs::remove_file(sd.join("5000.json")).unwrap();
     // the intro and greetings are not answers to follow up on
     assert!(context::is_intro("I'm Elisa, a personal assistant on your Mac. I can chat…") && context::is_intro("Hello! How can I help you today?"));
     assert!(!context::is_intro("Page 1 covers the budget. How can I help further with page 2, the timeline and the risks section that follows it?"));
@@ -373,6 +381,11 @@ fn user_words_kept_apart_from_elisa_context() {
     assert_eq!(context::request_body("[memory]\n- old style\n[/memory]\n\nsao rồi?"), "sao rồi?");
     assert_eq!(context::request_body("Working directory: /p\nOS: macos\nDate: 2026-11-01\n\n## Request\n[memory]\n- m\n[/memory]\n\nhi"), "hi");
     assert_eq!(context::request_body("plain text"), "plain text");
+    // the language line before the ask's line (a turn now), or after it (sessions saved earlier)
+    let ask = "\n\n(The user asked for a web search: call web_search now, then answer from its results, even if you know the answer.)";
+    let en = elisa::reply_lang::HINT_EN;
+    assert_eq!(context::request_body(&format!("search the web: capital of Australia?{en}{ask}")), "search the web: capital of Australia?");
+    assert_eq!(context::request_body(&format!("search the web: capital of Australia?{ask}{en}")), "search the web: capital of Australia?");
     // a short follow-up's hint and a greeting's situation line (both right before the words) are not the user's words
     assert_eq!(context::request_body("(Follow-up: same question as before, now about Osaka.)\n\nand in Osaka?"), "and in Osaka?");
     assert_eq!(context::request_body("Local time now: x\n\n(Follow-up: explain the reason behind your last answer. Don't repeat it.)\n\ntại sao?\n\n(Trả lời bằng tiếng Việt.)"), "tại sao?");
@@ -1080,7 +1093,7 @@ fn user_facts_are_the_users_in_the_third_person() {
 /// user's things another value than Elisa's own fact line (gemma3:1b wrote "User's name: Elisa") goes.
 #[test]
 fn summary_notes_keep_the_user_apart_from_elisa() {
-    let raw = "## Facts to remember\n- Elisa: “What’s your name and your meeting code?”\n- User: “OK.”\n- **Elisa:** Assistant, Goal: keep a record\n- Linh’s name: Linh\n- Meeting code: ORCHID-42";
+    let raw = "## Facts to remember\n- Elisa: “What’s your name and your meeting code?”\n- User: “OK.”\n- **Elisa:** Assistant, Goal: keep a record\n– Elisa:  Elisa\n• User: hi\n- Linh’s name: Linh\n- Meeting code: ORCHID-42";
     assert_eq!(context::summary_notes(raw), "## Facts to remember\n- Linh’s name: Linh\n- Meeting code: ORCHID-42");
     // a heading copied from the instructions goes with the names under it (the user's next to Elisa's)
     assert_eq!(context::summary_notes(&format!("{raw}\n\n## Last line: `Also known as:`\n- Linh\n- Robert\n- Elisa\n\n## Done\n- table shown")),
@@ -1234,6 +1247,8 @@ fn a_later_message_is_about_the_picture_by_its_own_words() {
     assert!(!context::about_picture_later("why is that funny?", seen), "a follow-up of the last answer");
     assert!(!context::about_picture_later("tell me more about it", seen));
     assert!(!context::about_picture_later("", seen));
+    // one shared word among many is another subject
+    assert!(!context::about_picture_later("Create a short marketing plan for a small coffee shop in Hanoi.", seen));
     // right after the picture turn the pronoun still counts
     assert!(context::about_picture("tell me more about it", seen));
     // a named file is what "it" points at, right after the picture turn and later

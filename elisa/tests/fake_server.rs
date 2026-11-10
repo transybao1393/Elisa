@@ -3087,6 +3087,26 @@ fn jsonl_new_session_with_memory_gets_only_user_pinned_facts() {
     assert!(body.contains("USER-PIN"), "a fact the user pinned carries: {body}");
 }
 
+/// "continue our last conversation" with no earlier conversation is answered by Elisa alone; that first message still
+/// carries the pinned facts, so the next turn's request has them.
+#[test]
+fn pinned_facts_carry_after_a_continue_ask_that_found_nothing() {
+    let dir = tmpdir("jsonl-pin-no-earlier");
+    let f = Fake::start(vec![text_reply("Green.")]);
+    let mut s = Serve::start_cfg(&f.url(), &dir, "memory = true\n");
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "/pin my favourite colour is USER-PIN-GREEN"}));
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "continue our last conversation"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "What's my favourite colour?"}));
+    s.until("turn_done");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 1, "the continue ask needs no model call");
+    assert!(reqs[0].to_string().contains("USER-PIN-GREEN"), "the pinned fact reached the request: {}", reqs[0]);
+}
+
 /// Lazy MCP start, end to end: a user server whose tool list is cached starts no process for a plain chat turn; the
 /// first call to one of its tools starts it and a second call reuses it (its start script logs each start).
 #[test]
@@ -3840,6 +3860,72 @@ fn a_later_question_about_the_picture_looks_at_it_again() {
     assert!(body(&reqs[3]).contains("what colour is the star next to the cat?"), "the later question is asked of the picture");
     assert!(body(&reqs[4]).contains("[picture: The star is yellow.]"), "its turn carries the picture's answer");
     assert!(!body(&reqs[5]).contains("[picture:"), "nothing of the picture after /reset");
+}
+
+/// A reply that repeats a long paste the user sent in an earlier turn, up to the output limit, is not continued: it is
+/// asked once more with the whole conversation and a note, and that answer is the reply.
+#[test]
+fn a_copy_of_the_users_earlier_paste_is_asked_again_not_continued() {
+    let dir = tmpdir("jsonl-copy-paste");
+    let fill = "The quarterly report lists shipping volumes, warehouse counts, staff rotas and supplier names for every region in detail. ".repeat(12);
+    let f = Fake::start(vec![
+        text_reply("Nice to meet you, Linh."),
+        text_reply("OK."),
+        Sse::new(100, 0).text(&[fill.trim()]).end("max_tokens", 2048),
+        text_reply("Your name is Linh and you live in Hanoi."),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 16384\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    let shown = |evs: &[Value]| -> String {
+        let mut t = String::new();
+        for e in evs { if e["type"] == "delta" { t.push_str(e["text"].as_str().unwrap()); } else if e["type"] == "reply_retracted" { t.clear(); } }
+        t
+    };
+    s.cmd(json!({"type": "send", "text": "My name is Linh and I live in Hanoi."}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": format!("Keep this in mind, then just reply OK: {fill}")}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "What's my name and where do I live?"}));
+    let evs = s.until("turn_done");
+    assert_eq!(shown(&evs), "Your name is Linh and you live in Hanoi.");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 4, "no continuation of the copy: {}", reqs.len());
+    let last = reqs[3]["messages"].to_string();
+    assert!(last.contains("My name is Linh") && !last.contains("Continue exactly where you stopped"), "the retry has the conversation: {last}");
+}
+
+/// A later turn that brings its own document asks about that document, and "what is this …?" is no ask about the
+/// picture for sharing the words the picture came with: neither looks at the picture again.
+#[test]
+fn a_later_document_question_does_not_look_at_the_picture() {
+    let dir = tmpdir("jsonl-picture-then-doc");
+    let f = Fake::start(vec![
+        text_reply("A black cat with light blue ears."),
+        text_reply("It's a black cat."),
+        text_reply("Why did the chicken cross the road? To get to the other side."),
+        text_reply("It is about coffee prices."),
+        text_reply("A paper on forecasting."),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    let doc = dir.join("prices.txt");
+    std::fs::write(&doc, "Black coffee prices in Hanoi rose 5% this month.\n").unwrap();
+    let pic = json!([{"media_type": "image/png", "data": "iVBORw0KGgo="}]);
+    s.cmd(json!({"type": "send", "text": "what is this?", "images": pic}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "Tell me a joke."}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "what does this file say about black coffee?", "documents": [{"path": doc.to_str().unwrap()}]}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "what is this paper about?"}));
+    s.until("turn_done");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 5, "look, turn, joke turn, document turn, paper turn");
+    let has_image = |r: &Value| r["messages"].to_string().contains("\"image\"");
+    assert_eq!((0..5).filter(|&i| has_image(&reqs[i])).collect::<Vec<_>>(), vec![0]);
+    assert!(!reqs[3]["messages"].to_string().contains("[picture:"), "the document turn carries no picture text");
 }
 
 /// Two pictures in one message: each is looked at alone and described (a small vision model may read only one

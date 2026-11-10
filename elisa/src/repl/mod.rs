@@ -98,6 +98,8 @@ struct Session<'f> {
     /// what the last picture turn learned about its pictures (the picture's answer and the ask), for telling whether
     /// the next turn is about them (`context::about_picture`)
     last_pic_seen: String,
+    /// the ask the last pictures came with (the start of `last_pic_seen`)
+    last_pic_ask: String,
     /// this turn's picture text answer, new or carried (the stand-in for a reply that was only the picture text)
     turn_pic: Option<String>,
     /// a session was just resumed: its first turn carries the user's facts in the third person (`resumed_facts`)
@@ -362,7 +364,7 @@ impl<'f> Session<'f> {
         let plugin_stamp = home.as_deref().and_then(plugins::state_stamp);
         let router = crate::router::Router::new(cfg.router.clone());
         let mut s = Session {
-            fe, cfg, client, store, tctx, cwd, max_ctx, vision: false, attach: Vec::new(), last_pics: Vec::new(), pics_next: false, last_pic_seen: String::new(), turn_pic: None, resumed_facts: false, recalled_values: Vec::new(), docs: Vec::new(), doc_req: None, doc_req_tokens: 0, doc_paths: Vec::new(), kept_docs: Vec::new(), doc_retry: None, topic_cards: Vec::new(), topic: Default::default(), doc_new: None, doc_refused: None, card_req: None, mcp, tools: Vec::new(), tools_tokens: 0, project, notes, notes_bg: true,
+            fe, cfg, client, store, tctx, cwd, max_ctx, vision: false, attach: Vec::new(), last_pics: Vec::new(), pics_next: false, last_pic_seen: String::new(), last_pic_ask: String::new(), turn_pic: None, resumed_facts: false, recalled_values: Vec::new(), docs: Vec::new(), doc_req: None, doc_req_tokens: 0, doc_paths: Vec::new(), kept_docs: Vec::new(), doc_retry: None, topic_cards: Vec::new(), topic: Default::default(), doc_new: None, doc_refused: None, card_req: None, mcp, tools: Vec::new(), tools_tokens: 0, project, notes, notes_bg: true,
             system: String::new(), system_tokens: 0, history: Vec::new(), real: None, calib: None, input: String::new(), interactive, declined_images: Vec::new(), yolo: yes, always,
             mem: None, turn_no: 0, folded: 0, fold_ids: Vec::new(), fold_retry_at: 0, digest_only: false, in_turn: false, folded_this_turn: false, tool_lines: Vec::new(), unsent: false, done_sent: false, acts: crate::activity::Turn::new(),
             recall_slow: false, save_slow: false, last_turn_at: None, last_failed: false, small_talk_turn: false, retry_note: None, index_rate: None, unindexed: 0, watch,

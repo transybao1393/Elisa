@@ -125,6 +125,8 @@ impl<'f> Session<'f> {
         let mut words_retried = words_retry;
         // a reply in another language than the user's message: asked once more with a note naming it
         let mut lang_retried = false;
+        // a reply that repeated the user's earlier words: asked once more with the conversation (`copies_said`)
+        let mut copy_retried = false;
         let ask = context::request_body(&self.input).trim().to_string();
         // one step past the limit: only for the no-tools final answer after the last tool step
         let max_steps = self.cfg.max_steps.max(1);
@@ -267,9 +269,10 @@ impl<'f> Session<'f> {
                 let mut stop_reason = stop_reason;
                 let mut continued = false;
                 if let (Some(sent), Some(st), None) = (sent, pending_done.take(), &cut) {
-                    // (garbled text is not continued: more of it would only take longer, `reply_check::garbled`)
+                    // (garbled text is not continued: more of it would only take longer, `reply_check::garbled`; nor
+                    // is a reply that cannot stand, such as a copy of the user's earlier words, `ReplyGuard::broken`)
                     let so_far = context::split_state(&raw).0;
-                    if !so_far.trim().is_empty() && !crate::reply_check::garbled(&so_far, &ask) {
+                    if !so_far.trim().is_empty() && !crate::reply_check::garbled(&so_far, &ask) && reply_guard.broken(&so_far).is_none() {
                         let before = (raw.len(), stop_reason.clone());
                         (raw, stop_reason) = self.continue_reply(sent, raw, max_tokens, in_words, st);
                         // an unfinished sentence that got nothing more keeps its own end
@@ -325,6 +328,17 @@ impl<'f> Session<'f> {
                     self.fe.reply_retracted();
                     empty_retry = Some(crate::reply_check::lang_note(&ask));
                     self.debug("[the reply was not in the language of the user's message; asking once more with a note]");
+                    continue;
+                }
+                // a reply that repeats the user's words of an earlier turn (`ReplyGuard::copies_said`): asked once more
+                // with the whole conversation and a note to answer this message, before the words alone (which lose
+                // what the conversation told, such as the user's name)
+                if wrote && cut.is_none() && stop_reason != "cancelled" && !copy_retried && self.tool_lines.is_empty() && reply_guard.copies_said(&vis) {
+                    copy_retried = true;
+                    stashed_card = self.new_card.take().or(stashed_card);
+                    self.fe.reply_retracted();
+                    empty_retry = Some(REASONED_OUT_NUDGE.into());
+                    self.debug("[the reply repeated the user's earlier words; asking once more with a note]");
                     continue;
                 }
                 // a reply that copies an earlier one, has no words or repeats Elisa's headings (`context::ReplyGuard`),

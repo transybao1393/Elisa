@@ -153,12 +153,16 @@ fn pronoun_before_seen_word(msg: &str, seen: &str) -> bool {
 }
 
 /// Whether `msg`, a turn after other talk came since the picture was last looked at, is about that picture: it names
-/// a picture (`picture_words`, no pronoun: "it" there points at the other talk), or shares a content word with or is
-/// close in meaning to what the picture turn learned (`seen`; `shares_meaning`). A short follow-up of the last answer
-/// is about that answer, not the picture.
+/// a picture (`picture_words`, no pronoun: "it" there points at the other talk), or at least half of its content
+/// words are in what the picture turns learned (`seen`), or it is close to that in meaning (`meaning_similarity`). One
+/// shared word alone is not enough there ("a marketing plan for a small coffee shop" after "two small eyes"). A
+/// short follow-up of the last answer is about that answer, not the picture.
 pub fn about_picture_later(msg: &str, seen: &str) -> bool {
     let msg = request_body(msg).trim();
-    !msg.is_empty() && (picture_words(msg, false) || shares_meaning(msg, seen))
+    if msg.is_empty() || seen.trim().is_empty() { return !msg.is_empty() && picture_words(msg, false); }
+    let words = crate::topics::words(msg);
+    let shared = words.intersection(&crate::topics::words(seen)).count();
+    picture_words(msg, false) || (shared > 0 && 2 * shared >= words.len()) || meaning_similarity(msg, seen).is_some_and(|s| s >= PICTURE_MEANING_MIN)
 }
 
 /// Whether two texts share a content word (`topics::words`) or are close in meaning (`meaning_similarity` at
@@ -190,7 +194,7 @@ fn word_grams(t: &str) -> std::collections::HashSet<String> {
 }
 
 /// What a reply to one request must not be (small models in a small window repeat themselves): a copy of an
-/// earlier reply to another ask, a reply with no word while the ask has words and no number (such as a box
+/// earlier reply to another ask or of the user's own words of an earlier turn, a reply with no word while the ask has words and no number (such as a box
 /// "[0.0, 0.17, 0.99, 0.29]" from a vision model's detection mode), or the wording of a heading or tag Elisa put
 /// in the request ("[Elisa, not the user]" from "…recalled by Elisa…, not written by the
 /// user…"). Built from the request that was sent, so it holds for any heading Elisa adds; no reply wording is listed.
@@ -206,6 +210,8 @@ pub struct ReplyGuard {
     grams: std::collections::HashSet<String>,
     /// the numbers in this turn's own message, picture text included ("2 pictures, each looked at on its own")
     numbers: std::collections::HashSet<String>,
+    /// four-word runs of what the user typed in earlier turns (`copies_said`)
+    said: std::collections::HashSet<String>,
 }
 
 impl ReplyGuard {
@@ -220,6 +226,9 @@ impl ReplyGuard {
             if m.role == Role::User {
                 for l in blocks().flat_map(str::lines).map(str::trim).filter(|l| l.starts_with("## ") || l.starts_with('[')) { g.grams.extend(word_grams(l)); }
                 last_ask = norm_reply(request_body(&blocks().collect::<Vec<_>>().join("\n")));
+                // (the typed words alone: an attached document's text that follows them may be quoted for real)
+                let typed = norm_reply(blocks().next().map(request_body).unwrap_or_default());
+                if !typed.is_empty() && typed != a && !typed.ends_with(&format!(" {a}")) { g.said.extend(word_grams(&typed)); }
                 continue;
             }
             // (a first message ends with the user's words after Elisa's blocks)
@@ -236,6 +245,16 @@ impl ReplyGuard {
         g
     }
 
+    /// Whether `reply` repeats what the user typed in an earlier turn instead of answering this one: at least
+    /// `COPY_PREFIX_CHARS` long and nine in ten of its four-word runs from those words (a small model may repeat a
+    /// long paste from the history, up to the output limit, when asked something else).
+    pub fn copies_said(&self, reply: &str) -> bool {
+        let r = norm_reply(reply);
+        if r.chars().count() < COPY_PREFIX_CHARS || self.said.is_empty() { return false; }
+        let g = word_grams(&r);
+        !g.is_empty() && g.iter().filter(|x| self.said.contains(*x)).count() * 10 >= g.len() * 9
+    }
+
     /// Why `reply` cannot stand ("copy", "no words", "heading"), or None.
     pub fn broken(&self, reply: &str) -> Option<&'static str> {
         let r = norm_reply(reply);
@@ -243,6 +262,7 @@ impl ReplyGuard {
         if r.chars().count() >= COPY_MIN_CHARS && self.sources.iter().any(|e| *e == r || r.chars().zip(e.chars()).take_while(|(a, b)| a == b).count() >= COPY_PREFIX_CHARS) {
             return Some("copy");
         }
+        if self.copies_said(reply) { return Some("copy"); }
         // a word: two letters in a row ("Â©" from moondream:1.8b has none; "Paris", "OK", "4 giờ" do)
         let has_word = |t: &str| t.chars().collect::<Vec<_>>().windows(2).any(|w| w[0].is_alphabetic() && w[1].is_alphabetic());
         let a = &self.ask;
@@ -573,7 +593,7 @@ pub fn request_body(text: &str) -> &str {
     };
     // a small-talk turn's situation line, or a short follow-up's hint, sits right before the user's words
     // (`situation.rs`, `followup.rs`)
-    crate::followup::strip(crate::situation::strip(strip_memory(crate::route::strip_ask(crate::reply_lang::strip_hint(body)))))
+    crate::followup::strip(crate::situation::strip(strip_memory(crate::reply_lang::strip_hint(crate::route::strip_ask(crate::reply_lang::strip_hint(body))))))
 }
 
 /// turns of a resumed conversation shown again (`earlier_turns`)

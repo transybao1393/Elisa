@@ -306,8 +306,10 @@ impl<'f> Session<'f> {
             self.history.push(Message::assistant_text(line));
             return TurnEnd::Done;
         }
-        if let Some(n) = self.doc_refused.clone().or_else(|| self.ask_note(&input)).or_else(|| self.unknown_fact_note(&input, &lines)) { text.push_str(&n); }
+        // the language line before the ask's own line: what the turn must do is the last thing a small model reads
+        // (after "(Reply in English.)" a model answered "search the web: …" from what it knew, with no search)
         if let Some(h) = lang_hint { text.push_str(h); }
+        if let Some(n) = self.doc_refused.clone().or_else(|| self.ask_note(&input)).or_else(|| self.unknown_fact_note(&input, &lines)) { text.push_str(&n); }
         // a small-talk turn routed as chat runs no tool: a call there is asked again in words (`agent_loop`)
         // (a bare "ok" too, unless it answers an offer: the last answer ended with a question)
         let offer = self.history.iter().rev().find(|m| m.role == Role::Assistant).is_some_and(|m| texts(m).trim_end().ends_with('?'));
@@ -442,7 +444,12 @@ impl<'f> Session<'f> {
                 _ => "There's no earlier conversation in this folder yet.",
             };
             if self.interactive { self.fe.text_delta(line); }
-            self.history.push(Message::user_text(input.to_string()));
+            // kept as the first message it is (`turn_inner`): the pinned facts and notes go with it, or no later
+            // request of this session would carry them
+            let (notes, state) = (self.first_notes(), self.state_block());
+            let first = if self.tiny() { context::first_message_bare(notes.as_deref(), state.as_deref(), &[], input) }
+                else { context::first_message_full(&self.cwd, notes.as_deref(), state.as_deref(), &[], input) };
+            self.history.push(Message::user_text(first));
             self.history.push(Message::assistant_text(line));
             return Err(TurnEnd::Done);
         };
