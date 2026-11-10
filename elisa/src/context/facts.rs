@@ -88,9 +88,10 @@ pub fn user_fact_values(text: &str) -> Vec<String> {
 }
 
 /// The user's fact values (`user_fact_values`) a reply says as Elisa's own ("I'm Elisa, and I live in
-/// Hanoi.", "I'm from Hanoi too"): a clause of the reply with a first-person word and,
-/// after it, a value, and no "you" / "your" (that clause speaks to the user: "I'm glad you're from Hanoi"). Only
-/// the session's own fact values are looked for, never fixed words of a reply. Empty when none is claimed.
+/// Hanoi.", "I'm from Hanoi too", "I told you my name is Linh"): a value in a reply clause after a first-person word,
+/// with no "you" / "your" between the nearest such word and the value (that part speaks to the user: "I'm glad
+/// you're from Hanoi", "I know you live in Hanoi"). Only the session's own fact values are looked for, never fixed
+/// words of a reply. Empty when none is claimed.
 // a few first- and second-person words, English and Vietnamese, kept short on purpose (a small fixed list, not a
 // long one); never grow it per failure case
 pub fn claimed_user_facts(reply: &str, values: &[String]) -> Vec<String> {
@@ -102,16 +103,18 @@ pub fn claimed_user_facts(reply: &str, values: &[String]) -> Vec<String> {
     let text = text.replace(['’', '‘'], "'");
     let mut out: Vec<String> = Vec::new();
     for clause in text.split(['.', ',', ';', '!', '?', '\n', ':', '—']) {
-        if you.is_match(clause) { continue; }
-        let Some(at) = first.find(clause).map(|m| m.end()) else { continue };
-        let after = clause[at..].to_lowercase();
+        let low = clause.to_lowercase();
         for v in values {
             let lv = v.to_lowercase();
-            let hit = after.match_indices(&lv).any(|(i, _)| {
+            if lv.is_empty() || out.contains(v) { continue; }
+            let hit = low.match_indices(&lv).any(|(i, _)| {
                 let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
-                edge(after[..i].chars().next_back()) && edge(after[i + lv.len()..].chars().next())
+                if !(edge(low[..i].chars().next_back()) && edge(low[i + lv.len()..].chars().next())) { return false; }
+                // the nearest first-person word before the value, and no "you" between it and the value
+                let before = &low[..i];
+                first.find_iter(before).last().is_some_and(|m| !you.is_match(&before[m.end()..]))
             });
-            if !lv.is_empty() && hit && !out.contains(v) { out.push(v.clone()); }
+            if hit { out.push(v.clone()); }
         }
     }
     out

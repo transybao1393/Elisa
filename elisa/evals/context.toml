@@ -521,3 +521,32 @@ turn = 9
 type = "request_not_contains"
 text = "TA-CARD"
 turn = 9
+
+[[case]]
+id = "context.self_intro_and_claimed_facts"
+description = "a self-introduction (its \"meeting code\" no code) is a chat turn with no tools offered; a reply saying the user's name as Elisa's in a clause that also says \"you\" (\"I told you my name is Linh\") is asked again"
+[[case.script]]
+text = "Nice to meet you, Linh!"
+[[case.script]]
+text = "I told you my name is Linh, and you live in Hanoi."
+[[case.script]]
+text = "You told me your name is Linh, and you live in Hanoi."
+[[case.turns]]
+send = "My name is Linh, I live in Hanoi, my favourite colour is green and my meeting code is ORCHID-42."
+[[case.turns]]
+send = "What did I tell you my name was, and where do I live?"
+[[case.checks]]
+type = "no_tools_offered"
+prefix = ""
+turn = 1
+[[case.checks]]
+type = "tool_not_called"
+name = "*"
+[[case.checks]]
+type = "request_contains"
+text = "Linh is their fact, not yours"
+turn = 2
+[[case.checks]]
+type = "reply_contains"
+text = "You told me your name is Linh"
+turn = 2

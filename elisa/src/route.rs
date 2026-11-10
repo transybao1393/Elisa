@@ -508,6 +508,13 @@ pub fn classify(msg: &str, prev: &Route, servers: &[String]) -> Route {
     if FOLLOW_UPS.contains(&w.join(" ").as_str()) {
         return Route { groups: prev.groups, others: prev.others.clone(), why: if prev.groups.is_empty() { Why::Chat } else { Why::FollowUp } };
     }
+    // a message that only tells facts about the user ("My name is Linh, I live in Hanoi, my meeting code is
+    // ORCHID-42"): chat, whatever words its values hold ("code" there is no code), so no tool is offered to act on it.
+    // Only the user's whole typed message (`own_words`), never a paste with a fact line in it, and no question in it
+    // (the fact check leaves questions out).
+    if !t.contains('?') && crate::context::own_words(t) == Some(t) && crate::context::only_user_facts(t) {
+        return mk(Groups::default(), others, Why::Chat);
+    }
     let g = signals(t);
     let chat = chatty(&lower, &w);
     let cont = continues(&lower, &w) && !prev.groups.is_empty() && !chat;
@@ -795,6 +802,22 @@ mod tests {
             "summarize the plot of Hamlet", "recommend a good book"] {
             assert_eq!(route(m), Groups::default(), "{m:?}: {}", route(m).describe());
         }
+    }
+
+    /// telling facts about oneself is chat: no tool to act on it, whatever words the facts hold
+    #[test]
+    fn a_self_introduction_is_chat() {
+        for m in ["My name is Linh, I live in Hanoi, my favourite colour is green and my meeting code is ORCHID-42.",
+            "My name is Linh and I live in Hanoi.", "Hi! I'm Linh, I work as a backend developer and my project code is P-7."] {
+            let r = classify(m, &Route::default(), &[]);
+            assert!(r.groups.is_empty() && r.why == Why::Chat, "{m:?} -> {}", r.describe());
+            let code = Route { groups: Groups(CODE), others: Vec::new(), why: Why::Signals };
+            assert!(classify(m, &code, &[]).groups.is_empty(), "{m:?} after code work");
+        }
+        // facts with an ask in them keep the ask's tools
+        assert!(route("My name is Linh. Search the web for the weather in Hanoi.").has(WEB));
+        assert!(route("My meeting code is ORCHID-42, save it to notes.txt").has(CODE));
+        assert!(route("My name is Linh. What's the latest news in Hanoi?").has(WEB));
     }
 
     #[test]

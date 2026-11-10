@@ -1434,6 +1434,11 @@ fn replies_that_claim_the_users_facts() {
     assert!(c("I'm glad you're from Hanoi, Linh!").is_empty());
     assert!(c("Your name is Linh, you live in Hanoi, and your meeting code is ORCHID-42.").is_empty());
     assert!(c("I can't find Hanoifood.").is_empty(), "whole words only");
+    // a clause that also says "you": only what follows the nearest first-person word counts
+    assert_eq!(c("I told you my name is Linh, and you live in Hanoi."), vec!["Linh"]);
+    assert_eq!(c("I know you live in Hanoi and I'm Linh."), vec!["Linh"]);
+    assert!(c("You told me your name is Linh and I know you live in Hanoi.").is_empty());
+    assert!(c("I remember that you are Linh from Hanoi.").is_empty());
     // "I'm Linh, from Hanoi": the second clause has the first one's subject, so Hanoi is a fact too
     let v = context::user_fact_values("I'm Linh, from Hanoi");
     assert_eq!(v, vec!["Linh", "Hanoi"]);
