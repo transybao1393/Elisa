@@ -689,7 +689,7 @@ impl Memory {
         }
         drop(b);
         let b = read(&self.hadj);
-        for r in b.chunks_exact(9) { v.adj.entry(r32(r, 0)).or_default().push((r[4], r32(r, 5))) }
+        for r in b.as_chunks::<9>().0 { v.adj.entry(r32(r, 0)).or_default().push((r[4], r32(r, 5))) }
         let v = std::rc::Rc::new(v);
         *self.view.borrow_mut() = Some(v.clone());
         v
@@ -1494,7 +1494,7 @@ fn vsearch(dir: &Path, q: &[f32; embed::DIM], k: usize) -> Vec<(u32, f32)> {
     let (cp, hp) = vec_paths(dir);
     for p in [cp, hp] {
         let Ok(mm) = Mmap::open(&p) else { continue };
-        for r in mm.b().chunks_exact(VREC) {
+        for r in mm.b().as_chunks::<VREC>().0 {
             let s: i32 = r[12..].iter().zip(&qq).map(|(&a, &b)| a as i8 as i32 * b).sum();
             let c = s as f32 * qs * f32::from_le_bytes(r[4..8].try_into().unwrap());
             if top.len() < k { top.push((r32(r, 0), c)) }

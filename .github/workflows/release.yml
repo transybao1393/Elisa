@@ -46,7 +46,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (master, 2026-11)
         with:
-          toolchain: stable
+          toolchain: 1.97.1
 
       # the newest Xcode on the image (the app needs the macOS 15 SDK; it runs on macOS 14+)
       - name: Xcode

@@ -211,7 +211,7 @@ impl St {
         if off + out.len() > n { return Err(bad("tensor range")) }
         let mut b = vec![0u8; out.len() * 4];
         self.f.read_exact_at(&mut b, self.base + o + off as u64 * 4)?;
-        for (d, c) in out.iter_mut().zip(b.chunks_exact(4)) { *d = f32::from_le_bytes(c.try_into().unwrap()) }
+        for (d, c) in out.iter_mut().zip(b.as_chunks::<4>().0) { *d = f32::from_le_bytes(*c) }
         Ok(())
     }
     /// whole tensor into `out` (same length), through a reusable byte buffer
@@ -303,7 +303,7 @@ fn linear(x: &[f32], din: usize, w: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 fn layer_norm(x: &mut [f32], g: &[f32], b: &[f32]) {
-    for r in x.chunks_exact_mut(DIM) {
+    for r in x.as_chunks_mut::<DIM>().0 {
         let m = r.iter().sum::<f32>() / DIM as f32;
         let v = r.iter().map(|x| (x - m) * (x - m)).sum::<f32>() / DIM as f32;
         let s = 1.0 / (v + EPS).sqrt();
@@ -417,7 +417,7 @@ pub fn embed(dir: &Path, vocab_cache: &Path, texts: &[&str], progress: &mut dyn 
         }
         let mut hs: Vec<Vec<f32>> = ids.iter().map(|s| {
             let mut h = vec![0f32; s.len() * DIM];
-            for (p, (&t, r)) in s.iter().zip(h.chunks_exact_mut(DIM)).enumerate() {
+            for (p, (&t, r)) in s.iter().zip(h.as_chunks_mut::<DIM>().0).enumerate() {
                 let mut w = [0f32; DIM]; let mut pe = [0f32; DIM];
                 let _ = st.read_into("embeddings.word_embeddings.weight", t as usize * DIM, &mut w);
                 let _ = st.read_into("embeddings.position_embeddings.weight", p * DIM, &mut pe);
@@ -439,7 +439,7 @@ pub fn embed(dir: &Path, vocab_cache: &Path, texts: &[&str], progress: &mut dyn 
         for h in hs {
             let n = h.len() / DIM;
             let mut v = [0f32; DIM];
-            for r in h.chunks_exact(DIM) { for d in 0..DIM { v[d] += r[d] } }
+            for r in h.as_chunks::<DIM>().0 { for d in 0..DIM { v[d] += r[d] } }
             let norm = v.iter().map(|x| (x / n as f32).powi(2)).sum::<f32>().sqrt().max(1e-12);
             for x in v.iter_mut() { *x = *x / n as f32 / norm }
             out.push(v);
