@@ -40,6 +40,8 @@ die() { printf '[package] error: %s\n' "$*" >&2; exit 1; }
 
 [ "$(uname -s)" = Darwin ] || die "macOS only"
 [ -n "$VERSION" ] || die "no version (set VERSION)"
+# Info.plist takes numbers only: 0.1.0-beta.1 → 0.1.0 (the full version stays in the file name)
+PLIST_VERSION="${VERSION%%-*}"
 if [ -n "$NOTARY_PROFILE" ] && [ -z "$SIGN_IDENTITY" ]; then die "NOTARY_PROFILE needs SIGN_IDENTITY (Apple notarises only Developer ID signed apps)"; fi
 
 # ---- 1. build ----
@@ -76,8 +78,8 @@ setkey CFBundleDisplayName string Elisa
 setkey CFBundleExecutable string ElisaApp
 setkey CFBundlePackageType string APPL
 setkey CFBundleInfoDictionaryVersion string 6.0
-setkey CFBundleShortVersionString string "$VERSION"
-setkey CFBundleVersion string "$VERSION"
+setkey CFBundleShortVersionString string "$PLIST_VERSION"
+setkey CFBundleVersion string "$PLIST_VERSION"
 setkey CFBundleIconFile string Elisa
 setkey NSHighResolutionCapable bool true
 setkey NSPrincipalClass string NSApplication
@@ -99,8 +101,8 @@ cat > "$RB/Contents/Info.plist" <<EOF
 	<key>CFBundleName</key><string>ElisaApp_ElisaApp</string>
 	<key>CFBundlePackageType</key><string>BNDL</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-	<key>CFBundleShortVersionString</key><string>$VERSION</string>
-	<key>CFBundleVersion</key><string>$VERSION</string>
+	<key>CFBundleShortVersionString</key><string>$PLIST_VERSION</string>
+	<key>CFBundleVersion</key><string>$PLIST_VERSION</string>
 </dict>
 </plist>
 EOF

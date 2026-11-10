@@ -90,7 +90,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/Elisa-*.dmg dist/Elisa-*.dmg.sha256 --clobber
           else
-            gh release create "$TAG" dist/Elisa-*.dmg dist/Elisa-*.dmg.sha256 --title "Elisa ${TAG#v}" --generate-notes --verify-tag
+            gh release create "$TAG" dist/Elisa-*.dmg dist/Elisa-*.dmg.sha256 --title "Elisa ${TAG#v}" --generate-notes --verify-tag $(case "$TAG" in *-*) echo --prerelease;; esac)
           fi
 
       - name: Clean up the keychain
