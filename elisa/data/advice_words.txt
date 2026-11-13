@@ -1,0 +1,101 @@
+# Words that make a sentence advice on what to do ("Update Flask to 3.1.3", "Rotate the key", "Hãy đổi khoá"): after
+# one of Elisa's own security checks, the model's note keeps only sentences that give advice; a sentence that only
+# restates the result goes, since Elisa's verified result says it (`repl/turn.rs` `deps_note`, `check_note`): "The
+# server is vulnerable because it doesn't verify the signature", "The expiration is set to none", "… in the Requests
+# library, requiring a fix" carry a doing word but tell no one to do anything. One wording per line as "key: wording",
+# lowercase, matched as whole words; add a language's wording here, not in code.
+#   ask:  a wording that makes the sentence advice wherever it stands ("You should …", "Bạn nên …")
+#   do:   a doing word that makes it advice only when it opens the sentence or a clause after a comma, a colon or a
+#         semicolon, as an order ("Pin the new versions.", "To fix this, upgrade Requests."), past any `lead` words
+#   lead: a word that may come before such an order ("Then run your tests.", "Sau đó cập nhật …")
+ask: should
+ask: must
+ask: need to
+ask: needs to
+ask: recommend
+ask: recommended
+ask: make sure
+ask: consider
+ask: it is best to
+ask: nên
+ask: hãy
+ask: cần
+ask: phải
+ask: khuyên
+do: update
+do: upgrade
+do: rotate
+do: revoke
+do: remove
+do: replace
+do: move
+do: avoid
+do: use
+do: sign
+do: pin
+do: patch
+do: fix
+do: store
+do: reject
+do: verify
+do: set
+do: change
+do: delete
+do: keep
+do: run
+do: add
+do: enable
+do: disable
+do: issue
+do: regenerate
+do: do not
+do: don't
+do: never
+do: updating
+do: upgrading
+do: rotating
+do: revoking
+do: removing
+do: replacing
+do: pinning
+do: rejecting
+do: chạy
+do: cập nhật
+do: cap nhat
+do: nâng
+do: nang
+do: đổi
+do: doi
+do: thay
+do: xoá
+do: xóa
+do: xoa
+do: gỡ
+do: go bo
+do: ký lại
+do: ky lai
+do: không dùng
+do: khong dung
+do: đừng
+do: kiểm tra lại
+do: dùng
+do: đặt
+do: từ chối
+lead: then
+lead: also
+lead: first
+lead: next
+lead: now
+lead: finally
+lead: please
+lead: and
+lead: so
+lead: instead
+lead: simply
+lead: immediately
+lead: sau đó
+lead: rồi
+lead: trước tiên
+lead: tiếp theo
+lead: vui lòng
+lead: và

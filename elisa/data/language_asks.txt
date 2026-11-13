@@ -1,0 +1,33 @@
+# Words that ask for another language or a script (`reply_check::asks_other_language`): an English message holding one
+# as a whole word ("translate good morning", "how do you say cat in Japanese?") may get a reply in that language, so
+# the reply-language check leaves it alone. One key per line, "key: wording | wording | …", in an [en] and a [vi]
+# section, with and without accents. Fix a missed wording here, not in code.
+#   asks:  verbs and words that ask for words in another language
+#   asks_after: the same, standing right after the language's name ("'tôi đói rồi' tiếng Anh là gì?")
+#   names: names of languages and scripts
+#   vietnamese: names of Vietnamese, for an ask wanting Vietnamese words (`reply_check::garbled` checks their syllables)
+#   english: names of English, for an ask wanting English words (`reply_check::translation_missing`: a reply with no
+#            English in it is no translation)
+#   into:  the word before the language asked for ("to English", "sang tiếng Anh"): with two languages named, the one
+#          after it is the target (`reply_check::translation_target`)
+#   order: wordings that open an instruction to answer in a language ("reply in", "trả lời bằng"): a reply sentence
+#          opening with one and naming a language (`names`) or the message's language (`order_of`) right after it is
+#          Elisa's own language note said back, and goes (`reply_check::without_lang_orders`)
+#   order_of: the words after an `order` wording that name the message's language ("the language of")
+[en]
+asks: translate | translation | translated | say | spell | pronounce | pronunciation | write it in | in another language
+names: english | chinese | mandarin | cantonese | japanese | korean | spanish | french | german | italian | portuguese | russian | arabic | hindi | thai | vietnamese | greek | hebrew | latin | dutch | swedish | turkish | polish | indonesian | malay | kanji | hiragana | katakana | hanzi | pinyin | cyrillic | hangul
+vietnamese: vietnamese
+english: english
+into: to | into | in
+order: reply in | answer in | respond in | write in | please reply in | please answer in | please respond in | please write in | reply only in | answer only in | respond only in | replying in | answering in
+order_of: the language of | the same language as | the user s language | your language
+[vi]
+asks: dịch | dich | phát âm | phat am | đánh vần | danh van
+asks_after: là gì | la gi | nói sao | noi sao | nói thế nào | noi the nao | viết sao | viet sao | viết thế nào | viet the nao
+names: tiếng trung | tieng trung | tiếng nhật | tieng nhat | tiếng hàn | tieng han | tiếng anh | tieng anh | tiếng pháp | tieng phap | tiếng đức | tieng duc | tiếng việt | tieng viet
+vietnamese: tiếng việt | tieng viet
+english: tiếng anh | tieng anh
+into: sang | ra | thành | thanh | bằng | bang | qua
+order: trả lời bằng | tra loi bang | hãy trả lời bằng | hay tra loi bang | vui lòng trả lời bằng | vui long tra loi bang | viết bằng | viet bang | hãy viết bằng | hay viet bang | chỉ trả lời bằng | chi tra loi bang | trả lời bằng ngôn ngữ | tra loi bang ngon ngu
+order_of: ngôn ngữ của | ngon ngu cua | cùng ngôn ngữ | cung ngon ngu | của tin nhắn | cua tin nhan

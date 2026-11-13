@@ -1,0 +1,37 @@
+# Words that make a figure the value of another quantity than the one an ask names (`repl/turn.rs` `live_sentence`):
+# "94.3% of the population is urban (379,229 people)" is the urban count, "Iceland ranks 180th" a rank, "4 people per
+# km²" a density, never the population asked. A sentence holding one of these words (whole words) that the ask does
+# not hold gives no figure for it (a share in % alone is no other quantity: "gold up 0.5%" still gives the price).
+# One word or phrase per line, English and Vietnamese, with and without accents. Fix a figure taken for the wrong quantity by adding the word here, not in code.
+urban
+rural
+density
+per km
+per square
+rank
+ranks
+ranked
+ranking
+growth
+median
+average
+male
+female
+thành thị
+thanh thi
+nông thôn
+nong thon
+mật độ
+mat do
+xếp hạng
+xep hang
+đứng thứ
+dung thu
+tỷ lệ
+tỉ lệ
+ty le
+ti le
+tăng trưởng
+tang truong
+trung bình
+trung binh

@@ -35,6 +35,8 @@ pub fn simple_out(max_ctx: usize) -> usize { (max_ctx / 8).clamp(SIMPLE_OUT, 4 *
 
 /// How often a streaming call that waits on the server (for the response head or the next line) looks at the
 /// cancel flag.
+/// lines a reply may write without naming any of the turn's names before it is stopped (`reply_names`)
+const NAMES_STOP_LINES: usize = 6;
 const CANCEL_POLL: Duration = Duration::from_millis(25);
 
 /// What `LineStream::next` got.
@@ -240,6 +242,12 @@ pub struct Client {
     /// the tools go in the system prompt as text (`backend::Tools::Text`): set from the caps, or after a server
     /// refused `tools`
     text_tools: AtomicBool,
+    /// requests with no tools put Elisa's own steps in the user's message as text (`backend::fold_own_steps`): a
+    /// window too small for tools, where a small model reads data after the question best
+    fold_own: AtomicBool,
+    /// the names a reply this turn is about (an outline's symbols, `set_reply_names`): a reply that writes
+    /// `NAMES_STOP_LINES` lines and none of them is stopped there (an invented list, up to the output limit)
+    reply_names: std::sync::Mutex<Vec<String>>,
     /// Gemini's explicit cache of the system prompt and tools (`backend::GeminiCache`)
     gemini: Mutex<crate::backend::GeminiCache>,
     /// the model has no vision (`set_vision`): image parts never go out (`context::without_images`)
@@ -341,6 +349,8 @@ impl Client {
             think_off: AtomicBool::new(false),
             caps: crate::backend::Caps::default(),
             text_tools: AtomicBool::new(false),
+            fold_own: AtomicBool::new(false),
+            reply_names: std::sync::Mutex::new(Vec::new()),
             gemini: Mutex::new(crate::backend::GeminiCache::default()),
             blind: AtomicBool::new(false),
         }
@@ -368,6 +378,12 @@ impl Client {
 
     /// the tools currently go in the prompt as text
     pub fn text_tools(&self) -> bool { self.text_tools.load(Ordering::Relaxed) }
+
+    /// Requests with no tools carry Elisa's own steps as text in the user's message (`backend::fold_own_steps`).
+    pub fn set_fold_own(&self, on: bool) { self.fold_own.store(on, Ordering::Relaxed); }
+
+    /// The names this turn's replies are held to (empty: none); see `reply_names`.
+    pub fn set_reply_names(&self, names: Vec<String>) { if let Ok(mut n) = self.reply_names.lock() { *n = names; } }
 
     /// llama.cpp with `--slot-save-path`: save slot 0's processed prompt to `file` (in the server's slot dir).
     /// Ok((tokens, ms)).
@@ -558,14 +574,64 @@ impl Client {
 
     /// One attempt, with the tools as text when the backend has no native tool calling (`backend::Tools::Text`): they
     /// are described in the system prompt, earlier calls and results become text, and a call the reply writes as
-    /// `<tool_call>{…}</tool_call>` becomes a real one.
+    /// `<tool_call>{…}</tool_call>` becomes a real one (`backend::text_calls`). With native tools too: a reply with no
+    /// structured call whose text is a well-formed call for an offered tool runs it. Call markup is never streamed to
+    /// the user (`backend::CallHold`).
+    /// A reply that keeps writing the same block of lines over and over (a small model looping) is stopped at its
+    /// third copy and kept with one (`reply_check::loop_end`: a block of lines, or one sentence on a line).
     fn send_tools(&self, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
-        if req.tools.is_empty() || !self.text_tools() { return self.send_once(req, cancel, on_text); }
-        let system = format!("{}{}", req.system, crate::backend::text_tools_prompt(req.tools));
-        let msgs = crate::backend::textify(req.messages);
-        let r2 = Request { system: &system, tools: &[], messages: &msgs, max_tokens: req.max_tokens };
-        let mut reply = self.send_once(&r2, cancel, on_text)?;
-        if reply.stop_reason == "cancelled" { return Ok(reply); }
+        let text_tools = self.text_tools() && !req.tools.is_empty();
+        // a request with no tools (an answer in words) on a model without native tool calling: its history's calls and
+        // results still go as text, as every other request of the turn sent them (as tool messages, a template with
+        // no tool role drops them, and the model answers without the results it is asked about)
+        let fold = self.fold_own.load(Ordering::Relaxed) && req.tools.is_empty();
+        let as_text = (fold || self.text_tools()) && req.messages.iter().any(|m| m.content.iter().any(|b| matches!(b, Block::ToolUse { .. } | Block::ToolResult { .. })));
+        let (system, msgs);
+        let r2 = if text_tools {
+            system = format!("{}{}", req.system, crate::backend::text_tools_prompt(req.tools));
+            msgs = crate::backend::textify(req.messages);
+            Request { system: &system, tools: &[], messages: &msgs, max_tokens: req.max_tokens }
+        } else if as_text {
+            msgs = if fold { crate::backend::fold_own_steps(req.messages) } else { crate::backend::textify(req.messages) };
+            Request { messages: &msgs, ..*req }
+        } else { Request { ..*req } };
+        // (with no tools too: a call written as text cannot run, and its markup is still not for the user)
+        let mut hold = crate::backend::CallHold::new(req.tools);
+        // the request stops on the user's cancel, or on a looping reply (`stop`); a watcher passes the cancel on
+        let (stop, done, looped) = (AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false));
+        let mut seen = String::new();
+        let names = self.reply_names.lock().map(|n| n.clone()).unwrap_or_default();
+        let off_names = |t: &str| !names.is_empty() && t.lines().filter(|l| !l.trim().is_empty()).count() >= NAMES_STOP_LINES
+            && !t.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| names.iter().any(|n| n == w));
+        let res = std::thread::scope(|sc| {
+            sc.spawn(|| while !done.load(Ordering::Relaxed) {
+                if cancel.load(Ordering::Relaxed) { stop.store(true, Ordering::Relaxed); break; }
+                std::thread::sleep(CANCEL_POLL);
+            });
+            let r = self.send_once(&r2, &stop, &mut |t: &str| {
+                seen.push_str(t);
+                if (t.contains(['\n', '.', '!', '?']) && crate::reply_check::loop_end(&seen).is_some()) || crate::reply_check::repeated_run(&seen).is_some() { looped.store(true, Ordering::Relaxed); stop.store(true, Ordering::Relaxed); }
+                // (lines that name nothing the turn is about: stopped, the turn's own check answers instead)
+                if t.contains('\n') && off_names(&seen) { looped.store(true, Ordering::Relaxed); stop.store(true, Ordering::Relaxed); }
+                let s = hold.push(t);
+                if !s.is_empty() { on_text(&s); }
+                // a cancel from inside the text callback takes effect at once (the watcher polls)
+                if cancel.load(Ordering::Relaxed) { stop.store(true, Ordering::Relaxed); }
+            });
+            done.store(true, Ordering::Relaxed);
+            r
+        });
+        let mut reply = res?;
+        let held = hold.finish();
+        if !held.is_empty() { on_text(&held); }
+        if looped.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+            for b in reply.content.iter_mut() {
+                if let Block::Text { text } = b { if let Some(end) = crate::reply_check::loop_end(text) { text.truncate(end); } }
+            }
+            reply.stop_reason = "end_turn".into();
+        }
+        if reply.stop_reason == "cancelled" || req.tools.is_empty() { return Ok(reply); }
+        if !text_tools && reply.content.iter().any(|b| matches!(b, Block::ToolUse { .. })) { return Ok(reply); }
         let mut calls = Vec::new();
         let mut content = Vec::new();
         for b in std::mem::take(&mut reply.content) {

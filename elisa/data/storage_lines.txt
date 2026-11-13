@@ -1,0 +1,10 @@
+# What Elisa says when saving something failed (`repl::memory::storage_line`): one `key = text` per line.
+# `{what}` is the thing that could not be saved (the `what.*` keys). The reason comes from the system's error code:
+# `full` (no space left), `denied` (no permission or a read-only disk), `other` (anything else). Plain words only:
+# never a path or the system's own error text.
+what.memory = memory
+what.session = this chat
+what.notes = the notes
+full = Couldn't save {what}: the disk is full. Free some space and I'll keep going.
+denied = Couldn't save {what}: I'm not allowed to write there. I'll keep going without it.
+other = Couldn't save {what} just now. I'll keep going.

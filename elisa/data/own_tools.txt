@@ -1,0 +1,256 @@
+# Clear asks Elisa runs a tool for herself when the words name no file and no explicit part (`repl/turn.rs`
+# `meant_call`): one example per line, under the tool's section. A section header may carry the call's default
+# arguments as JSON (`[glob {"pattern": "*"}]`); a `*` pattern or a folder path in the words replaces them. A message
+# close in meaning (all-MiniLM-L6-v2) to one tool's examples, and nearer to them than to every `[other]` example, is
+# that tool's call, when it shares a word with that nearest example that no `[other]` example has (MiniLM reads
+# Vietnamese poorly, so meaning alone is not enough). A section named after one of Elisa's own checks (`[sec_deps]`)
+# is that check's call whether or not the words name a file (`meant_check`: a named file is read too), and makes the
+# turn about security (`mcp_reason::about_sec`), in any language. In the `[bash]` section an example with "foo" is a
+# frame for a command the words give ("run foo in the shell"): a message with those words around a command runs that
+# command (`repl/turn.rs` `shell_command`); the examples without one make a turn about the shell, so its words go to
+# the shell, never the web or a file tool. The words a frame puts after "foo" ("in the shell", "giúp mình", "nhé",
+# "for me") are never part of the command, whichever frame matched. A program named right after a word the frames
+# put before "foo" ("use", "run", "dùng", "with") at the end of an ask ("how much disk space is free? use df") is that
+# command (`command_ask`). The `[again]` section is no tool: a message near it right after a call Elisa made herself
+# runs that call once more (`repeat_asked`). In the `[grep]` section every example is a frame with "foo" for the words
+# searched for ("tìm file nào có chữ foo", "which file mentions foo"): a message near one, with its quoted or
+# standing-out word in foo's place, searches the project's files for that word (`search_ask`), never the web. Fix a
+# missed or wrong wording by adding an example to the side it belongs to, not by code.
+[glob {"pattern": "*"}]
+list the files in this directory
+list the files here
+list all files
+show me the files in this folder
+what files are in this folder?
+what files are here?
+which files do we have here?
+show the folder contents
+what's in this directory?
+list the directory
+show me every file in the project
+find all the files
+cho tôi xem các tệp trong thư mục này
+liệt kê các tệp ở đây
+liệt kê các file trong thư mục hiện tại
+liệt kê file ở đây
+thư mục này có những tệp nào?
+thư mục này có file gì?
+liet ke cac file trong thu muc nay
+liet ke cac tep o day
+[grep]
+tìm file nào có chữ foo
+tìm giúp mình file nào có chữ foo
+tìm giúp mình file nào có foo
+file nào có chữ foo?
+file nào chứa foo?
+file nào có foo?
+tìm chữ foo trong các file
+tìm foo trong các file của dự án
+tìm từ foo trong thư mục này
+tim file nao co chu foo
+tim giup minh file nao co chu foo
+file nao co chu foo?
+tim chu foo trong cac file
+which file mentions foo?
+which file has the word foo?
+which file contains foo?
+which files mention foo?
+search the files for foo
+search the project for foo
+search the project for the word foo
+find foo in the project files
+find the word foo in the files
+where is foo mentioned?
+grep the project for foo
+grep for foo
+[again]
+again please
+run it again
+run that again
+do that again
+do it again
+one more time
+once more
+same again
+lại lần nữa
+lại lần nữa đi
+chạy lại
+chạy lại đi
+chạy lại lệnh đó
+làm lại
+làm lại đi
+lặp lại
+một lần nữa
+thêm lần nữa
+chay lai
+chay lai di
+lam lai
+mot lan nua
+[sec_deps]
+check my dependencies for known vulnerabilities
+are any of the packages in package.json vulnerable?
+scan Cargo.lock for security advisories
+do my deps have any CVEs?
+audit the libraries this project uses
+is anything in my lockfile affected by a security issue?
+kiểm tra các gói trong requirements.txt có lỗ hổng bảo mật không
+thư viện trong package.json có bị lỗ hổng không?
+quét lỗ hổng bảo mật cho các gói phụ thuộc giúp mình
+gói nào trong Cargo.lock có lỗ hổng?
+các thư viện dự án đang dùng có lỗ hổng nào không?
+kiem tra cac goi trong requirements.txt co lo hong bao mat khong
+thu vien trong package.json co bi lo hong khong?
+quet lo hong bao mat cho cac goi phu thuoc giup minh
+goi nao trong Cargo.lock co lo hong?
+check giúp mình các dependency có lỗ hổng không
+check giup minh cac dependency co lo hong khong
+are the dependencies in package.json safe?
+is my lockfile safe to use?
+are the packages this project uses secure?
+các gói trong requirements.txt có an toàn không?
+cac goi trong requirements.txt co an toan khong?
+[sec_secrets]
+scan this project for leaked secrets
+are there any api keys or passwords in my code?
+check the repo for exposed credentials
+look for leaked tokens in this folder
+quét dự án này xem có lộ bí mật không
+có khoá api hay mật khẩu nào bị lộ trong mã không?
+tìm token bị lộ trong thư mục này
+quet du an nay xem co lo bi mat khong
+co khoa api hay mat khau nao bi lo trong ma khong?
+tim token bi lo trong thu muc nay
+[sec_binary]
+check the binary app for security problems
+is this executable safe? inspect it
+scan the compiled program for security issues
+inspect the executable server for signing and hardening
+look at the library libfoo.so for security problems
+kiểm tra tệp nhị phân app có vấn đề bảo mật không
+quét bảo mật cho tệp thực thi server
+xem tệp chạy được này có an toàn không
+kiem tra tep nhi phan app co van de bao mat khong
+quet bao mat cho tep thuc thi server
+xem tep chay duoc nay co an toan khong
+[bash]
+run foo in the shell
+run foo in the terminal
+run foo in a shell
+execute foo in the shell
+run `foo`
+run foo
+in the shell, run foo
+use the shell to run foo
+list the files here with foo
+run foo for me
+run foo please
+could you run foo for me
+run the command foo
+run the command: foo
+run this command: foo
+execute the command foo
+chạy lệnh sau: foo
+chạy câu lệnh foo
+chay cau lenh foo
+use foo in the shell
+use foo in the terminal
+chạy lệnh foo trong terminal
+chạy lệnh foo trong shell
+chạy foo trong terminal
+chạy lệnh foo
+chạy lệnh foo giúp mình
+chạy lệnh foo giùm mình
+chạy lệnh foo nhé
+chạy lệnh foo với
+chạy lệnh foo đi
+chạy lệnh foo nào
+chạy foo giúp mình
+chạy foo đi
+dùng foo trong terminal
+chay lenh foo trong terminal
+chay lenh foo
+chay lenh foo giup minh
+chay lenh foo nhe
+dung foo trong terminal
+use the shell to create a file with some text
+use the shell to write some text into a file
+use the terminal to put a word in a file
+use the shell to make a file in /tmp and show what is in it
+use nc in the shell to test a connection to a server
+check with wget in the shell whether a site can be reached
+try curl in the terminal against a web address
+dùng terminal để tạo một tệp có chữ hello
+dùng lệnh trong terminal để kiểm tra kết nối mạng
+dung terminal de tao mot tep
+[other]
+read the file
+what does the file say?
+open the notes
+summarise the document
+save that to a file
+write a summary to a file
+delete the file
+search the web for news
+what's the time in London?
+tell me a joke
+how are you?
+thanks a lot!
+cảm ơn nhiều nhé
+cảm ơn bạn nhé
+tạm biệt nhé
+chào bạn nhé
+cam on nhe
+tam biet nhe
+list three ideas for dinner
+list the steps to bake bread
+make a list of things to pack
+show me an example
+what can you do?
+explain how folders work
+create a new folder
+rename the file
+how many lines does it have?
+count the words
+what is in the news today?
+list your features
+đọc tệp này
+lưu vào tệp
+what is the capital of Australia?
+who wrote Hamlet?
+how far is the moon?
+why is the sky blue?
+thủ đô của Pháp là gì?
+ai là tổng thống Mỹ?
+hôm nay thời tiết thế nào?
+bạn tên là gì?
+kể cho tôi một câu chuyện
+giải thích cho tôi về lượng tử
+thu do cua Phap la gi?
+hom nay thoi tiet the nao?
+what packages are in requirements.txt?
+how do I install the packages in requirements.txt?
+add flask to requirements.txt
+what is a vulnerability?
+requirements.txt có những gói nào?
+cài các gói trong requirements.txt thế nào?
+thêm flask vào requirements.txt
+requirements.txt co nhung goi nao?
+cai cac goi trong requirements.txt the nao?
+kiểm tra lại đoạn văn này giúp mình
+kiểm tra xem bài viết có lỗi chính tả không
+kiem tra lai doan van nay giup minh
+xem giúp mình email này viết đúng chưa
+what is the word for cat in French?
+translate this text to Vietnamese
+say hello to Linh for me
+put the meeting at 3 pm
+turn this list into a table
+write a poem about rain
+which region sold the most in sales.csv?
+which row has the highest sales in the csv?
+what's the biggest number in the table?
+vùng nào bán nhiều nhất trong file doanh số?
+hàng nào có số lượng lớn nhất trong bảng này?
+cột nào có giá trị lớn nhất trong bảng?
+vung nao ban nhieu nhat trong file doanh so?
+hang nao co so luong lon nhat trong bang nay?

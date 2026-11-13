@@ -1,0 +1,85 @@
+# Words for a reply's sentences about its own instructions or about who gave a file's content
+# (`reply_check::without_meta_narration`, `reply_check::credited_to_source`; the file tools clean content to save with
+# the same rule). One key per line, "key: wording | wording | …", in an [en] and a [vi] section, with and without
+# accents. Fix a missed wording here, not in code.
+#   narrate:  a sentence holding one tells the model's instructions instead of answering ("the user wants me to"): it goes
+#   subject:  who a sentence credits content to, at its start ("the user")
+#   again:    the same, said again later in the reply once one sentence credited the user ("they")
+#   filler:   words that may stand between the subject and the verb ("also", "has")
+#   gave:     verbs that credit the content to that subject ("provided", "shared", "has")
+#   gave_not: words after such a verb that make it no credit ("has been", "has to")
+#   self_before: words before a name that claim it as the speaker's own ("I'm", "Tôi là"): with a name of the
+#                user's facts, not the assistant's, the sentence goes
+#   self_after:  words after a name that do the same ("Bo here")
+#   assistant_words: words for an assistant or a model ("assistant", "trợ lý"): after a `self_before` wording, the
+#             sentence is a self-introduction; beside an answer to anything else it goes (`reply_check::self_intro`)
+#   past_aux:   helping words of a past action ("has", "đã"): after an assistant subject they count only with an
+#             action after them ("Elisa đã chạy", "Elisa has read"; "Elisa has three tools", "Trợ lý đã sẵn sàng" stay)
+#   past_verbs: English irregular pasts ("ran", "wrote"); with an "-ed" word, or a tool action word of
+#             `data/tool_claims.txt`, they are the action (`reply_check::tells_own_action`): such a sentence tells the
+#             assistant's own action back in the third person, which is retelling
+#   retell:   words of a sentence that tells the conversation back instead of answering ("your question is", "Elisa
+#             answered", "câu hỏi của bạn là"): beside an answer it goes; a reply of only such sentences answers
+#             nothing (`reply_check::without_retelling`, `retells_only`)
+#   to_you:   "said of the user > said to them" pairs: a reply that speaks of the user in the third person ("The user
+#             should consider updating") is said to them ("You should consider updating") (`reply_check::said_to_user`)
+#   source_lead: a lead-in that credits what follows to the model's or a tool's output ("the model output showed
+#             that", "based on the provided information,"): it is left out and the rest kept
+#             (`reply_check::without_source_lead`)
+#   blame:    a sentence holding one blames the user's message ("there seems to be a mistake in your message"): beside
+#             an answer it goes (`reply_check::without_false_blame`)
+#   to_me:    "said to the user > said by the user" pairs: a reply's clause that tells the user a fact of theirs ("your
+#             name is Jonathan") read as the user would state it ("my name is Jonathan"), so the same wordings as the
+#             user's own facts find its value (`reply_check::without_unbacked_user_facts`)
+#   you_gave: words that say the user gave something ("you provided", "you mentioned"): with an `earlier` word in the
+#             same sentence, it claims the user gave the thing named next to it ("the timezone you provided earlier")
+#             in an earlier message; when the user's earlier words and facts never named that thing, the sentence goes
+#             (`reply_check::without_unbacked_user_facts`)
+#   earlier:  words that place the giving in the past ("earlier", "previously", "trước đó")
+#   about_words: words of a sentence that describes the user's message itself, its words or pronouns ("'I' and 'my'
+#             are used in your messages", "is used to refer to the user") where nothing about words was asked: a reply
+#             of only such sentences answers nothing (`reply_check::about_message_words`: asked once more, then Elisa's
+#             plain line); beside an answer they go (`reply_check::without_message_meta`)
+#   word_asks: words of an ask about words, meaning or grammar ("what does 'my' mean here?"): such a reply answers it
+#   (a sentence that opens with a quoted person word and defines it, "\"I\" is …", counts as `about_words` too:
+#   `reply_check::defines_person_word`, with the person words of `data/person_words.txt`)
+[en]
+source_lead: the model output showed that | the model output shows that | the model output showed | the model output shows | the model output says that | the model output says | the model s output showed that | the model s output shows that | according to the model output | according to the model s output | the tool output showed that | the tool output shows that | according to the tool output | the output showed that | the output shows that | based on the provided information | based on the information provided | based on the given information | based on the information given | based on the information you provided | based on the provided data | based on the data provided | based on the provided context | based on the context provided | according to the provided information | according to the information provided
+to_you: the user should > you should | the user could > you could | the user can > you can | the user may > you may | the user might > you might | the user must > you must | the user will > you will | the user would > you would | the user has > you have | the user is > you are | the user was > you were | the user needs > you need | the user s > your
+blame: mistake in your message | error in your message | errors in your message | typo in your message | mistake in your question | error in your question | your message is unclear | your message seems | your question is unclear | your question seems | you made a mistake | you have made a mistake | your message contains a mistake | something wrong with your message
+narrate: the user wants | the user would like | the user is asking | the user asks | the user asked | the user needs | the user requested | the user is requesting | the user is looking for | the user said | the user says | the user has asked | the user is trying to | the task is to | the task here is to | the request is to | the request is for | the question is asking | the question asks | the user asked me to | the user is asking me to | the user asks me to | the user would like me to | the user has asked me to | the user wants an answer | i am asked to | i was asked to | i have been asked to | i am instructed to | i was instructed to | my instructions say | my instructions are | the instructions say | the system prompt | i need to answer the question | i should answer the question | the user has changed | the user changed
+subject: the user | user | the human
+again: they | he | she
+filler: also | has | have | had | just | then | additionally | further
+gave: provided | provides | gave | gives | given | shared | shares | sent | sends | included | includes | wrote | writes | added | adds | supplied | pasted | uploaded | has | have
+gave_not: been | to
+self_before: i m | i am | my name is | this is | call me | it s
+self_after: here | speaking
+assistant_words: assistant | ai | a i | chatbot | bot | language model | ai model
+past_aux: has | have | had | been | did | just | already | then
+past_verbs: ran | wrote | found | gave | took | got | saw | sent | built | said | told | brought | began | chose | kept | put | showed | shown | read | run | done | written
+retell: your question is | your question was | the question is | the question was | you asked | you were asking | the user asked | the user s question | elisa answered | elisa has answered | elisa replied | elisa responded | the assistant answered | the assistant replied | i answered your question | i answered the question | my answer was | the answer given was
+to_me: your > my | you are > i am | you re > i'm | you live > i live | you stay > i stay | you work > i work
+earlier: earlier | before | previously | already | in your previous message | in your last message | in an earlier message | at the start | at the beginning | in the past | a while ago | first
+you_gave: you provided | you ve provided | you have provided | you gave | you ve given | you have given | you mentioned | you ve mentioned | you have mentioned | you told me | you ve told me | you have told me | you said | you shared | you specified | you indicated | you stated | you set | you chose | you selected
+about_words: used in your message | used in your messages | are used in your | is used in your | used in the message | used to refer to | is used to refer | are used to refer | refers to the user | refer to the user | refers to the speaker | refer to the speaker | mean the user | means the user | in the user s message | in the user s messages | in you s message | in you s messages | messages mean you | message means you | message mean you | the pronoun | the pronouns | first person pronoun | first person pronouns | second person pronoun | second person pronouns | third person pronoun | third person pronouns | the word i | the word my | the word me | the words i | your grammar | grammatically | pronoun usage | use of pronouns | is a placeholder | a placeholder for | placeholder for your | placeholder for the | refers to you | refer to you | means you | mean you | stands for you | stand for you | stands for the user | stand for the user
+word_asks: mean | means | meaning | pronoun | pronouns | grammar | grammatical | word | words | refer | refers | referring | sentence | sentences | spelling | spell | phrase | phrases | wording | usage | tense | plural | singular | noun | verb | adjective | punctuation | definition | define | translate | translation
+[vi]
+source_lead: kết quả của mô hình cho thấy | ket qua cua mo hinh cho thay | đầu ra của mô hình cho thấy | dau ra cua mo hinh cho thay | theo đầu ra của mô hình | theo dau ra cua mo hinh | theo kết quả của công cụ | theo ket qua cua cong cu | dựa trên thông tin được cung cấp | dua tren thong tin duoc cung cap | dựa vào thông tin được cung cấp | dua vao thong tin duoc cung cap | dựa trên thông tin bạn cung cấp | dua tren thong tin ban cung cap | dựa vào thông tin bạn cung cấp | dua vao thong tin ban cung cap | theo thông tin được cung cấp | theo thong tin duoc cung cap
+to_you: người dùng nên > bạn nên | nguoi dung nen > ban nen | người dùng có thể > bạn có thể | người dùng cần > bạn cần | nguoi dung can > ban can
+blame: nhầm lẫn trong tin nhắn của bạn | nham lan trong tin nhan cua ban | lỗi trong tin nhắn của bạn | loi trong tin nhan cua ban | lỗi trong câu hỏi của bạn | loi trong cau hoi cua ban | tin nhắn của bạn không rõ | tin nhan cua ban khong ro | câu hỏi của bạn không rõ | cau hoi cua ban khong ro | bạn đã nhầm | ban da nham
+narrate: người dùng muốn | nguoi dung muon | người dùng yêu cầu | nguoi dung yeu cau | người dùng hỏi | nguoi dung hoi | người dùng đang hỏi | nguoi dung dang hoi | người dùng cần | nguoi dung can | nhiệm vụ là | nhiem vu la | yêu cầu là | yeu cau la | câu hỏi là | cau hoi la | người dùng muốn tôi | nguoi dung muon toi | người dùng yêu cầu tôi | nguoi dung yeu cau toi | người dùng muốn mình | người dùng yêu cầu mình | tôi được yêu cầu | toi duoc yeu cau | mình được yêu cầu | chỉ dẫn của tôi | chi dan cua toi | người dùng yêu cầu | nguoi dung yeu cau | người dùng đã đổi | nguoi dung da doi
+subject: người dùng | nguoi dung
+again: họ | ho
+filler: cũng | cung | đã | da | vừa | vua | còn | con
+gave: cung cấp | cung cap | đưa | dua | gửi | gui | chia sẻ | chia se | viết | viet | thêm | them | dán | dan | có | co
+gave_not: được | duoc | thể | the
+self_before: tôi là | toi la | mình là | minh la | em là | em la | tên tôi là | ten toi la | tên mình là | ten minh la
+self_after: đây | day
+assistant_words: trợ lý | tro ly | trợ lý ảo | tro ly ao | ai | chatbot | bot | mô hình | mo hinh | mô hình ngôn ngữ | mo hinh ngon ngu
+past_aux: đã | da | vừa | vua | mới | moi | rồi | roi
+retell: câu hỏi của bạn là | cau hoi cua ban la | câu hỏi là | cau hoi la | bạn đã hỏi | ban da hoi | bạn hỏi là | ban hoi la | người dùng hỏi | nguoi dung hoi | elisa đã trả lời | elisa da tra loi | elisa trả lời | elisa tra loi | trợ lý đã trả lời | tro ly da tra loi | mình đã trả lời câu hỏi | tôi đã trả lời câu hỏi | câu trả lời là | cau tra loi la
+earlier: trước đó | truoc do | trước đây | truoc day | lúc trước | luc truoc | lúc nãy | luc nay | hồi nãy | hoi nay | ban đầu | ban dau | từ trước | tu truoc
+you_gave: bạn đã cung cấp | ban da cung cap | bạn cung cấp | ban cung cap | bạn đã nói | ban da noi | bạn đã cho biết | ban da cho biet | bạn đã nhắc | ban da nhac | bạn đã chọn | ban da chon | bạn đã đặt | ban da dat
+about_words: được dùng trong tin nhắn của bạn | duoc dung trong tin nhan cua ban | dùng trong tin nhắn của bạn | dung trong tin nhan cua ban | trong tin nhắn của người dùng | trong tin nhan cua nguoi dung | được dùng để chỉ | duoc dung de chi | dùng để chỉ người dùng | dung de chi nguoi dung | đại từ | dai tu | ngôi thứ nhất | ngoi thu nhat | ngôi thứ hai | ngoi thu hai | ngôi thứ ba | ngoi thu ba | ngữ pháp của bạn | ngu phap cua ban | là từ thay thế cho | la tu thay the cho | từ giữ chỗ | tu giu cho | chỉ bạn | chi ban | thay cho vị trí | thay cho vi tri
+word_asks: nghĩa | nghia | có nghĩa | co nghia | đại từ | dai tu | ngữ pháp | ngu phap | từ này | tu nay | từ đó | tu do | từ nào | tu nao | câu này | cau nay | câu đó | cau do | chính tả | chinh ta | cách dùng | cach dung | cụm từ | cum tu | định nghĩa | dinh nghia | dịch | dich | phát âm | phat am

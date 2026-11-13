@@ -1,0 +1,67 @@
+# Questions about what Elisa can do ("can you search the web?", "bạn có đọc được file trên máy mình không?"), by
+# meaning (`route::about_elisa`, all-MiniLM-L6-v2): one example per line, English and Vietnamese, with and without
+# accents. A question (it ends with "?" or opens with a question word) that names no file and no web address, and is
+# nearer an `[ability]` example than any `[other]` one, is about Elisa: it gets her own line of what she can do and
+# runs no tool, whatever tool it names. The `[other]` side holds the asks that look alike but want something done
+# ("can you search the web for the latest news about Apple?", "can you google it?"). The model reads Vietnamese
+# poorly, so the Vietnamese wordings need examples on both sides. Fix a missed or wrong wording by adding an example
+# to the side it belongs to, not by code.
+[ability]
+can you browse the internet?
+can you search online?
+are you able to search the web?
+do you have access to the internet?
+can you read files on my computer?
+are you able to open files from my disk?
+can you run commands on my machine?
+can you execute shell commands?
+can you see images?
+what tools do you have?
+can you save files?
+can you write to a file?
+bạn có tìm trên mạng được không?
+bạn có lên internet được không?
+bạn có vào được internet không?
+bạn có kết nối mạng được không?
+bạn có mở được file trên máy mình không?
+bạn có xem được tệp trên máy không?
+bạn có chạy lệnh được không?
+bạn có chạy được lệnh shell không?
+bạn có xem được ảnh không?
+bạn có lưu file được không?
+ban co tim tren mang duoc khong?
+ban co vao duoc internet khong?
+ban co mo duoc file tren may minh khong?
+ban co chay lenh duoc khong?
+[other]
+can you search the web for the latest news about Apple?
+search the web for today's weather in Hanoi
+search the web
+can you google it?
+can you look it up online?
+read notes.txt
+can you open notes.txt?
+can you help me with my code?
+can you help me with something?
+can you write a poem?
+can you translate this into English?
+can you explain recursion?
+run this python: print(1)
+do you know what time it is?
+tìm trên mạng: giá vàng hôm nay
+bạn tìm giúp mình tin mới nhất được không?
+bạn tìm giúp mình giá vàng hôm nay được không?
+đọc file notes.txt giúp mình
+bạn dịch giúp mình câu này được không?
+bạn giúp mình viết thơ được không?
+chạy lệnh ls giúp mình
+bạn có khỏe không?
+bạn có rảnh không?
+bạn có biết thủ đô của Pháp là gì không?
+bạn có thích mùa thu không?
+bạn có nhớ tên mình không?
+ban tim giup minh tin moi nhat duoc khong?
+doc file notes.txt giup minh
+ban dich giup minh cau nay duoc khong?
+ban co khoe khong?
+ban co biet thu do cua Phap la gi khong?

@@ -1,0 +1,14 @@
+# Elisa's own resume line (`situation::resume_line`): a "continue our last conversation" / "what were we doing?"
+# that got no usable reply from the model (a tiny window) is answered from the saved conversation itself: the user's
+# own earlier messages ({asks}, quoted) and the facts they told ({facts}). One section per reply language; a line
+# whose part has nothing to fill is left out. Change the wording here, not in code.
+
+[en]
+asks = Last time you asked: {asks}.
+facts = {facts}
+end = Want to go on?
+
+[vi]
+asks = Lần trước bạn đã hỏi: {asks}.
+facts = {facts}
+end = Bạn muốn tiếp tục không?

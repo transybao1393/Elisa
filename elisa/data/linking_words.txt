@@ -1,0 +1,14 @@
+# Words that, right after "the user's X" in a reply, show the "'s" means "is" ("The user's late for the meeting" →
+# "You're late for the meeting"), not "has a thing" ("The user's parents live …" → "Your parents live …").
+# Used by `context::NameFix` when a reply speaks of the user in Elisa's own third-person fact wording. One per line.
+for
+to
+at
+in
+on
+and
+but
+now
+today
+again
+too

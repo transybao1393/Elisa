@@ -1,0 +1,32 @@
+# How an ask names a change of words in a file, without quote marks ("in e1.txt change hello to goodbye"), read by
+# `repl::turn::framed_edit`. One frame per line: "the file" stands for the file's name, "foo" for the old words,
+# "bar" for the new ones; every other word must be in the ask as written, in this order (words may come before the
+# frame: "please …"). The old words must be in the file exactly once. Add a wording here, not in code.
+in the file change foo to bar
+change foo to bar in the file
+in the file replace foo with bar
+replace foo with bar in the file
+in the file replace foo by bar
+replace foo by bar in the file
+in the file rename foo to bar
+rename foo to bar in the file
+in the file swap foo for bar
+swap foo for bar in the file
+in the file turn foo into bar
+change foo in the file to bar
+replace foo in the file with bar
+# Vietnamese
+trong the file đổi foo thành bar
+đổi foo thành bar trong the file
+trong the file sửa foo thành bar
+sửa foo thành bar trong the file
+trong the file thay foo bằng bar
+thay foo bằng bar trong the file
+trong the file thay foo thành bar
+thay foo thành bar trong the file
+trong the file đổi chữ foo thành bar
+đổi chữ foo thành bar trong the file
+trong tệp the file đổi foo thành bar
+đổi foo thành bar trong tệp the file
+doi foo thanh bar trong the file
+trong the file doi foo thanh bar

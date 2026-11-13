@@ -116,11 +116,14 @@ struct TranscriptColumn: View {
                     .onChange(of: geo.size) { if !m.scrollHeld { proxy.scrollTo("end", anchor: .bottom) } }
                     .overlay(alignment: .bottomTrailing) {
                         if m.scrollHeld {
-                            NewOutputPill {
+                            let jump = {
                                 m.scrollHeld = false; m.heldNew = false; m.heldLines = 0
                                 proxy.scrollTo("end", anchor: .bottom)
                             }
+                            NewOutputPill(jump: jump)
                             .padding(.trailing, dockW).padding(.bottom, 8)
+                            // the pill's own action, for --selftest's jump step
+                            .onAppear { ScrollHold.jump = jump }
                         }
                     }
                 }
@@ -134,9 +137,26 @@ struct TranscriptColumn: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 // the bubble wraps inside the dock column (less the dock's trailing 16): full text, never truncated
-                if !m.shadeHidden { Dock(size: size, scale: k, room: dockW - 16).padding(.trailing, 16) }
-                if !m.slashItems.isEmpty { SlashMenu().padding(.leading, 24).frame(maxWidth: .infinity, alignment: .bottomLeading) }
+                if !m.shadeHidden {
+                    Dock(size: size, scale: k, room: dockW - 16).padding(.trailing, 16)
+                        // its height: the permission box leaves the transcript at least this much (ApprovalRoom)
+                        .background(GeometryReader { d in
+                            Color.clear.onAppear { ApprovalRoom.shared.set(dock: d.size.height) }
+                                .onChange(of: d.size.height) { _, v in ApprovalRoom.shared.set(dock: v) }
+                                .onDisappear { ApprovalRoom.shared.set(dock: 0) }
+                        })
+                }
+                // never taller than the transcript area above the input: its rows scroll inside it instead. The box
+                // starts left of the transcript's text edge (its own padding puts the commands back on that edge), so
+                // no transcript line shows beside it.
+                if !m.slashItems.isEmpty {
+                    SlashMenu(room: geo.size.height - 12).padding(.leading, max(6, side - 14)).padding(.top, 6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                }
             }
+            // the transcript's height: the permission box's scrolling part shrinks so the dock always fits (ApprovalRoom)
+            .onAppear { ApprovalRoom.shared.set(transcript: geo.size.height) }
+            .onChange(of: geo.size.height) { _, v in ApprovalRoom.shared.set(transcript: v) }
         }
     }
 }
@@ -804,7 +824,8 @@ struct CardBox: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Pixel("STATE", color: p.fg2)
-                if let n { Text("state #\(n)").font(Fonts.mono(11.5, .semibold)).foregroundStyle(p.fg) }
+                // verbatim: a number in a localized Text gets a thousands separator ("#1.098"); the status line shows "#1098"
+                if let n { Text(verbatim: "state #\(n)").font(Fonts.mono(11.5, .semibold)).foregroundStyle(p.fg) }
                 Text("carried forward").font(Fonts.mono(11.5)).foregroundStyle(p.fg2)
                 Spacer()
                 Text("/state").font(Fonts.mono(11.5)).foregroundStyle(p.fg2)
@@ -844,22 +865,40 @@ struct TextBox: View {
 struct SlashMenu: View {
     @EnvironmentObject var m: AppModel
     @Environment(\.pal) var p
+    /// the height the menu may take (the space above the input)
+    var room: CGFloat = .infinity
+    /// one row and the footer (separator and key hint), as laid out below
+    private static let rowH: CGFloat = 23, footH: CGFloat = 26
     var body: some View {
         let items = m.slashItems
+        // the rows' own height, capped so the footer and the padding still fit in the room
+        let listH = min(CGFloat(items.count) * Self.rowH, max(Self.rowH * 2, room - Self.footH - 12))
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(items.enumerated()), id: \.offset) { i, c in
-                HStack(spacing: 14) {
-                    Text(c.0).font(Fonts.mono(12.5, .medium)).foregroundStyle(i == m.slashSel ? p.acc : p.fg).frame(width: 84, alignment: .leading)
-                    Text(c.1).font(Fonts.mono(12.5)).foregroundStyle(p.tx).lineLimit(1)
-                    Spacer(minLength: 0)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { i, c in
+                            HStack(spacing: 14) {
+                                Text(c.0).font(Fonts.mono(12.5, .medium)).foregroundStyle(i == m.slashSel ? p.acc : p.fg).frame(width: 84, alignment: .leading)
+                                Text(c.1).font(Fonts.mono(12.5)).foregroundStyle(p.tx).lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .frame(height: Self.rowH)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(i == m.slashSel ? p.sel : .clear))
+                            .contentShape(Rectangle())
+                            .onTapGesture { m.runSlash(i) }
+                            .id(i)
+                        }
+                    }
                 }
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(RoundedRectangle(cornerRadius: 4).fill(i == m.slashSel ? p.sel : .clear))
-                .contentShape(Rectangle())
-                .onTapGesture { m.runSlash(i) }
+                .scrollIndicators(.automatic)
+                .frame(height: listH)
+                // the highlighted row stays in view as ↑↓ move it
+                .onChange(of: m.slashSel) { proxy.scrollTo(m.slashSel) }
             }
             Rectangle().fill(p.sep).frame(height: 1).padding(.top, 4)
-            Text("↑↓ move · tab complete · enter run · esc close").font(Fonts.mono(11)).foregroundStyle(p.fg2).padding(.horizontal, 8).padding(.top, 4)
+            Text("↑↓ move · tab complete · enter run · esc close").font(Fonts.mono(11)).foregroundStyle(p.fg2).lineLimit(1).padding(.horizontal, 8).padding(.top, 4)
         }
         .padding(6)
         .frame(width: 470)

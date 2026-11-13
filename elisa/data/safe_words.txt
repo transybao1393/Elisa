@@ -1,0 +1,110 @@
+# A dependency check's safety verdict in a reply (`repl/turn.rs` `drop_wrong_status`). When the check found advisories,
+# a sentence that says the user's dependencies, packages or a checked package are safe goes ("The dependencies listed
+# in the `requirements.txt` file are safe."); "not safe" stays. One wording per line as "key: wording", lowercase,
+# matched as whole words; add a language's wording here, not in code.
+#   safe:    a wording that calls them safe
+#   not:     a word that turns it round when it comes up to two words before ("are not safe", "không an toàn")
+#   about:   a word for what is called safe, besides the checked packages' names
+#   then:    a linking word that leans on the sentence before ("However, …"); it goes when that sentence went, and
+#            what follows it in a safe verdict's sentence ("… are safe, but there are known advisories") stays
+safe: are safe
+safe: is safe
+safe: are secure
+safe: is secure
+safe: are ok
+safe: is ok
+safe: are fine
+safe: is fine
+safe: look safe
+safe: are generally safe
+safe: is generally safe
+safe: are mostly safe
+safe: are probably safe
+safe: are relatively safe
+safe: appear to be safe
+safe: appears to be safe
+safe: appear safe
+safe: seem safe
+safe: seems safe
+safe: should be safe
+safe: are currently safe
+safe: is currently safe
+safe: are considered safe
+safe: is considered safe
+safe: are still safe
+safe: is also safe
+safe: are also safe
+safe: is still safe
+safe: are safe to use
+safe: have been addressed in the latest versions
+safe: has been addressed in the latest version
+safe: have been fixed in the latest versions
+safe: have been resolved in the latest versions
+safe: đã được khắc phục trong các phiên bản mới nhất
+safe: da duoc khac phuc trong cac phien ban moi nhat
+safe: hiện an toàn
+safe: hien an toan
+safe: looks safe
+safe: an toàn
+safe: an toan
+not: not
+not: no
+not: không
+not: khong
+not: chưa
+not: chua
+about: dependencies
+about: dependency
+about: packages
+about: package
+about: requirements
+about: libraries
+about: gói
+about: goi
+about: thư viện
+about: thu vien
+then: however
+then: but
+then: though
+then: still
+then: nevertheless
+then: tuy nhiên
+then: tuy nhien
+then: nhưng
+then: nhung
+#   fixed:   a wording that calls a version fixed; said of the version in use with no other version in the sentence
+#            ("Flask version 0.12 has been fixed for …") it goes, while "fixed in 3.1.3" stays
+fixed: fixed
+fixed: patched
+fixed: resolved
+fixed: is safe
+fixed: are safe
+fixed: đã được sửa
+fixed: da duoc sua
+fixed: đã sửa
+fixed: da sua
+fixed: đã vá
+fixed: da va
+fixed: đã được vá
+fixed: da duoc va
+fixed: đã khắc phục
+fixed: da khac phuc
+#   later:   a wording that says a package's problems were fixed in later versions, with no version named; said of a
+#            checked package while the version in use is still affected it reads as all being well, so that clause
+#            goes (the sentence when it is the whole of it) and Elisa's summary gives the upgrade to make
+later: addressed in later versions
+later: fixed in later versions
+later: resolved in later versions
+later: patched in later versions
+later: addressed in newer versions
+later: fixed in newer versions
+later: resolved in newer versions
+later: patched in newer versions
+later: fixed in later releases
+later: addressed in later releases
+later: đã được khắc phục ở các phiên bản sau
+later: da duoc khac phuc o cac phien ban sau
+later: đã được sửa ở các phiên bản sau
+later: da duoc sua o cac phien ban sau
+later: đã được sửa trong các phiên bản mới hơn
+later: da duoc sua trong cac phien ban moi hon

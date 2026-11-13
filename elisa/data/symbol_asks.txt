@@ -1,0 +1,55 @@
+# Asks to see one function, class or other symbol of a code file as it is (`repl/turn.rs` `symbol_show_ask`): one
+# example per line. In a message the symbol's name is put as "foo" and the file's name as "the file" before it is
+# compared, so write them that way here. A message close in meaning (all-MiniLM-L6-v2) to the `[show]` examples and
+# nearer to them than to every `[other]` example, sharing a word with that nearest example that no `[other]` example
+# has, is such an ask: Elisa reads the symbol herself and shows its real lines. Near the `[check]` examples instead
+# (a question whether something is wrong in it: "có lỗi gì không?", "what's wrong with foo?"), Elisa reads the symbol
+# too, but the model answers the question with its lines in hand; a reply that only gives the code back is asked once
+# more, then Elisa says plainly she could not judge it. Fix a missed or wrong wording by adding an example to the side
+# it belongs to, not by code.
+[show]
+show me the foo function in the file
+show me just the foo function in the file
+show me the foo function again
+show the foo function
+print the foo function
+let me see foo in the file
+let me see the foo function
+display the code of foo
+what does the code of foo look like?
+cho mình xem hàm foo trong the file
+hiển thị hàm foo
+cho minh xem ham foo
+[check]
+the file có lỗi gì không? xem hàm foo
+file the file có lỗi gì không? xem hàm foo
+hàm foo có lỗi gì không?
+hàm foo trong the file có sai gì không?
+hàm foo sai ở đâu?
+xem hàm foo có lỗi không
+kiểm tra hàm foo có đúng không
+ham foo co loi gi khong?
+file the file co loi gi khong? xem ham foo
+ham foo sai o dau?
+is there a mistake in the foo function?
+is there an error in foo in the file?
+does foo in the file have any errors?
+what's wrong with the foo function?
+is foo correct?
+check the foo function for mistakes
+[other]
+what does the foo function do?
+explain the foo function
+fix the foo function in the file
+the foo function in the file subtracts; fix it
+rename foo to bar
+delete the foo function
+where is foo used?
+add a docstring to foo
+write a test for foo
+how many lines does foo have?
+show me the outline of the file
+show me the whole file
+hàm foo làm gì?
+sửa hàm foo
+giải thích hàm foo

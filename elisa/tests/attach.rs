@@ -9,12 +9,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("elisa-attach-it-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d.canonicalize().unwrap()
-}
+mod common;
+use common::TempDir;
+
+fn tmp(tag: &str) -> TempDir { TempDir::real(&format!("attach-it-{tag}")) }
 
 /// a minimal PDF, one Helvetica text line per page
 fn pdf(pages: &[String]) -> Vec<u8> {
@@ -56,7 +54,8 @@ fn docx(paras: &[&str]) -> Vec<u8> {
     w.finish().unwrap().into_inner()
 }
 
-struct Run { code: i32, stderr: String, reqs: Vec<Value>, project: PathBuf }
+/// `_base` holds the run's folder (project and HOME) until the test is done with `project`
+struct Run { code: i32, stderr: String, reqs: Vec<Value>, project: PathBuf, _base: TempDir }
 
 /// `elisa -p PROMPT --attach F…` in a fresh project (route = "auto", the default) with HOME next to it
 fn run(tag: &str, prompt: &str, files: &[PathBuf], script: Vec<Scripted>) -> Run { run_with(tag, prompt, files, script, &[], |_| {}) }
@@ -76,7 +75,7 @@ fn run_with(tag: &str, prompt: &str, files: &[PathBuf], script: Vec<Scripted>, e
     cmd.args(extra);
     for (k, _) in std::env::vars() { if k.starts_with("ELISA_") || k.starts_with("ANTHROPIC_") { cmd.env_remove(&k); } }
     let out = cmd.current_dir(&base).env("HOME", &home).output().unwrap();
-    Run { code: out.status.code().unwrap_or(-1), stderr: String::from_utf8_lossy(&out.stderr).into(), reqs: fake.requests(), project }
+    Run { code: out.status.code().unwrap_or(-1), stderr: String::from_utf8_lossy(&out.stderr).into(), reqs: fake.requests(), project, _base: base }
 }
 
 fn reply(t: &str) -> Scripted { Scripted { text: Some(t.into()), ..Default::default() } }
@@ -117,16 +116,19 @@ fn handbook_pdf() -> Vec<u8> {
     pdf(&pages)
 }
 
-/// each test its own folder: the tests run in parallel, and a shared one was removed under another test
-fn handbook(tag: &str) -> PathBuf {
-    let f = tmp(&format!("{tag}-src")).join("handbook.pdf");
+/// each test its own folder (kept by the returned guard): the tests run in parallel, and a shared one was removed
+/// under another test
+fn handbook(tag: &str) -> (TempDir, PathBuf) {
+    let src = tmp(&format!("{tag}-src"));
+    let f = src.join("handbook.pdf");
     std::fs::write(&f, handbook_pdf()).unwrap();
-    f
+    (src, f)
 }
 
 #[test]
 fn a_large_pdf_gets_an_overview_inline_and_docs_pdf_still_reads_the_copy() {
-    let r = run("large", "summarise this", &[handbook("large")], vec![reply("It is a staff handbook.")]);
+    let (_src, f) = handbook("large");
+    let r = run("large", "summarise this", &[f], vec![reply("It is a staff handbook.")]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(r.reqs.len(), 1, "one model call");
     let t = tools(&r.reqs[0]);
@@ -145,7 +147,8 @@ fn a_large_pdf_gets_an_overview_inline_and_docs_pdf_still_reads_the_copy() {
 
 #[test]
 fn a_specific_question_gets_the_page_that_answers_it() {
-    let r = run("pick", "who issues parking permits?", &[handbook("pick")], vec![reply("The facilities desk.")]);
+    let (_src, f) = handbook("pick");
+    let r = run("pick", "who issues parking permits?", &[f], vec![reply("The facilities desk.")]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     let u = last_user(&r.reqs[0]);
     assert!(u.contains("handbook.pdf, 40 pages; page") && u.contains("picked for this question"), "{u}");
@@ -154,7 +157,8 @@ fn a_specific_question_gets_the_page_that_answers_it() {
 
 #[test]
 fn a_refusal_is_asked_once_more_with_the_text() {
-    let r = run("refuse", "read this one for me", &[handbook("refuse")],
+    let (_src, f) = handbook("refuse");
+    let r = run("refuse", "read this one for me", &[f],
         vec![reply("I'm sorry, but I can't process the PDF file you've attached."), reply("It is a staff handbook with 40 rules.")]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(r.reqs.len(), 2, "asked once more");

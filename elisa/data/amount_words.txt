@@ -1,0 +1,52 @@
+# Words for an amount or a unit beside a number that make it a value (`repl/turn.rs` `live_figures`): "139 triệu",
+# "84,5 triệu đồng", "2.3 million", "1.200 USD", "5 nghìn", "3 tỷ", "403.547 người", "$950", "28°C", "0,00%". Grouped
+# by the kind of value the unit gives (`figure_kind`): a count of people, money, degrees, a share, a length, a mass, a
+# speed, an area. One section per kind, "[kind]", with these keys (every list is "a | b | c"):
+#   unit:  the unit words and signs of the kind. A sign ("$", "°", "%") counts right beside the number with no space
+#          ("$950", "28°C", "5%"); a word of two letters or more counts written onto the number too ("21oC", "5km",
+#          "139tr"); a single letter only after a space ("24k" is gold's purity, "5 k" an amount). Units may follow
+#          one another, with a "/" between ("đồng/lượng", "USD/ounce", "km/h"): the first after the multipliers gives
+#          the kind.
+#   ask:   the words of an ask that take this kind ("population" a count, "price" money, "nhiệt độ" degrees): the
+#          figure given for the ask must be of a kind it takes, or plain (`live_sentence`); they also make the ask one
+#          for a figure from the web (`figure_ask`).
+#   not:   longer wordings an `ask` word does not count inside ("đánh giá" is a review, not a price).
+# [multiplier] holds the words that scale a number ("139 triệu", "2.3 million"): the unit after one gives the kind
+# ("2.3 million people" is a count); none leaves the number plain. A plain number (one with a separator, "394,324", or
+# a multiplier alone, "139 triệu") can be any kind's value; a figure of a kind the ask does not take is never the asked
+# figure ("0,00% dân số thế giới" is a share, not the population; "$11,000 to climb" is money, not Everest's height).
+# A kind headed "[share] only when asked" is taken only by an ask naming it: an ask naming no kind takes every other.
+# [range] holds the frames of two figures that give a range, not one value ("wavered between about 30,000 and
+# 80,000", "từ 40.000 đến 60.000 người"): "{}" stands for a figure, one word may come before it ("about", "khoảng").
+# A sentence of such a range comes after one giving a single value.
+# English and Vietnamese, with and without accents, compared whole, ignoring case. Fix a missed unit, ask word or
+# range frame here, not in code.
+[multiplier]
+unit: thousand | million | millions | billion | billions | trillion | k | bn | nghìn | nghin | ngàn | ngan | triệu | trieu | tỷ | ty | tr
+[count]
+unit: people | persons | inhabitants | residents | người | nguoi | dân | dan
+ask: population | populations | how many people | inhabitants | dân số | dan so | số dân | so dan | bao nhiêu người | bao nhieu nguoi | bao nhiêu dân | bao nhieu dan
+[money]
+unit: $ | € | £ | ¥ | ₫ | usd | eur | vnd | gbp | jpy | dollars | dollar | euros | euro | pounds | cents | đồng | dong | đ | xu
+ask: price | prices | cost | costs | how much is | how much does | how much do | how much are | salary | salaries | wage | wages | income | revenue | gdp | net worth | exchange rate | market cap | giá | giá cả | gia ca | tỷ giá | ty gia | tỉ giá | ti gia | lương | luong | thu nhập | thu nhap | doanh thu | bao nhiêu tiền | bao nhieu tien
+not: đánh giá | danh gia | giá như | gia nhu | giá mà | gia ma | giá trị | gia tri | giá đỡ | gia do | đáng giá | dang gia
+[degrees]
+unit: ° | oc | độ | do
+ask: temperature | temperatures | weather | how hot | how cold | how warm | degrees | nhiệt độ | nhiet do | thời tiết | thoi tiet | bao nhiêu độ | bao nhieu do | nóng bao nhiêu | nong bao nhieu | lạnh bao nhiêu | lanh bao nhieu
+[share] only when asked
+unit: % | percent | per cent | phần trăm | phan tram
+ask: percentage | percent | per cent | share | rate | rates | inflation | interest rate | unemployment | what proportion | tỷ lệ | tỉ lệ | ty le | ti le | lạm phát | lam phat | lãi suất | lai suat | phần trăm | phan tram
+[length]
+unit: km | m | cm | mm | mile | miles | ft | feet | foot | metres | meters | metre | meter | kilometres | kilometers | inches
+ask: height | heights | elevation | altitude | distance | how tall | how high | how far | how long is | how deep | depth | length | width | chiều cao | chieu cao | độ cao | do cao | khoảng cách | khoang cach | chiều dài | chieu dai | chiều rộng | chieu rong | độ sâu | do sau | cao bao nhiêu | cao bao nhieu | xa bao nhiêu | xa bao nhieu | dài bao nhiêu | dai bao nhieu | sâu bao nhiêu | sau bao nhieu
+[mass]
+unit: kg | g | mg | lb | lbs | ounce | ounces | oz | ton | tons | tonnes | tấn | tan | tạ | lượng | luong | chỉ | gram | grams | kilogram | kilograms
+ask: weight | weighs | how heavy | mass | cân nặng | can nang | khối lượng | khoi luong | nặng bao nhiêu | nang bao nhieu
+[speed]
+unit: km/h | kph | mph | m/s | knots
+ask: speed | speeds | how fast | velocity | tốc độ | toc do | nhanh bao nhiêu | nhanh bao nhieu
+[area]
+unit: km² | km2 | m² | m2 | ha | hecta | hectare | hectares | acre | acres | sq km | sq mi
+ask: area | how big | how large | surface | diện tích | dien tich | rộng bao nhiêu | rong bao nhieu | lớn bao nhiêu | lon bao nhieu
+[range]
+frame: between {} and {} | from {} to {} | ranging {} to {} | từ {} đến {} | từ {} tới {} | tu {} den {} | tu {} toi {} | giữa {} và {} | giua {} va {}

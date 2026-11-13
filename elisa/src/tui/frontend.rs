@@ -11,10 +11,42 @@ pub(super) enum Ev {
     Activity(crate::activity::Activity),
 }
 
-struct ChannelFrontend(Sender<Ev>);
+/// the channel to the screen, and the reply text on its way there (`ShownText`: secrets masked as "sk-l…")
+struct ChannelFrontend(Sender<Ev>, std::cell::RefCell<crate::frontend::ShownText>);
 
 impl ChannelFrontend {
-    fn send(&self, e: Ev) { let _ = self.0.send(e); }
+    /// One event to the screen with every secret in its text masked (`secrets::mask_shown`); reply text held at its
+    /// unfinished last word until that word ends or another event goes out.
+    fn send(&self, e: Ev) {
+        use crate::secrets::mask_shown as m;
+        let e = match e {
+            Ev::Delta(t) => {
+                let v = self.1.borrow_mut().push(&t);
+                if v.is_empty() { return; }
+                Ev::Delta(v)
+            }
+            // (the live line and the meters are not in the reply's text: the held word stays held)
+            e @ (Ev::Activity(_) | Ev::Progress(_) | Ev::Watch(_) | Ev::WatchView(_)) => e,
+            e => {
+                let h = self.1.borrow_mut().finish();
+                if !h.is_empty() { let _ = self.0.send(Ev::Delta(h)); }
+                match e {
+                    Ev::User(t) => Ev::User(m(&t)),
+                    Ev::ToolStart(t) => Ev::ToolStart(m(&t)),
+                    Ev::ToolDone(t, x) => Ev::ToolDone(m(&t), x),
+                    Ev::Approve(t, sm, tx) => Ev::Approve(t, m(&sm), tx),
+                    Ev::Info(t) => Ev::Info(m(&t)),
+                    Ev::Error(t) => Ev::Error(m(&t)),
+                    Ev::Notes(t) => Ev::Notes(m(&t)),
+                    Ev::Card(t) => Ev::Card(m(&t)),
+                    Ev::Full(a, b) => Ev::Full(m(&a), m(&b)),
+                    Ev::History(items) => Ev::History(items.into_iter().map(|mut i| { i.text = m(&i.text); i }).collect()),
+                    e => e,
+                }
+            }
+        };
+        let _ = self.0.send(e);
+    }
     fn ask<T>(&self, mk: impl FnOnce(Sender<T>) -> Ev, dflt: T) -> T {
         let (tx, rx) = mpsc::channel();
         self.send(mk(tx));
@@ -110,7 +142,7 @@ pub fn run(args: Args) -> i32 {
     };
     let (tx, rx) = mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let mut fe = ChannelFrontend(tx.clone());
+        let mut fe = ChannelFrontend(tx.clone(), Default::default());
         let c = crate::repl::run_session(args, &mut fe);
         let _ = tx.send(Ev::Exit(c));
     });

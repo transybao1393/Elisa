@@ -1,0 +1,393 @@
+# Small talk (a greeting, "are you there?", "how are you?", "are you free?", thanks, a goodbye): one example per
+# line, English and Vietnamese, with and without accents. A short message close in meaning to one of these, or to the
+# `[sharing]` lines (the user telling how they are or what they just did: "I'm so tired today"), is small talk
+# (`route::small_talk`, all-MiniLM-L6-v2) when it is closer to them than to the asks under `[other]` (the model
+# reads Vietnamese poorly: short Vietnamese asks land near Vietnamese greetings, so both sides need examples). Such a
+# turn carries no tool and keeps none from the last turn's work. Fix a missed or wrong wording by adding an example
+# to the side it belongs to, not by code.
+[small_talk]
+hi
+hello
+hey there
+good morning
+good evening
+hi Elisa, how are you?
+how are you doing today?
+how's it going?
+what's up?
+are you there?
+you there?
+are you free right now?
+are you busy?
+got a minute?
+long time no see
+nice to see you again
+xin chào
+chào cậu
+chào buổi sáng
+bạn khỏe không?
+bạn có khỏe không?
+dạo này thế nào?
+ê, đang rảnh không?
+bạn đang rảnh không?
+có đó không?
+bạn có ở đó không?
+alo
+xin chao
+chao ban
+ban khoe khong?
+e, dang ranh khong?
+ban dang ranh khong?
+co do khong?
+what's new?
+anything new with you?
+sup
+sup Elisa
+bạn ơi
+bạn ơi, có đó không?
+ban oi
+ban oi, co do khong?
+thanks a bunch!
+thank you so much
+many thanks!
+thx a lot
+thanks, that helped
+cảm ơn nhiều nha
+cam on nhieu nha
+cám ơn bạn nhiều
+bye
+good night
+see you later
+cảm ơn nha
+cảm ơn bạn
+cảm ơn bạn nhé
+tạm biệt
+tạm biệt nhé
+hẹn gặp lại nha
+cam on nhe
+tam biet
+tam biet nhe
+# the user telling how they are or what they just did (no ask in it)
+[sharing]
+I just got back from the gym and I'm hungry
+I'm so tired today
+had a long day at work
+just finished lunch
+I'm bored
+it's raining here again
+I couldn't sleep last night
+I'm starving
+feeling great today
+just woke up
+my day was pretty good
+mình mới tập thể dục xong, mệt quá
+hôm nay mệt quá
+mình đói quá
+trời mưa rồi
+hôm nay vui ghê
+mình vừa ăn trưa xong
+mới đi làm về
+minh moi tap the duc xong
+hom nay met qua
+minh doi qua
+troi mua roi
+mình mới chạy bộ về, mệt ghê
+vừa đi dạo về
+minh moi chay bo ve
+lovely weather today
+it's so hot today
+trời hôm nay đẹp thật
+nay trời mát quá
+trời nóng quá
+troi hom nay dep that
+nay troi mat qua
+[other]
+tell me a joke
+what time is it in Berlin?
+what is the capital of France?
+read notes.txt
+do you remember my name?
+write a poem about the sea
+explain how this works
+search the web for news
+what is 2 + 3?
+translate this into English
+can you help me with my code?
+what's the weather today?
+mấy giờ rồi?
+viết một bài thơ về mùa thu
+dịch câu này sang tiếng Anh
+giải thích cái này giúp mình
+tìm tin tức mới nhất
+đọc file notes.txt
+tên mình là gì?
+hôm nay thời tiết thế nào?
+may gio roi?
+viet mot bai tho
+dich cau nay sang tieng Anh
+what's new in the latest version?
+what changed in this release?
+what's new in iOS?
+# The kind of small talk a message is, for Elisa's own short reply when the model gave none (`route::small_talk_line`):
+# the section with the longest example whose words the message all has; a greeting when none does.
+[thanks]
+thanks
+thank you
+thank u
+thanks a lot
+thx
+ty
+cheers
+ok ty
+ok thanks
+okay thanks
+k thx
+thanks that's all
+cảm ơn
+cảm ơn bạn
+cám ơn
+cam on
+[bye]
+bye
+bye bye
+goodbye
+good night
+goodnight
+gn
+see you
+see you later
+ok bye
+bye for now
+tạm biệt
+tam biet
+hẹn gặp lại
+# What a reply to a closer (thanks, a goodbye) must not be: a pitch of the assistant's services or a self-introduction
+# (`reply_check::closer_reply_fixed`, by meaning against [closer_replies]); such a reply gets Elisa's own closing line.
+[pitch]
+I'm Elisa, a helpful assistant. I can help you with questions, writing, code and more.
+I am an AI assistant here to help you with anything you need.
+As an AI language model, I can assist with a wide range of tasks.
+I can help with information, answer questions, write text and explain things for you.
+Let me know what you need: I can search, read files, write and translate.
+Tôi là Elisa, một trợ lý ảo. Tôi có thể giúp bạn với nhiều việc khác nhau.
+Tôi là một mô hình ngôn ngữ, có thể giúp bạn trả lời câu hỏi và viết văn bản.
+Tôi có thể giúp bạn với thông tin, trả lời câu hỏi, viết và dịch.
+Tôi có thể giúp bạn với mọi việc một cách chính xác nhất.
+Mình là trợ lý AI, sẵn sàng hỗ trợ bạn mọi lúc với mọi việc.
+If you tell me more about what you have, I'll pick the best option for you.
+Want me to pick one for you, or help you plan the next step?
+Tell me what is nearby and I'll suggest something practical right now.
+Need help planning what to do next? Just say the word.
+# An apology nobody asked for, opening a reply ("I apologize for repeating myself. The joke…"): that first sentence
+# goes, the rest stays (`reply_check::without_unasked_opener`, by meaning). Not when the user said the reply was wrong.
+[apology_openers]
+I apologize for repeating myself.
+Sorry for the confusion earlier.
+I'm sorry for any misunderstanding.
+My apologies for the delay.
+Sorry about that!
+Xin lỗi vì đã lặp lại.
+Mình xin lỗi vì sự nhầm lẫn.
+Xin lỗi bạn vì sự chậm trễ.
+Thành thật xin lỗi về điều đó.
+# How an apology opens, for sentences the embedding model cannot read by meaning (Vietnamese: all-MiniLM-L6-v2 is
+# English-only): a first sentence that starts with one of these is an apology (`reply_check::without_unasked_opener`).
+[apology_lead]
+xin lỗi
+xin loi
+mình xin lỗi
+minh xin loi
+tôi xin lỗi
+toi xin loi
+em xin lỗi
+thành thật xin lỗi
+thanh that xin loi
+rất tiếc
+rat tiec
+# Replies that ask the user to put the message another way or give more context (`reply_check::asks_rephrase`, by
+# meaning). To a short follow-up ("why?" after a joke) such a reply gets one more try with the follow-up spelt out
+# from the last exchange (`follow_up_note` in `data/no_answer_lines.txt`).
+[rephrase_asks]
+I'm sorry, I didn't understand your question. Could you please rephrase it?
+Could you provide more context or details about what you mean?
+I'm not sure what you're asking. Can you clarify your question?
+What do you mean by that? Could you be more specific?
+Could you please elaborate on your question so I can help?
+Xin lỗi, mình chưa hiểu câu hỏi của bạn. Bạn có thể nói rõ hơn không?
+Bạn có thể giải thích rõ hơn ý của bạn được không?
+Ý bạn là gì? Bạn muốn hỏi về điều gì?
+Mình chưa rõ bạn đang hỏi gì, bạn nói cụ thể hơn nhé.
+# Replies in which the assistant only tells of itself (what it is doing, how it is): talk, no answer to an ask
+# (`reply_check::greets_instead`, by meaning).
+[self_talk]
+I'm just here working on the computer, nothing special.
+I'm doing well, just waiting for your questions.
+Nothing much going on here, I'm ready when you are.
+I'm fine, thanks. Just sitting here at the computer.
+Tôi đang ngồi làm việc thôi, chẳng có gì mới cả.
+Mình vẫn ổn, đang chờ bạn hỏi đây.
+Ở đây không có gì mới, mình sẵn sàng khi bạn cần.
+Mình đang ngồi trước máy tính thôi, không có gì đặc biệt.
+# Replies that close well: a thanks or goodbye answered in kind.
+[closer_replies]
+You're welcome! Glad I could help.
+No problem, anytime.
+Happy to help! See you next time.
+You're welcome. Let me know if you need anything else.
+Bye! Take care.
+Goodbye, have a nice day.
+Không có gì! Rất vui được giúp bạn.
+Không có chi, khi nào cần cứ hỏi nhé.
+Tạm biệt, hẹn gặp lại!
+Chúc bạn một ngày tốt lành.
+# Wordings that ask to be greeted ("…, then greet me"): a greeting answers such a message, whatever else it asks
+# (`reply_check::asks_greeting`).
+[greet_asks]
+greet me
+greet us
+say hi
+say hello
+say hi to me
+chào mình
+chào mình đi
+chao minh
+chào tôi
+chao toi
+# Words that greet: a reply to a plain greeting ("hey", "chào bạn") holds one, or it gets Elisa's greeting line
+# (`reply_check::greeting_reply_fixed`); one holding a [bye] example says goodbye to a hello and gets the line too.
+[greet_words]
+hi
+hello
+hey
+hiya
+howdy
+greetings
+welcome
+good morning
+good afternoon
+good evening
+nice to see you
+nice to meet you
+xin chào
+chào
+chao
+alo
+# Words of a check-in ("are you free?", "ê, đang rảnh không?"): a check-in is held to its reply like a greeting, and a
+# reply holding one of these words or a greeting answers it ("Mình rảnh, bạn cần gì?").
+[checkin_words]
+free
+busy
+there
+around
+rảnh
+ranh
+bận
+ban roi
+có đó
+co do
+ở đó
+o do
+here
+ở đây
+o day
+có mặt
+co mat
+# Asks how the assistant is ("how are you?", "bạn khỏe không?"): a reply to such a plain check-in holds one of
+# [wellbeing_answers] or gets the [reply_wellbeing] line (`reply_check::greeting_reply_fixed`); a greeting or a pitch
+# alone ("Xin chào! Tôi có thể giúp bạn…") does not answer it.
+[wellbeing]
+how are you
+how are you doing
+how are things
+how s it going
+how's it going
+how is it going
+how have you been
+khỏe không
+có khỏe không
+dạo này thế nào
+dạo này sao
+khoe khong
+co khoe khong
+dao nay the nao
+[wellbeing_answers]
+fine
+thanks for asking
+thank you for asking
+cảm ơn đã hỏi
+cam on da hoi
+well
+i m good
+i am good
+doing good
+i m great
+i am great
+doing great
+not bad
+good thanks
+good thank you
+khỏe
+khoe
+ổn
+tốt
+# Elisa's own short reply for each kind, one line per language ("en: …", "vi: …").
+[reply_greeting]
+en: Hi! What would you like to do next?
+vi: Chào bạn! Bạn muốn làm gì tiếp theo?
+# the first greeting of a chat, with no earlier turn
+[reply_start]
+en: Hi! What can I do for you?
+vi: Chào bạn! Bạn cần mình giúp gì?
+[reply_wellbeing]
+en: I'm doing well, thanks! What can I do for you?
+vi: Mình khỏe, cảm ơn bạn! Bạn cần mình giúp gì?
+[reply_thanks]
+en: You're welcome! Anything else I can help with?
+vi: Không có gì! Bạn cần mình giúp gì nữa không?
+[reply_bye]
+en: Bye! Talk to you soon.
+vi: Tạm biệt bạn! Hẹn gặp lại nhé.
+[reply_fact]
+en: Got it — {}.
+vi: Mình nhớ rồi — {}.
+# a feeling or a bit of the day told ("mình vừa chạy bộ xong, mệt quá"), with nothing usable from the model
+[reply_sharing]
+en: Thanks for telling me — I'm here if you want to talk about it more.
+vi: Cảm ơn bạn đã kể, mình ở đây nếu bạn muốn chia sẻ thêm nhé.
+# Sentences that speak about the reply itself instead of to the user (the model's note on its own answer: that it
+# did not repeat, that it kept short, that it gave the reason). A reply's last sentence nearer one of these in
+# meaning than any `[reply_talk]` line goes (`reply_check::without_reply_meta`). Examples, one per line, in both
+# languages.
+[reply_meta]
+No repeating here, only the reason for the joke.
+That is the explanation, without repeating the joke.
+Nothing repeated, only why the punchline works.
+Only the reason the joke lands, without saying it again.
+This answer is short and direct, as asked.
+I kept this reply brief and to the point.
+That covers the reason, nothing repeated.
+Just the reason, no repetition of the answer.
+This reply answers your question directly, as instructed.
+I answered in one short sentence as you asked.
+Không lặp lại, chỉ nêu lý do của câu đùa.
+Đó là lời giải thích, không nhắc lại câu đùa.
+Không nhắc lại câu đùa, chỉ nói vì sao nó buồn cười.
+Câu trả lời này ngắn gọn và đi thẳng vào vấn đề.
+Mình trả lời ngắn gọn như đã yêu cầu.
+Chỉ nêu lý do, không lặp lại câu trả lời.
+Mình đã trả lời đúng ý bạn hỏi, không dài dòng.
+# Ordinary closing sentences to the user, which a reply keeps: an offer of more, a follow-up question, a light remark
+# on the subject. The contrast set for `[reply_meta]`.
+[reply_talk]
+Tell me if you would like another one.
+Want to hear one more?
+Hope that helps.
+Ask me anything else you need.
+It is a light joke that fits the mood.
+Programmers will probably get this one.
+Nói mình biết nếu bạn muốn nghe thêm một câu nữa nhé.
+Bạn muốn nghe thêm không?
+Hy vọng điều này giúp được bạn.
+Bạn còn cần gì nữa thì cứ hỏi mình nhé.
+Câu đùa này nhẹ nhàng, hợp với không khí vui vẻ.
+Dân lập trình chắc sẽ thấy câu này quen.

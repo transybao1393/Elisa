@@ -1,0 +1,33 @@
+# Whether a past ask is a topic worth offering back on a mid-chat greeting ("Hi! More on <topic>?"), by meaning
+# (`situation::offer_topic`, all-MiniLM-L6-v2): one example per line, English and Vietnamese, with and without
+# accents. An ask nearer a `[one_off]` example (a fun fact, a joke: done once answered) is not offered back; an ask
+# nearer an `[ongoing]` example (a plan, a document, a piece of work) is. Fix a wrong wording by adding an example
+# to the side it belongs to, not by code.
+[one_off]
+tell me something fun
+tell me a joke
+tell me a fun fact
+say something interesting
+give me a random fact
+surprise me
+cheer me up
+tell me a riddle
+kể cho tôi một chuyện vui
+ke cho toi mot chuyen vui
+kể một câu chuyện cười đi
+nói gì đó thú vị đi
+noi gi do thu vi di
+cho mình một sự thật thú vị
+[ongoing]
+plan a 3-day trip to Tokyo
+plan a picnic for Saturday
+summarise page 12 of the report
+read notes.txt and summarise it
+help me write a cover letter
+make a marketing plan for my shop
+fix the failing test in app.py
+draft an email to my landlord
+lên kế hoạch du lịch Đà Nẵng 3 ngày
+len ke hoach du lich Da Nang 3 ngay
+giúp mình viết thư xin việc
+tóm tắt file báo cáo này

@@ -1,0 +1,96 @@
+# Save asks that give the very text to save (`repl/turn.rs` `given_ask`): one example per line. In a message the
+# text given is put as "foo" and the file's name as "the file" before it is compared, so write them that way here.
+# A message close in meaning (all-MiniLM-L6-v2) to the `[given]` examples and nearer to them than to every `[other]`
+# example, sharing a word with that nearest example that no `[other]` example has, gives its text: Elisa saves it as
+# given (the write still asks first). The `[other]` side asks the model to write something. Fix a missed or wrong
+# wording by adding an example to the side it belongs to, not by code.
+# One bare word right after the saving verb ("write hello to x.txt": the frame "write foo to the file") is the text
+# when its frame's nearest example is a `[given]` one, unless the word is one the `[other]` examples use ("code",
+# "output", "it": a kind of content, or a pointer back at something said), so name such words on the `[other]` side.
+# The text may also come after the file ("make hello.md with just the word hello in it", "tạo a.txt với chữ hello"):
+# quoted, or right after a word the examples put before their text ("word", "chữ", "containing"), up to the frame's
+# closing words. Text after the file's name and a colon ("save this to hello.txt: xin chào") is the text itself when
+# the words before read as a save, on either side ("this" then points at that text, not back at the chat).
+[given]
+save the word foo to the file
+write the word foo to the file
+write the word foo into the file
+save the text foo to the file
+write the text foo to the file
+write the text foo into the file
+save the text foo into the file
+put the line foo in the file
+write the line foo to the file
+save the line foo to the file
+add the phrase foo to the file
+save the sentence foo to the file
+save the words foo to the file
+write the words foo to the file
+put the word foo in the file
+write foo to the file
+save foo to the file
+put foo in the file
+jot down foo in the file
+jot foo down in the file
+note foo in the file
+note down foo in the file
+note foo down in the file
+add foo to the file
+append foo to the file
+add the line foo to the file
+ghi chú foo vào the file
+ghi lại foo vào the file
+thêm foo vào the file
+thêm dòng foo vào the file
+ghi chu foo vao the file
+them dong foo vao the file
+make the file with just the word foo in it
+make the file with the word foo in it
+make the file with foo in it
+create the file with the text foo in it
+create the file with foo in it
+create the file containing foo
+create the file containing the word foo
+it'd be nice to have the file with just the word foo in it
+lưu từ foo vào the file
+ghi từ foo vào the file
+viết từ foo vào the file
+ghi chữ foo vào the file
+viết chữ foo vào the file
+ghi dòng foo vào the file
+lưu dòng foo vào the file
+lưu câu foo vào the file
+ghi foo vào the file
+lưu foo vào the file
+viết foo vào the file
+tạo the file với chữ foo
+tạo the file với chữ foo nhé
+tạo the file có chữ foo
+tạo the file có chữ foo giúp mình
+tạo the file có nội dung foo
+tạo the file chứa chữ foo
+tao the file voi chu foo
+tao the file co noi dung foo
+[other]
+save a poem about foo to the file
+save a summary of foo to the file
+write a short story foo to the file
+save that plan foo to the file
+save the answer foo to the file
+save a list of foo to the file
+write a haiku about foo to the file
+save my notes about foo to the file
+write a letter to foo to the file
+save it as foo to the file
+write it to the file
+save this to the file
+save them to the file
+write something to the file
+write anything to the file
+write code to the file
+save the output to the file
+save the results to the file
+save everything to the file
+write a note to the file
+lưu bài thơ về foo vào the file
+lưu tóm tắt foo vào the file

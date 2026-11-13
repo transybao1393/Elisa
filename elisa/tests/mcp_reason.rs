@@ -5,6 +5,9 @@ use elisa::mcp_host::{Host, ServerCfg};
 use serde_json::{json, Value};
 use std::sync::atomic::AtomicBool;
 
+mod common;
+use common::TempDir;
+
 fn reason() -> ServerCfg {
     ServerCfg { name: "reason".into(), command: vec![env!("CARGO_BIN_EXE_elisa").into(), "--mcp-serve".into(), "reason".into()], ..ServerCfg::default() }
 }
@@ -77,8 +80,7 @@ for line in sys.stdin:
 
 #[test]
 fn placeholder_arguments_are_dropped_before_a_strict_server_sees_them() {
-    let d = std::env::temp_dir().join(format!("elisa-mcp-reason-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
+    let d = TempDir::new("mcp-reason");
     let script = d.join("strict.py");
     std::fs::write(&script, STRICT).unwrap();
     let cfg = ServerCfg { name: "think".into(), command: vec!["python3".into(), script.display().to_string()], ..ServerCfg::default() };
@@ -95,12 +97,11 @@ fn placeholder_arguments_are_dropped_before_a_strict_server_sees_them() {
     // a valid optional value goes through untouched
     let (t, e) = call(&mut h, "think_sequentialthinking", json!({"thought": "t", "nextThoughtNeeded": false, "thoughtNumber": 2, "totalThoughts": 2, "revisesThought": 1}));
     assert!(!e && t.contains("\"revisesThought\": 1"), "{t}");
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
 fn the_reason_setting_project_may_only_switch_it_off() {
-    let d = std::env::temp_dir().join(format!("elisa-reason-cfg-{}", std::process::id()));
+    let d = TempDir::new("reason-cfg");
     let (home, proj) = (d.join("home"), d.join("proj"));
     std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
     std::fs::create_dir_all(proj.join(".elisa")).unwrap();
@@ -116,12 +117,11 @@ fn the_reason_setting_project_may_only_switch_it_off() {
     assert_eq!(load("", "reason = \"off\"\n"), ("off".into(), 0));
     assert_eq!(load("", "reason = \"always\"\n"), ("auto".into(), 1));
     assert_eq!(load("reason = \"off\"\n", "reason = \"auto\"\n"), ("off".into(), 1));
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
 fn think_simple_defaults_off_and_a_project_may_only_set_it_off() {
-    let d = std::env::temp_dir().join(format!("elisa-think-simple-cfg-{}", std::process::id()));
+    let d = TempDir::new("think-simple-cfg");
     let (home, proj) = (d.join("home"), d.join("proj"));
     std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
     std::fs::create_dir_all(proj.join(".elisa")).unwrap();
@@ -136,7 +136,6 @@ fn think_simple_defaults_off_and_a_project_may_only_set_it_off() {
     assert_eq!(load("think_simple = \"maybe\"\n", ""), ("off".into(), 1));
     assert_eq!(load("think_simple = \"on\"\n", "think_simple = \"off\"\n"), ("off".into(), 0));
     assert_eq!(load("", "think_simple = \"on\"\n"), ("off".into(), 1));
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// Live check against the real @modelcontextprotocol/server-sequential-thinking (ignored by default; needs node and the

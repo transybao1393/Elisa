@@ -1,0 +1,77 @@
+# The day and the part of the day in the user's language, for a question about the time or the date
+# (`situation::clock_words`). Elisa's own clock line is in English ("22:10 Tuesday evening"); a small model put it
+# into Vietnamese as "thứ hai chiều" (Monday afternoon). With these words in the turn the model copies them, and a
+# reply that names another day or part next to the time is put right (`situation::ReplyFacts`).
+#
+# One section per language. Every value is "written with accents | written without accents" (a message without
+# accents gets the second form). Keys:
+#   asks       words that make a message a question about the time or the date in this language
+#   days       Sunday … Saturday
+#   day asks   the words asking which day it is: a reply that repeats one in place of the day gets today's name
+#   morning, noon, afternoon, evening, late night   the parts of the day (`situation::part_of_day`)
+#   hours      which hours each part holds, as "part from-to" (a range past midnight wraps: "late night 23-4") or
+#              "part hour"; the first range holding an hour names it, a later one holding it too is also right
+#              there (a reply saying it is left as it is). A language with none uses English's.
+#   greet      what may come before a part of the day in a greeting ("good" morning, "chào buổi" sáng): a message
+#              opening that way, or with the part alone ("morning!"), greets for that part (`situation::day_note`);
+#              nothing else before it ("I sang.", "this morning I ran") is a greeting
+#   time asks  the asks among them that want the clock time (a wording not here is read by meaning from the
+#              examples of data/time_asks.txt): a reply with no time in it, or with junk around it, is Elisa's own
+#              `answer`, and a time in it that is not the real one is put right (`situation::ReplyFacts`)
+#   say        that time in this language: {time}
+#   answer     Elisa's own whole answer to a time ask, when the reply has no clock time or wraps it in words that
+#              answer nothing (a denial, garbled text, talk about a word of the message): {time} {day} {part} and
+#              the date {d} {m} {y}, from her own clock line (`situation::ReplyFacts`)
+#   place answer   the same for a place asked ("what time is it in Paris?"): {place} and its {zone} (the offset
+#              and label of her "Time in … now" line)
+#   hour words, minute words   what follows the hour and the minutes of a time said in words ("hai giờ hai chín
+#              phút", "two o'clock"; the numbers from data/number_words.txt): such a time is checked like "02:29"
+#   line       the words given to the model: {time} {part} {day} {d} {m} {y}; none for English (Elisa's clock
+#              line is English already): its words only put a reply right
+#   now week   words that say where in the week it is now ("a great way to start the week", "chúc cuối tuần vui"), each
+#              group "wording | wording: the days it fits" (0 Sunday … 6 Saturday), ";" between groups: on any other
+#              day, with no day or week word in the user's message, the sentence saying it goes
+#              (`situation::without_wrong_week_words`)
+# Fix a missed wording by adding it here, not in code.
+
+[vi]
+asks = mấy giờ | may gio | giờ rồi | gio roi | mấy h | may h | thứ mấy | thu may | ngày mấy | ngay may | hôm nay là ngày | hom nay la ngay | hôm nay là thứ | hom nay la thu | ngày bao nhiêu | ngay bao nhieu | giờ bây giờ | gio bay gio
+day asks = thứ mấy | thu may
+time asks = mấy giờ | may gio | giờ rồi | gio roi | mấy h | may h | giờ bây giờ | gio bay gio
+say = Bây giờ là {time}.
+answer = Bây giờ là {time} {part} {day}, ngày {d}/{m}/{y}.
+place answer = Ở {place} bây giờ là {time} {part} {day} ({zone}).
+date asks = thứ mấy | thu may | ngày mấy | ngay may | ngày bao nhiêu | ngay bao nhieu | hôm nay là ngày | hom nay la ngay | hôm nay ngày | hom nay ngay | ngày hôm nay | ngay hom nay | ngày tháng hôm nay | ngay thang hom nay
+date answer = Hôm nay là {day}, ngày {d}/{m}/{y}.
+hour words = giờ | gio
+minute words = phút | phut
+now week = đầu tuần mới | dau tuan moi | khởi đầu tuần mới | bắt đầu tuần mới | bat dau tuan moi: 0,1 ; chúc cuối tuần vui | chuc cuoi tuan vui | cuối tuần vui vẻ | cuoi tuan vui ve | chúc cuối tuần | chuc cuoi tuan: 5,6,0
+days = Chủ Nhật | Chu Nhat ; Thứ Hai | Thu Hai ; Thứ Ba | Thu Ba ; Thứ Tư | Thu Tu ; Thứ Năm | Thu Nam ; Thứ Sáu | Thu Sau ; Thứ Bảy | Thu Bay
+morning = sáng | sang
+afternoon = chiều | chieu
+evening = tối | toi
+late night = khuya | khuya
+noon = trưa | trua
+hours = morning 5-10 | noon 11-12 | afternoon 13-17 | evening 18-22 | late night 23-4 | morning 11 | noon 13
+greet = chào buổi | chao buoi | chào | chao | buổi | buoi
+line = {time} {part} {day}, ngày {d}/{m}/{y}
+
+[en]
+asks = what day | day is it | what time | time is it | what's the date | what is the date | today's date | what date | day today | date today | got the time | what's the time | whats the time | wats the time | the time rn | the time now | time please | time pls | time check
+time asks = what time | time is it | got the time | what's the time | whats the time | wats the time | the time rn | the time now | time please | time pls | time check
+say = It's {time}.
+answer = It's {time}, {day} {part}.
+place answer = In {place} it's {time}, {day} {part} ({zone}).
+date asks = what day is it | what day is today | day is it today | what's the date | what is the date | whats the date | today's date | todays date | what date is it | what date is today | the date today | day today | date today | which day is it | what day of the week is it | which day of the week is it
+day asks = what day is it | what day is today | day is it today | which day is it | which day is today | what day of the week is it | which day of the week is it | day today
+date answer = Today is {day}, {d} {month} {y}.
+hour words = o'clock
+now week = start the week | start of the week | start your week | start to the week | beginning of the week | kick off the week | new week ahead | happy monday: 0,1 ; happy friday | tgif | end of the week | have a great weekend | have a nice weekend | enjoy your weekend | happy weekend: 4,5,6,0 ; midweek | middle of the week | hump day: 2,3,4
+days = Sunday ; Monday ; Tuesday ; Wednesday ; Thursday ; Friday ; Saturday
+morning = morning
+afternoon = afternoon
+evening = evening
+late night = late night
+noon = noon
+hours = morning 5-11 | noon 12 | afternoon 13-17 | evening 18-22 | late night 23-4 | afternoon 12
+greet = good

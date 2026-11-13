@@ -337,12 +337,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("elisa-outside-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+    fn tmp(tag: &str) -> crate::testdir::TempDir {
+        let d = crate::testdir::TempDir::real(&format!("outside-{tag}"));
         std::fs::create_dir_all(d.join("proj/src")).unwrap();
         std::fs::create_dir_all(d.join("other")).unwrap();
-        d.canonicalize().unwrap()
+        d
     }
 
     #[test]
@@ -358,7 +357,7 @@ mod tests {
         std::os::unix::fs::symlink(d.join("other"), proj.join("link")).unwrap();
         assert_eq!(resolve(&proj, Path::new("link/f.txt")), d.join("other/f.txt"));
         // `link/..` is the target's parent (kernel rule), not the project
-        assert_eq!(resolve(&proj, Path::new("link/..")), d);
+        assert_eq!(resolve(&proj, Path::new("link/..")), d.path());
         // a symlink outside pointing in resolves inside
         std::os::unix::fs::symlink(proj.join("src"), d.join("in")).unwrap();
         assert!(inside(&proj, &resolve(&proj, &d.join("in/a.rs"))));

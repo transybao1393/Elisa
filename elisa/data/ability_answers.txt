@@ -1,0 +1,151 @@
+# A question about one thing Elisa can do ("can you search the web?", "bạn có đọc được file trên máy mình không?")
+# and her own answer to it (`situation::ability_answer`; the routing's side is data/ability_asks.txt). The yes or no
+# comes from what she holds, never from a fixed list: her tool list (a `[kind tool …]` section names the tools that
+# give that kind of ability) and the model's detected facts (`[vision]`: whether the model sees pictures). The words
+# are the user's own: the ability as they wrote it, said back with the pronouns swapped ("my" → "your").
+#
+# Frames, under `[en]` and `[vi]`: "question frame = answer when she can | answer when she cannot", {x} the ability.
+# A Vietnamese frame matches a message written with or without its marks. `swap` lists the pronoun swaps (both ways
+# at once: "me > you" and "you > me"), `tail` the politeness words dropped from the end of {x}.
+# Kinds: a section per kind of ability with example wordings (all-MiniLM-L6-v2, English and Vietnamese): an ability
+# nearest a kind's example, near enough, nearer than any `[other]` example and sharing a word with that example, is
+# that kind; one nearest `[other]` (chat: writing, explaining, translating) is left to the model's reply.
+# Fix a missed or wrong wording by adding an example or a frame here, not in code.
+[en]
+can you {x} = Yes, I can {x}. | No, I can't {x} here.
+can u {x} = Yes, I can {x}. | No, I can't {x} here.
+could you {x} = Yes, I can {x}. | No, I can't {x} here.
+are you able to {x} = Yes, I'm able to {x}. | No, I can't {x} here.
+would you be able to {x} = Yes, I can {x}. | No, I can't {x} here.
+is it possible for you to {x} = Yes, I can {x}. | No, I can't {x} here.
+do you know how to {x} = Yes, I can {x}. | No, I can't {x} here.
+do you {x} = Yes, I {x}. | No, I don't {x} here.
+swap = my > your | mine > yours | me > you | myself > yourself | i > you | your > my | yours > mine | you > me | yourself > myself
+tail = please | pls | plz | too | as well
+[vi]
+bạn có thể {x} được không = Có, mình có thể {x}. | Không, mình không {x} được.
+bạn có thể {x} không = Có, mình có thể {x}. | Không, mình không thể {x}.
+bạn có thể {x} chứ = Có, mình có thể {x}. | Không, mình không thể {x}.
+bạn {x} được không = Có, mình {x} được. | Không, mình không {x} được.
+bạn {x} được chứ = Có, mình {x} được. | Không, mình không {x} được.
+bạn có biết {x} không = Có, mình {x} được. | Không, mình không {x} được.
+bạn biết {x} không = Có, mình {x} được. | Không, mình không {x} được.
+bạn có {x} không = Có, mình {x}. | Không, mình không {x}.
+bạn {x} không = Có, mình {x}. | Không, mình không {x}.
+swap = mình > bạn | tôi > bạn | tớ > bạn | bạn > mình
+tail = nhé | nha | vậy | ạ | không ạ | hả | hông
+[web web_search web_fetch]
+search the web
+search the internet
+look things up online
+browse the internet
+search online for news
+google things for me
+look something up on the web
+open a web page
+read a web page
+fetch a url
+tìm kiếm trên mạng
+tìm trên internet
+tìm trên mạng
+lên mạng tìm thông tin
+tra google
+đọc trang web
+mở một trang web
+tim kiem tren mang
+tim tren mang
+len mang tim thong tin
+[files read write edit glob grep outline read_symbol edit_symbol]
+read files on my computer
+read a file
+read files
+open files in this folder
+look at my files
+read a text file from my disk
+access files on my machine
+write a file
+save text to a file
+create a file
+edit a file
+change a file
+list the files in a folder
+search my files
+find a file
+đọc file trên máy mình
+đọc được file trên máy
+đọc file
+đọc tệp trong thư mục này
+xem file của mình
+mở file trên máy
+truy cập file trên máy mình
+lưu vào file
+tạo file
+ghi vào tệp
+sửa file
+liệt kê file trong thư mục
+tìm file
+doc file tren may minh
+doc duoc file tren may
+xem file cua minh
+luu vao file
+[shell bash run_code]
+run commands
+run a shell command
+run a command on my computer
+run terminal commands
+run shell commands
+execute code
+run python code
+run a script
+use the terminal
+chạy lệnh
+chạy lệnh trên máy mình
+chạy code
+chạy đoạn mã
+dùng terminal
+thực thi lệnh
+chay lenh
+chay lenh tren may minh
+chay code
+[vision]
+see images
+look at pictures
+see photos
+see the picture I send
+read an image
+look at a screenshot
+view images I upload
+describe a picture
+xem ảnh
+nhìn hình
+xem hình ảnh
+đọc ảnh
+xem ảnh mình gửi
+mô tả bức ảnh
+xem anh
+nhin hinh
+xem anh minh gui
+[other]
+write a poem
+write a story
+help me with my homework
+explain things
+translate text
+tell jokes
+remember things
+speak Vietnamese
+do math
+summarize text
+give advice
+chat with me
+help me
+viết thơ
+viết truyện
+giải thích
+dịch
+kể chuyện cười
+nhớ
+nói tiếng Việt
+tính toán
+tóm tắt
+giúp mình

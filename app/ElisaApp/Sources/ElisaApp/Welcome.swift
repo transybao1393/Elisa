@@ -163,7 +163,8 @@ struct WelcomeView: View {
             conns.active = conns.items[conns.items.count - 1].name
         }
         conns.changed()
-        conns.save { withAnimation { guides = false; picker = false } }
+        // the next session in this window starts on the model just chosen (`AppModel.start` keeps the window's model)
+        conns.save { m.model = name; withAnimation { guides = false; picker = false } }
     }
 
     private func choice(icon: String, title: String, sub: String, lines: [String], note: String, button: String, preset: String) -> some View {

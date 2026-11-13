@@ -1,0 +1,8 @@
+# Words that put a sentence in the future or as a guess ("The command will print …", "Lệnh sẽ in ra …"): a reply
+# after a command Elisa ran that says it in them has not said what happened (`repl/turn.rs` `command_reply_fix`),
+# and Elisa states it. One word per line, lowercase; add a language's word here, not in code.
+will
+would
+shall
+'ll
+sẽ

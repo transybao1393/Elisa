@@ -175,7 +175,7 @@ impl Outside {
 pub const COMMANDS: &[(&str, &str)] = &[
     ("/help", "list the commands"),
     ("/clear", "save a summary to notes, then start fresh"),
-    ("/reset", "start fresh without a summary (notes kept, state card dropped)"),
+    ("/reset", "start fresh without a summary (notes kept, the chat's running facts dropped)"),
     ("/compact", "summarise now and continue from the notes"),
     ("/context", "token use: system / tools / history / limit"),
     ("/notes", "show the saved notes"),
@@ -187,15 +187,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/audit", "the last tool calls and approvals in the audit log, and its chain check: /audit [N]"),
     ("/forget", "forget what Elisa remembers in this project: delete the notes, unpin the pinned facts, stop recalling earlier chats (saved conversations are kept)"),
     ("/resume", "pick a past session to continue"),
-    ("/state", "the state cards per topic (document) and which one this turn uses"),
-    ("/pin", "pin a fact to memory (carried in [state]): /pin <fact>"),
+    ("/state", "the chat's running facts per topic (document) and which ones this turn uses"),
+    ("/pin", "pin a fact Elisa keeps in mind in new chats: /pin <fact>"),
     ("/watcher", "domain watcher: domain, candidates, unload plan, audit scorecard"),
     ("/full", "the full model's answer to the last reply its audit found changed"),
     ("/copy", "copy the last reply to the clipboard"),
     ("/stats", "metrics: the last request's model calls and the session totals"),
     ("/cache", "Elisa's result cache: entries, size, hit rate per kind · /cache clear [web_fetch|web_search|docs]"),
     ("/model", "the model connection in use, and the saved ones · /model NAME switches to that installed model"),
-    ("/router", "the intent router and Elisa's own intent rules · /router rules off|fallback (saved to providers.toml)"),
+    ("/router", "which part decides: the intent router or the hardcoded rules · /router use router|rules (saved to providers.toml)"),
     ("/yolo", "toggle approve-all for tools"),
     ("/water", "give Elisa water (F2)"),
     ("/feed", "give Elisa a snack (F3)"),
@@ -292,4 +292,49 @@ pub trait Frontend {
     fn activity(&mut self, a: &crate::activity::Activity) { let _ = a; }
     /// the current user turn is finished (agent idle again)
     fn turn_done(&mut self);
+}
+
+/// Reply text on its way to the screen with every secret masked as the secret scan shows it ("sk-l…",
+/// `secrets::mask_shown`). Text streams in pieces, so the end after the last whitespace is held until its word ends
+/// (`finish` lets it out): a key split across pieces is masked whole.
+#[derive(Default, Debug)]
+pub struct ShownText { held: String }
+
+/// the most text held back for one unfinished word (a longer run with no space goes out as it is, masked)
+const HELD_MAX: usize = 600;
+
+impl ShownText {
+    /// the part of `piece` (after what was held) that can be shown now, masked
+    pub fn push(&mut self, piece: &str) -> String {
+        let mut all = std::mem::take(&mut self.held);
+        all.push_str(piece);
+        let cut = all.char_indices().rev().find(|(_, c)| c.is_whitespace()).map_or(0, |(i, c)| i + c.len_utf8());
+        let cut = if all.len() - cut > HELD_MAX { all.len() } else { cut };
+        self.held = all.split_off(cut);
+        if all.is_empty() { all } else { crate::secrets::mask_shown(&all) }
+    }
+    /// what is still held, masked (the reply ended, or something else is shown next)
+    pub fn finish(&mut self) -> String {
+        let h = std::mem::take(&mut self.held);
+        if h.is_empty() { h } else { crate::secrets::mask_shown(&h) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShownText;
+
+    #[test]
+    fn a_key_streamed_in_pieces_is_masked_whole() {
+        let mut s = ShownText::default();
+        let mut out = String::new();
+        for p in ["api_key = \"sk-li", "ve-4f9a8b7c6d5e", "4f3a2b1c0d9e8f7a6b5c\"", " is the key.\n"] { out.push_str(&s.push(p)); }
+        out.push_str(&s.finish());
+        assert!(!out.contains("4f9a8b7c"), "{out}");
+        assert!(out.contains("sk-l…") && out.ends_with(" is the key.\n"), "{out}");
+        // ordinary text passes unchanged
+        let mut s = ShownText::default();
+        let t = format!("{}{}", s.push("Hello there, Linh"), s.finish());
+        assert_eq!(t, "Hello there, Linh");
+    }
 }

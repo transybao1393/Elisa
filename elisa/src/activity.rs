@@ -57,8 +57,11 @@ pub struct Activity {
     pub summary: String,
     /// Done: the step's duration; Summary: the reply's
     pub ms: u64,
-    /// Done: the step failed, was denied or was stopped
+    /// Done: the step failed
     pub error: bool,
+    /// Done: the step did not run: the person said no, it was stopped, or it repeated a call already made (no
+    /// failure)
+    pub skipped: bool,
     /// Update: an approval is open for this step
     pub waiting_ok: bool,
     /// Start of a model request: after this many ms with no first token, show this text instead
@@ -69,7 +72,7 @@ pub struct Activity {
 
 impl Activity {
     fn new(id: u64, phase: Phase, kind: &str, text: String) -> Self {
-        Activity { id, phase, kind: kind.into(), text, summary: String::new(), ms: 0, error: false, waiting_ok: false, slow: None, steps: 0 }
+        Activity { id, phase, kind: kind.into(), text, summary: String::new(), ms: 0, error: false, skipped: false, waiting_ok: false, slow: None, steps: 0 }
     }
     /// the `activity` event's fields (`--serve-jsonl`)
     pub fn json(&self) -> Value {
@@ -77,7 +80,7 @@ impl Activity {
         match self.phase {
             Phase::Start => if let Some((ms, t)) = &self.slow { v["slow_after_ms"] = json!(ms); v["slow_text"] = json!(t); },
             Phase::Update => v["waiting_ok"] = json!(self.waiting_ok),
-            Phase::Done => { v["summary"] = json!(self.summary); v["ms"] = json!(self.ms); v["error"] = json!(self.error); }
+            Phase::Done => { v["summary"] = json!(self.summary); v["ms"] = json!(self.ms); v["error"] = json!(self.error); if self.skipped { v["skipped"] = json!(true); } }
             Phase::Summary => { v["ms"] = json!(self.ms); v["steps"] = json!(self.steps); }
         }
         v
@@ -465,10 +468,10 @@ impl Turn {
         let mut a = Activity::new(id, Phase::Done, p.kind, done_text(&p, output, is_error));
         a.summary = summary.to_string();
         a.ms = t0.elapsed().as_millis() as u64;
-        // a refused repeat is no failure for the person
-        a.error = is_error && !repeat(output);
-        fe.activity(&a);
+        // a refused repeat, the person's own no, or a stop is no failure for the person
         let skipped = is_error && (output.starts_with("denied") || output.starts_with("cancelled") || repeat(output));
+        (a.error, a.skipped) = (is_error && !skipped, skipped);
+        fe.activity(&a);
         self.done.push((p.group, p.target, skipped));
     }
 

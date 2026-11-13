@@ -1,0 +1,28 @@
+# Wordings a chat lead-in to the user starts with ("Okay, here's a short marketing plan for a small coffee shop in
+# Hanoi:", "Đây là kế hoạch …:"): such a first line that ends with a colon is the model talking, not the file's
+# content, so Elisa leaves it out before she saves model-made content (`repl/turn.rs` `without_lead_in`). One wording
+# per line, lowercase, matched as whole words at the line's start (after any of the others); add a language's
+# wording here, not in code.
+okay
+ok
+sure
+certainly
+of course
+alright
+great
+here is
+here's
+heres
+here are
+below is
+below are
+the following is
+vâng
+được
+dạ
+đây là
+day la
+dưới đây là
+duoi day la
+sau đây là
+sau day la

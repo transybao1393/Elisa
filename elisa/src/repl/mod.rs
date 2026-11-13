@@ -28,11 +28,13 @@ mod agent_loop;
 mod approve;
 mod commands;
 mod docs;
+mod gate;
 mod memory;
 mod startup;
 mod turn;
 
 pub use startup::{main_entry, parse_args, run_session, ASKING, AT_PROMPT, CANCEL};
+pub(crate) use turn::{meant_tool, shell_ask};
 use agent_loop::AstStats;
 
 const COMPACT_SYSTEM: &str = "You write short, concrete session notes for an assistant.";
@@ -175,6 +177,9 @@ struct Session<'f> {
     folded_this_turn: bool,
     /// `[tool args → result]` lines of the current turn, recorded with the assistant reply
     tool_lines: Vec<String>,
+    /// the results of Elisa's own calls this turn, whole (`turn.rs` `own_step`, `run_own_inline`): her answers from
+    /// them (`turn_results`) hold after a fold or a cut takes them out of the history mid-turn (a tiny window)
+    own_results: Vec<turn::OwnResult>,
     /// the current turn's request failed before anything was answered (nothing to record)
     unsent: bool,
     /// this input line already sent its turn_done (a panic after it must not send a second one)
@@ -193,6 +198,19 @@ struct Session<'f> {
     small_talk_turn: bool,
     /// the note of a one-time words-only request with no tools (`agent_loop` starts with it; `denied_claim_retry`)
     retry_note: Option<String>,
+    /// the lines Elisa wrote herself for this request, in place of the model's reply (her plain and no-answer lines,
+    /// her resume line, the results in plain words, the values of a bare list in words: `agent_loop` `said_own`):
+    /// her own words, so the checks for the model's words (the unusable-reply judgement, `docs.rs` `content_fixes`)
+    /// leave such a reply whole
+    own_said: std::cell::RefCell<Vec<String>>,
+    /// the model's wordings shown for this request (its answer worded from the results, an answer said again in the
+    /// user's language: `gate.rs` `said_worded`): never Elisa's own words, so the gate's checks apply to them
+    worded: std::cell::RefCell<Vec<String>>,
+    /// this turn's answer requests offer no tools: Elisa's own calls already did what the words asked (`turn_inner`)
+    answer_only: bool,
+    /// the text Elisa added to the last request (notes, header, `[elisa: …]` lines): new file text must not copy it
+    /// (`prompt_leak`)
+    sent_notes: String,
     /// latest state card: text, memory id, and the exchange it came from (fresh = from the last <= 2 exchanges)
     card: Option<String>,
     card_id: Option<u64>,
@@ -249,8 +267,8 @@ struct Session<'f> {
     route: crate::route::Route,
     /// the hosted intent router (`router.rs`; providers.toml `[router]`): off without a key
     router: crate::router::Router,
-    /// the router's answer for this turn; None = no router or a miss: the word rules decide as before, unless the
-    /// router's `elisa_rules` is "off" (`Session::own_rules`)
+    /// the router's answer for this turn; None = no router or a miss: the hardcoded rules decide only without a
+    /// router or when it can't be reached (`Session::own_rules`)
     routed: Option<crate::router::Answer>,
     /// a picture was refused in this session (the router's `image_refused`)
     pic_refused_seen: bool,
@@ -367,8 +385,8 @@ impl<'f> Session<'f> {
         let mut s = Session {
             fe, cfg, client, store, tctx, cwd, max_ctx, vision: false, attach: Vec::new(), last_pics: Vec::new(), pics_next: false, last_pic_seen: String::new(), last_pic_ask: String::new(), turn_pic: None, resumed_facts: false, recalled_values: Vec::new(), docs: Vec::new(), doc_req: None, doc_req_tokens: 0, doc_paths: Vec::new(), kept_docs: Vec::new(), doc_retry: None, topic_cards: Vec::new(), topic: Default::default(), doc_new: None, doc_refused: None, card_req: None, mcp, tools: Vec::new(), tools_tokens: 0, project, notes, notes_bg: true,
             system: String::new(), system_tokens: 0, history: Vec::new(), real: None, calib: None, input: String::new(), interactive, declined_images: Vec::new(), yolo: yes, always,
-            mem: None, turn_no: 0, folded: 0, fold_ids: Vec::new(), fold_retry_at: 0, digest_only: false, in_turn: false, folded_this_turn: false, tool_lines: Vec::new(), unsent: false, done_sent: false, acts: crate::activity::Turn::new(),
-            recall_slow: false, save_slow: false, last_turn_at: None, last_failed: false, small_talk_turn: false, retry_note: None, index_rate: None, unindexed: 0, watch,
+            mem: None, turn_no: 0, folded: 0, fold_ids: Vec::new(), fold_retry_at: 0, digest_only: false, in_turn: false, folded_this_turn: false, tool_lines: Vec::new(), own_results: Vec::new(), unsent: false, done_sent: false, acts: crate::activity::Turn::new(),
+            recall_slow: false, save_slow: false, last_turn_at: None, last_failed: false, small_talk_turn: false, retry_note: None, own_said: Default::default(), worded: Default::default(), answer_only: false, sent_notes: String::new(), index_rate: None, unindexed: 0, watch,
             card: None, card_id: None, card_ex: None, exchanges: 0, new_card: None, card_broken: false, pic_refused: false, checks_off: false, outside_mode: outside::Mode::Ask, outside_ok: Vec::new(), ast_stats: AstStats::default(), cards: 0,
             req: None, stats: metrics::Stats::default(),
             card_log: Vec::new(), goal: None, goal_misses: 0, goal_stated: false, goal_before: (None, 0, false), facts_ok: Default::default(), user_req: String::new(), warm: Arc::new(AtomicU8::new(WARM_UNKNOWN)),
@@ -407,6 +425,8 @@ impl<'f> Session<'f> {
             self.tools.retain(|t| {
                 let srv = m.server_of(&t.name);
                 let g = crate::route::tool_group(&t.name, srv);
+                // (an ask that only asks or checks: the file tools read-only, `route::READ_ONLY`)
+                if r.groups.has(crate::route::READ_ONLY) && crate::route::changes_files(&t.name, srv) { return false; }
                 if g == crate::route::OTHER { srv.is_some_and(|s| r.others.iter().any(|o| o == s)) } else { r.groups.has(g) }
             });
             self.system = crate::route::system_for(&self.system, self.route.groups);

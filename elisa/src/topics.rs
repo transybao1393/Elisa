@@ -16,26 +16,28 @@
 
 use std::collections::{HashMap, HashSet};
 
-/// words too common, or too generic about documents, to tell topics apart
-const COMMON: &[&str] = &["about", "after", "again", "also", "please", "could", "would", "should", "there", "their", "these", "those",
-    "this", "that", "with", "from", "into", "what", "when", "where", "which", "while", "make", "write", "show", "tell", "give",
-    "need", "want", "just", "like", "some", "then", "than", "have", "does", "your", "them", "they", "will", "each", "more", "only",
-    "paper", "document", "file", "page", "read", "first", "second", "third", "last", "other", "content", "text", "section",
-    "extract", "provide", "explain", "summary", "summarize", "summarise", "know", "said", "says", "back", "talk", "talking",
-    "were", "been", "being", "here", "over", "very", "much", "many", "most", "such", "into", "using", "used", "user", "elisa",
-    "next", "done", "none", "goal", "step", "steps", "attached", "attachment", "article", "report", "it's", "let's", "doing",
-    "think", "look", "find", "help", "work", "works", "okay", "thank", "thanks", "yes", "sure", "today", "paper's"];
+/// words too common, or too generic about documents, to tell topics apart, per language (`data/common_words.txt`)
+const COMMON_WORDS: &str = include_str!("../data/common_words.txt");
+
+/// The common words of every language section of `data/common_words.txt`, lowercase, read once.
+fn common() -> &'static HashSet<&'static str> {
+    static S: std::sync::OnceLock<HashSet<&'static str>> = std::sync::OnceLock::new();
+    S.get_or_init(|| COMMON_WORDS.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('[')).collect())
+}
+
+/// Whether `w` (lowercase) is a common word of some language section of `data/common_words.txt`.
+pub fn is_common(w: &str) -> bool { common().contains(w) }
 
 /// Content words of `s` (4+ letters, not common; a plural's `s` dropped), lowercase.
 pub fn words(s: &str) -> HashSet<String> {
-    s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 4 && !COMMON.contains(w))
+    s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 4 && !common().contains(w))
         .map(|w| w.strip_suffix('s').filter(|r| r.chars().count() >= 4).unwrap_or(w).to_string()).collect()
 }
 
 /// Word counts of a document's text (its content words), for telling which document a question is about.
 pub fn counts(text: &str) -> HashMap<String, u32> {
     let mut m = HashMap::new();
-    for w in text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 4 && !COMMON.contains(w)) {
+    for w in text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 4 && !common().contains(w)) {
         let w = w.strip_suffix('s').filter(|r| r.chars().count() >= 4).unwrap_or(w);
         *m.entry(w.to_string()).or_insert(0) += 1;
     }
@@ -244,8 +246,8 @@ pub fn pick_for(q: &str, docs: &[DocTopic], cards: &[Card], last: &Pick, new_doc
     // (a) a document named
     if let Some((d, why)) = ordinal(&ql, docs, last_doc) { return doc_pick(docs, cards, d, why); }
     if let Some(d) = named(&ql, &qw, docs) { return doc_pick(docs, cards, d, Why::Named); }
-    // (b) the words
-    if let Some((d, n)) = by_words(&qw, docs) {
+    // (b) the words (not those of a chat ask of its own: "tell me a short joke" shares "short" with a paper)
+    if let Some((d, n)) = by_words(&qw, docs).filter(|_| !crate::route::chat_ask(q)) {
         // a card of that document whose goal the words name beats its newest card
         let c = by_card(&qw, cards, docs).filter(|(c, _)| cards[*c].doc.as_deref() == Some(docs[d].name.as_str())).map(|c| c.0);
         let mut p = doc_pick(docs, cards, d, Why::DocWords(n));
@@ -339,6 +341,23 @@ mod tests {
         assert!(matches!(p.why, Why::DocWords(_)), "{p:?}");
         let p = pick("what do the bull and bear researchers debate?", &d, &c, &Pick::default(), None);
         assert_eq!(p.doc, Some(0));
+    }
+
+    /// a chat ask sharing a word with the only document ("short"), and the follow-ups after it, are not about it
+    #[test]
+    fn a_joke_after_a_paper_is_no_question_about_it() {
+        let kr = "Kronos: A Foundation Model for the Language of Financial Markets. Short-term volatility forecasting of K-line \
+            data. A short horizon and long horizons. Kronos tokenizes candlestick data.";
+        let d = vec![DocTopic::new("kronos.pdf", "Kronos: A Foundation Model for the Language of Financial Markets", kr)];
+        let paper = pick("what is this paper about?", &d, &[], &Pick::default(), Some(0));
+        let joke = pick("tell me a short joke", &d, &[], &paper, None);
+        assert_eq!(joke.doc, None, "{joke:?}");
+        let why = pick("why is that funny?", &d, &[], &joke, None);
+        assert_eq!(why.doc, None, "{why:?}");
+        assert_eq!(pick("what about one about cats?", &d, &[], &why, None).doc, None);
+        // a question in the document's words still picks it
+        assert_eq!(pick("what kind of data does Kronos forecast?", &d, &[], &joke, None).doc, Some(0));
+        assert_eq!(pick("how short is the forecasting horizon?", &d, &[], &joke, None).doc, Some(0));
     }
 
     #[test]

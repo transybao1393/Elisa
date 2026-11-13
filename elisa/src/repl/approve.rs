@@ -25,7 +25,10 @@ impl<'f> Session<'f> {
         let content = if mode.applies(self.model_leaves()) {
             let (r, n) = crate::secrets::redact(&content);
             if n > 0 { self.fe.info(&format!("[{} hidden from the model]", crate::secrets::count_words(n))); }
-            r
+            // told why a value is missing: a model that read "[redacted:…]" as a file cut short read it again and
+            // again, then said it could only show part of it
+            if n > 0 { format!("{r}\n[elisa: {} marked redacted {} hidden on purpose to keep {} private; only those values are \
+                hidden, and reading it again gives the same text]", crate::secrets::count_words(n), if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }) } else { r }
         } else { content };
         // `read` of an outside document (a PDF, a saved web page …) is fenced too (`untrusted::read_source`)
         let doc = || if name == "read" { crate::untrusted::read_source(input, &content) } else { None };
@@ -45,6 +48,8 @@ impl<'f> Session<'f> {
         if !self.mcp.owns(name) {
             if let Err(e) = tools::precheck(name, input, &self.tctx) { self.answer = Some("invalid"); return Err(e); }
         }
+        // new file text that copies Elisa's own prompt or notes (`prompt_leak`), whoever made the call
+        if let Some(e) = self.prompt_leak(name, input) { self.answer = Some("invalid"); return Err(e); }
         // pattern rules (`[permissions]`, plugins; `perms.rs`): a deny stops the call here, an ask always asks, an
         // allow skips the prompt (never for a server whose tool list changed)
         let server = self.mcp.server_of(name).map(String::from);
@@ -53,8 +58,11 @@ impl<'f> Session<'f> {
             .map(|r| RuleHit { level: r.level, pattern: r.pattern.clone(), source: r.source.clone() });
         if let Some(r) = rule.as_ref().filter(|r| r.level == Level::Deny) {
             self.answer = Some("rule");
-            return Err(format!("denied by the rule deny {} ({}): {NO_RETRY}", r.pattern, r.source));
+            return Err(format!("denied by the rule deny {} ({})", r.pattern, r.source));
         }
+        // the person is asked about the whole command or code, never the shortened line (`tools::approval_text`)
+        let whole = tools::approval_text(name, input);
+        let summary = if whole.starts_with(summary) { whole.as_str() } else { summary };
         if let Some(o) = outside::check(name, input, &self.cwd) { return self.approve_outside(name, summary, &o, input, rule); }
         self.approve_inside(name, summary, input, rule)
     }
@@ -97,7 +105,7 @@ impl<'f> Session<'f> {
                 Ok(())
             }
             Approval::Rule => Ok(()),
-            Approval::No => Err(format!("denied by user ({what} outside the project folder: {list}): {SAID_NO}")),
+            Approval::No => Err(format!("denied by user ({what} outside the project folder: {list})")),
         }
     }
 
@@ -197,8 +205,21 @@ impl<'f> Session<'f> {
                 if let Err(e) = self.store.save_allowed(&self.always) { self.fe.error(&format!("could not save always-allow for {name}: {e}")); }
                 Ok(())
             }
-            Approval::No => Err(format!("denied by user: {SAID_NO}")),
+            Approval::No => Err("denied by user".to_string()),
         }
+    }
+}
+
+impl<'f> Session<'f> {
+    /// A denial (`approve`'s Err) as the model gets it: the decision, then what to tell the user. The decision alone
+    /// is what the user sees (the tool row, the activity) and what /audit keeps; the instruction is the model's only.
+    /// A read said no to gets its own words ("I didn't read it"): with the write wording, a model told the user it
+    /// "didn't write or change anything" in a file it was never let to read.
+    pub(super) fn denial_for_model(&self, name: &str, why: &str) -> String {
+        let read = !self.mcp.owns(name) && tools::access(name) == Access::ReadOnly;
+        if why.starts_with("denied by user") { format!("{why}: {}", if read { SAID_NO_READ } else { SAID_NO }) }
+        else if why.starts_with("denied by the rule") { format!("{why}: {NO_RETRY}") }
+        else { why.to_string() }
     }
 }
 
@@ -206,6 +227,10 @@ impl<'f> Session<'f> {
 fn answer_word(a: &Approval) -> &'static str {
     match a { Approval::Yes => "yes", Approval::Always => "always", Approval::Rule => "rule", Approval::No => "no" }
 }
+
+/// a read the user said no to: it was not read, so its content is unknown (and nothing else happened either)
+const SAID_NO_READ: &str = "the user said no, so it was NOT read: you have not seen its content and nothing was done. Reply in one \
+    short sentence like \"Okay, I didn't read it, since you said no.\"; never describe what it holds. Do not call this tool again for this request";
 
 /// the permission rule that decided a call (`perms::Rules::decide`)
 #[derive(Clone)]

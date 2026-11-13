@@ -1,0 +1,25 @@
+# Elisa's own answer about a web page read earlier in this session, when the model gives no usable reply to a
+# question about it ("what is that page for?" after a web_fetch): the page's address, its title and its first full
+# sentence, quoted (`repl::agent_loop::held_page_line`). Never page text passed off as her words: the quote marks
+# say whose they are. Per language: `asks` are wordings that point at the page (whole words, with and without
+# accents), `line` the answer with a title, `line untitled` without one. A page in another language than the
+# question gets the sentence's meaning said in the question's language first (one request to the model, checked:
+# `meaning`, the quote after it), or, when that fails, `other language` names the page's language before the quote
+# (`{language}`: the name under `languages`, by code, in this language; a language with no name there:
+# `other language unknown`). Fix a missed wording here, not in code.
+[en]
+asks = that page | this page | the page | that site | this site | the site | that website | this website | the website | that link | this link | that url
+line = {url} ({title}) says: “{sentence}”
+line untitled = {url} says: “{sentence}”
+meaning = {meaning}
+other language = The page is in {language}; its first sentence:
+other language unknown = The page is in another language; its first sentence:
+languages = en: English | vi: Vietnamese
+[vi]
+asks = trang đó | trang do | trang này | trang nay | trang ấy | trang ay | trang kia | trang web đó | trang web do | trang web này | trang web nay | web đó | web do | link đó | link do | link này | link nay | đường dẫn đó | duong dan do
+line = Trang {url} ({title}) viết: “{sentence}”
+line untitled = Trang {url} viết: “{sentence}”
+meaning = {meaning}
+other language = Trang này viết bằng {language}; câu đầu trang:
+other language unknown = Trang này viết bằng ngôn ngữ khác; câu đầu trang:
+languages = en: tiếng Anh | vi: tiếng Việt

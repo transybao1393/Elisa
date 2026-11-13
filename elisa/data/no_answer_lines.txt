@@ -1,0 +1,100 @@
+# Elisa's own line when the model gave no usable answer after being asked again (`reply_check::cant_answer_line`).
+# One line per kind of ask, "kind: line", in an [en] and a [vi] section; "{}" is the model's name. A clear ask says
+# plainly that this model could not do it; only an unclear ask (too few words to read) is asked to be put another way.
+#   translate: an ask for words in another language (`data/language_asks.txt`: an `asks` word and a language name)
+#   answer:    any other clear ask
+#   unclear:   an ask too short to read
+#   picture:   a turn about a picture whose reply said it could not see images twice, while the look at the picture told
+#              nothing of it (`reply_check::picture_unseen_line`)
+#   table:     an ask for a table (`table_format` in `data/reply_terms.txt`) that got none
+#   table_note: not a line for the user: the note the ask is sent once more with when the reply had no table
+#              ("{}" is the ask, quoted)
+#   follow_up_note: not a line for the user: the note a short follow-up ("why?" after a joke) is sent once more with
+#              when the reply asked for it to be put another way (`reply_check::follow_up_note`): "{ask}" is the
+#              follow-up, "{prev}" the user's message before it, "{reply}" the first sentence of the reply to that
+# And Elisa's line for a command that failed when the reply claimed a result it never gave
+# (`reply_check::failed_run_line`): "{cmd}" is the program, "{error}" the failed run's own error line.
+#   missing:         the program is not there (a `not_found` wording of `data/reply_terms.txt` in the error)
+#   missing_sandbox: the same, with commands running in the shell sandbox
+#   failed:          any other failed run
+# And Elisa's line for a save of something said before ("save that plan to plan.md": `repl/turn.rs` `run_own`) when
+# no earlier reply holds it: "{thing}" is what the ask names ("plan"), "{file}" the file.
+#   no_thing_to_save: the ask names the thing
+#   nothing_to_save:  it only points back ("save it as list.csv")
+# And Elisa's lines for a reply that claimed a tool action or result no call made (`repl/docs.rs` `false_claim_line`,
+# wordings in `data/tool_claims.txt`): "{file}" is the file.
+#   not_read:         it told a file's content where nothing read the file
+#   read_failed:      the same, where this turn's read of that file failed (the file is not there)
+#   not_written:      it said a named file was saved or created where no write ran
+#   not_written_any:  the same, no file named
+#   not_run:          it reported a command's run or output ("It printed hello-elisa again.") on a turn that ran nothing
+# And her lines from what she holds (`repl/docs.rs` `content_fixes`):
+#   no_live:          the reply gave today's figure (a price, a population, the weather) with no web result behind it
+#   no_judge:         a question whether code has a mistake that the model only answered with the code ({sym}: the
+#                     symbol, {file}: its file; the code follows)
+#   no_figure:        an ask about the present whose search results and pages hold no figure ({sites}: the results' sites)
+#   no_figure_unread: the same when no page was read this turn (none fetched, or every fetch failed): only the results
+#                     were looked at, and the line says no more than that
+#   lang_kept:        the model's answer stayed in another language after the ask to say it in the user's: shown as
+#                     written after this line, never another claim in its place
+#   dated_figure:     the figure found is from a day before today ({date}: that day, {figure}: the sentence, {source}: its site)
+#                     (`reply_check::live_number_unbacked`): she offers to search instead
+#   nothing_else:     "what else is in {file}?" when earlier replies gave every line of it
+#   all_told:         the same, with the lines already told ({lines}) (`held_file_answer`)
+#   earlier_answer:   no usable reply to a question an earlier message of this chat asked too (the notes' digest
+#                     of folded turns or the history, `repl/docs.rs` `earlier_answer`): {ask} is that message, {reply}
+#                     what was answered to it then
+[en]
+no_thing_to_save: Nothing to save yet: there's no {thing} in this chat. Ask for one first, then I'll save it to {file}.
+nothing_to_save: Nothing to save yet: this chat has nothing for {file}. Ask for it first, then I'll save it.
+translate: I couldn't translate that with {}.
+answer: I couldn't answer that with {}.
+table: I couldn't make that table with {}.
+picture: I looked at the picture with {}, but it did not describe it.
+table_note: (Answer "{}" with a markdown table: a header row, a row of --- cells, then one row per item, cells parted by |.)
+follow_up_note: (My "{ask}" is about your last reply, "{reply}", to my message "{prev}". Answer it about that; do not ask me to rephrase.)
+unclear: I couldn't get a usable answer to that. Please ask again or put it another way.
+missing: {cmd} isn't available here, so it gave no result ({error}).
+missing_sandbox: {cmd} isn't available in the shell sandbox, so it gave no result ({error}).
+failed: {cmd} didn't run, so it gave no result ({error}).
+not_read: I haven't read {file} in this message, so I can't say what it holds. Want me to read it?
+read_failed: I couldn't read {file} in this message, so I can't say what it holds.
+not_written: I haven't written anything to {file}: no file was created or saved in this message.
+not_written_any: I haven't written anything: no file was created or saved in this message.
+not_run: I didn't run anything in this message, so there is no new output. Want me to run it again?
+no_live: I can't check today's figures without a web search, so I won't guess. Want me to search the web for it?
+no_judge: I couldn't judge whether {sym} in {file} has a mistake. Here is its code:
+no_figure: I couldn't find the figure in the search results or the pages I read. You can check it directly at: {sites}.
+no_figure_unread: I couldn't find the figure in the search results, and no page was read. You can check it directly at: {sites}.
+dated_figure: The latest figure I found is from {date}, not today: {figure} (source: {source})
+nothing_else: That's everything in {file}: nothing else.
+all_told: There's nothing more in {file} than what I've already told you: {lines}
+earlier_answer: Earlier in this chat, when you asked "{ask}", I answered: {reply}
+lang_kept: The model could only answer this in another language; here is its answer as written:
+[vi]
+translate: Mình chưa dịch được câu này với {}.
+answer: Mình chưa trả lời được câu này với {}.
+table: Mình chưa lập được bảng này với {}.
+picture: Mình đã xem ảnh với {}, nhưng nó không mô tả được ảnh.
+table_note: (Trả lời "{}" bằng một bảng markdown: một hàng tiêu đề, một hàng ô ---, rồi mỗi mục một hàng, các ô ngăn bằng |.)
+follow_up_note: ("{ask}" của mình hỏi về câu trả lời vừa rồi của bạn, "{reply}", cho câu "{prev}". Hãy trả lời về điều đó, đừng hỏi lại.)
+unclear: Mình chưa có câu trả lời dùng được cho câu này. Bạn hỏi lại hoặc diễn đạt khác nhé.
+missing: {cmd} không có sẵn ở đây, nên không có kết quả ({error}).
+missing_sandbox: {cmd} không có sẵn trong hộp cát của shell, nên không có kết quả ({error}).
+failed: {cmd} không chạy được, nên không có kết quả ({error}).
+no_thing_to_save: Chưa có gì để lưu: trong cuộc trò chuyện chưa có {thing} nào. Bạn yêu cầu trước nhé, rồi mình lưu vào {file}.
+nothing_to_save: Chưa có gì để lưu vào {file}: trong cuộc trò chuyện chưa có nội dung đó. Bạn yêu cầu trước nhé, rồi mình lưu.
+not_read: Mình chưa đọc {file} trong tin này nên không biết trong đó có gì. Bạn muốn mình đọc không?
+read_failed: Mình không đọc được {file} trong tin này nên không biết trong đó có gì.
+not_written: Mình chưa ghi gì vào {file}: trong tin này không có tệp nào được tạo hay lưu.
+not_written_any: Mình chưa ghi gì cả: trong tin này không có tệp nào được tạo hay lưu.
+not_run: Mình chưa chạy gì trong tin này nên không có kết quả mới. Bạn muốn mình chạy lại không?
+no_live: Mình không tra được số liệu hôm nay nếu không tìm trên mạng, nên mình không đoán. Bạn muốn mình tìm trên web không?
+no_judge: Mình chưa nhận xét được {sym} trong {file} có lỗi hay không. Đây là mã của nó:
+no_figure: Mình chưa tìm thấy con số cụ thể trong kết quả tìm kiếm và các trang đã đọc. Bạn có thể xem trực tiếp ở: {sites}.
+no_figure_unread: Mình chưa tìm thấy con số cụ thể trong kết quả tìm kiếm, và chưa đọc được trang nào. Bạn có thể xem trực tiếp ở: {sites}.
+dated_figure: Số liệu mới nhất mình tìm được là của ngày {date}, chưa phải hôm nay: {figure} (nguồn: {source})
+nothing_else: Đó là toàn bộ nội dung của {file}: không còn gì khác.
+all_told: {file} không có gì thêm ngoài những gì mình đã nói: {lines}
+earlier_answer: Trước đó trong cuộc trò chuyện này, khi bạn hỏi "{ask}", mình đã trả lời: {reply}
+lang_kept: Mô hình chỉ trả lời được câu này bằng ngôn ngữ khác; đây là câu trả lời nguyên văn của nó:

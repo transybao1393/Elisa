@@ -1,0 +1,20 @@
+# Words a question puts in when it asks again for something an earlier message of the chat already got ("what was the
+# meeting code you found?" after "read notes.txt and tell me the meeting code"): left out when the question's words
+# are held to the earlier message's (`repl/docs.rs` `earlier_answer_of`, which needs every other content word of the
+# question in that message). One word per line, lowercase; add a language's word here, not in code.
+found
+earlier
+before
+previously
+mentioned
+gave
+given
+remember
+recall
+lúc
+nãy
+trước
+tìm
+thấy
+được
+nhắc

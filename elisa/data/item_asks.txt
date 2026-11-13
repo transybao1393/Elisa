@@ -1,0 +1,51 @@
+# Asks for one item of a list by its place (`repl/turn.rs` `asked_item`): a section per place, its header giving the
+# place as a number (1 the first, 2 the second, -1 the last) and the place's name in English and Vietnamese
+# ("[1|first|đầu tiên]"), one wording per line under it, English and Vietnamese, with and without accents. A message
+# holding a wording (whole words) about a file Elisa holds or read this turn ("trong todo.txt, việc đầu tiên là gì?",
+# "the last one?") is answered with that item alone ("Mục đầu tiên trong todo.txt là buy milk." / "The first item in
+# todo.txt is buy milk."), never with the whole file. Fix a missed wording by adding it here, not in code.
+[1|first|đầu tiên]
+first one
+the first
+first item
+first task
+first line
+first entry
+first thing
+first row
+đầu tiên
+dau tien
+thứ nhất
+thu nhat
+[2|second|thứ hai]
+second one
+the second
+second item
+second task
+second line
+second entry
+second row
+thứ hai
+thu hai
+[3|third|thứ ba]
+third one
+the third
+third item
+third task
+third line
+third row
+thứ ba
+thu ba
+[-1|last|cuối cùng]
+last one
+the last
+last item
+last task
+last line
+last entry
+last thing
+last row
+cuối cùng
+cuoi cung
+sau cùng
+sau cung

@@ -13,6 +13,8 @@ struct ActivityItem: Identifiable {
     var summary = ""
     var ms: Int?
     var error = false
+    /// the step did not run: the person said no, it was stopped, or it was a repeat (no failure)
+    var skipped = false
 }
 
 /// the step on the live line (`activity` phase "start" / "update")
@@ -69,7 +71,8 @@ extension AppModel {
             if liveAct?.id == id { liveAct?.waitingOk = false }
             let r = currentReply()
             blocks[r].acts.append(ActivityItem(id: id, kind: kind, text: text, summary: e["summary"] as? String ?? "",
-                                               ms: (e["ms"] as? NSNumber)?.intValue, error: (e["error"] as? Bool) ?? false))
+                                               ms: (e["ms"] as? NSNumber)?.intValue, error: (e["error"] as? Bool) ?? false,
+                                               skipped: (e["skipped"] as? Bool) ?? false))
         case "summary":
             if let r = currentBlock { blocks[r].actSummary = text }
         default:
@@ -127,7 +130,9 @@ struct ActivitySummaryView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).rotationEffect(.degrees(open ? 90 : 0))
                     Text(b.actSummary ?? "")
-                    if b.acts.contains(where: \.error) { Text("· something didn't work").foregroundStyle(p.warn) }
+                    // a step that failed; one the person said no to is skipped, not a failure
+                    if b.acts.contains(where: { $0.error && !$0.skipped }) { Text("· something didn't work").foregroundStyle(p.warn) }
+                    else if b.acts.contains(where: \.skipped) { Text("· skipped").foregroundStyle(p.fg2) }
                 }
                 .font(Fonts.mono(11.5)).foregroundStyle(p.fg2)
                 .contentShape(Rectangle())
@@ -138,7 +143,7 @@ struct ActivitySummaryView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(b.acts) { a in
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(a.error ? "✗" : "✓").foregroundStyle(a.error ? p.err : p.ok)
+                            Text(a.skipped ? "–" : a.error ? "✗" : "✓").foregroundStyle(a.skipped ? p.fg2 : a.error ? p.err : p.ok)
                             Text(a.text).foregroundStyle(p.fg)
                             if !a.summary.isEmpty { Text("· \(a.summary)").foregroundStyle(p.fg2) }
                             if let ms = a.ms { Text("· \(dur(Double(ms) / 1000))").foregroundStyle(p.fg2.opacity(0.7)).monospacedDigit() }

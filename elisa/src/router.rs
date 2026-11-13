@@ -11,16 +11,18 @@
 //! [router]
 //! url = "https://router.example.com"
 //! api_key_env = "ELISA_ROUTER_KEY"   # or: api_key = "…"
-//! elisa_rules = "off"                 # or "fallback"
+//! decision = "router"                # or "rules"
 //! ```
 //!
-//! No key (neither set) = off: Elisa routes with its own word rules, exactly as without this module.
+//! The decision model has two parts, and only one decides: the router (this module, the real model) or the hardcoded
+//! rules (word signals and meaning checks: `route::classify`, the follow-up, greeting, about-Elisa, picture and
+//! own-fact checks, the reasoning gate, news recency by meaning). No url or key = the rules.
 //!
-//! `elisa_rules`: what Elisa's own intent rules (word signals and meaning checks: `route::classify`, the follow-up,
-//! greeting, about-Elisa, picture and own-fact checks, the reasoning gate, news recency by meaning) do while the
-//! router is on. "off" (the default): only the router's answer decides; on a miss the turn gets every tool and the
-//! model decides, with no rule-based notes. "fallback": the router first, Elisa's rules where it gives no answer.
-//! A session changes it with `/router rules off|fallback` (saved here).
+//! `decision`: "router" (the default with a url and key): the router decides and the rules are off. The one
+//! exception is a router that cannot be reached at all (no connection, no internet): that turn, the rules decide.
+//! Any other miss (too slow, an error status, an answer that is not the contract) keeps the rules off: the turn
+//! gets every tool and the model decides. "rules": the router is not called; the rules decide. A session changes it
+//! with `/router use router|rules` (saved here).
 //!
 //! # Contract (version 1)
 //!
@@ -43,7 +45,7 @@
 //! "topic"?: "Osaka"}`. `intents` is a non-empty list of the labels in [`LABELS`]; an unknown label is ignored.
 //!
 //! Anything else (no answer within [`TIMEOUT`], a non-2xx status, a body that is not this JSON, no known label) is a
-//! miss: no error in the chat, at most one quiet info line per session, and the turn routes as `elisa_rules` says.
+//! miss: no error in the chat, at most one quiet info line per session (see `decision` for what decides then).
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -73,55 +75,55 @@ pub struct RouterConf {
     pub api_key_env: String,
     #[serde(default, skip_serializing_if = "empty")]
     pub api_key: String,
-    /// Elisa's own intent rules while the router is on: "off" (the default, also when empty) or "fallback"
+    /// which part of the decision model decides: "router" (the default, also when empty) or "rules"
     #[serde(default, skip_serializing_if = "empty")]
-    pub elisa_rules: String,
+    pub decision: String,
 }
 
-/// the values of `elisa_rules`
-pub const RULES: [&str; 2] = ["off", "fallback"];
+/// the values of `decision`
+pub const DECISION: [&str; 2] = ["router", "rules"];
 
 impl RouterConf {
     pub fn validate(&self) -> Result<(), String> {
         if !self.url.is_empty() && !(self.url.starts_with("http://") || self.url.starts_with("https://")) {
             return Err(format!("router: url must start with http:// or https:// (got {:?})", self.url));
         }
-        if !self.elisa_rules.is_empty() && !RULES.contains(&self.elisa_rules.as_str()) {
-            return Err(format!("router: elisa_rules must be \"off\" or \"fallback\" (got {:?})", self.elisa_rules));
+        if !self.decision.is_empty() && !DECISION.contains(&self.decision.as_str()) {
+            return Err(format!("router: decision must be \"router\" or \"rules\" (got {:?})", self.decision));
         }
         Ok(())
     }
 
-    /// The endpoint to use: None (off) without a URL or without a key.
+    /// The endpoint to use: None (the rules decide) without a URL, without a key, or with `decision = "rules"`.
     pub fn target(&self, getenv: &dyn Fn(&str) -> Option<String>) -> Option<Target> {
+        if self.decision == "rules" { return None; }
         let key = if self.api_key_env.is_empty() { None } else { getenv(&self.api_key_env).filter(|v| !v.trim().is_empty()) }
             .unwrap_or_else(|| self.api_key.clone());
         let (url, key) = (self.url.trim().trim_end_matches('/').to_string(), key.trim().to_string());
-        (!url.is_empty() && !key.is_empty()).then_some(Target { url, key, fallback: self.elisa_rules == "fallback" })
+        (!url.is_empty() && !key.is_empty()).then_some(Target { url, key })
     }
 }
 
-/// A configured router: where, with which key, and whether Elisa's own rules decide where it gives no answer
-/// (`elisa_rules = "fallback"`). `Debug` never prints the key.
+/// A configured router: where, and with which key. `Debug` never prints the key.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Target { pub url: String, key: String, pub fallback: bool }
+pub struct Target { pub url: String, key: String }
 
 impl std::fmt::Debug for Target {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "Target {{ url: {:?}, key: <set>, fallback: {} }}", self.url, self.fallback) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "Target {{ url: {:?}, key: <set> }}", self.url) }
 }
 
 impl Target {
     #[cfg(test)]
-    pub fn new(url: &str, key: &str) -> Target { Target { url: url.into(), key: key.into(), fallback: false } }
+    pub fn new(url: &str, key: &str) -> Target { Target { url: url.into(), key: key.into() } }
 }
 
-/// `/router rules off|fallback`: `elisa_rules` written to `[router]` in providers.toml under `home` (the file's
-/// other settings kept; saved as every connection change is, mode 600). Err: a bad value, or no `[router]` table.
-pub fn save_rules(home: &std::path::Path, value: &str) -> Result<std::path::PathBuf, String> {
-    if !RULES.contains(&value) { return Err(format!("elisa_rules must be \"off\" or \"fallback\" (got {value:?})")); }
+/// `/router use router|rules`: `decision` written to `[router]` in providers.toml under `home` (the file's other
+/// settings kept; saved as every connection change is, mode 600). Err: a bad value, or no `[router]` table.
+pub fn save_decision(home: &std::path::Path, value: &str) -> Result<std::path::PathBuf, String> {
+    if !DECISION.contains(&value) { return Err(format!("decision must be \"router\" or \"rules\" (got {value:?})")); }
     let mut f = crate::provider::Providers::load(home)?;
     let r = f.router.as_mut().ok_or("no [router] table in providers.toml: add its url and key first")?;
-    r.elisa_rules = value.to_string();
+    r.decision = value.to_string();
     f.save(home)
 }
 
@@ -198,14 +200,19 @@ pub fn parse(body: &str) -> Result<Answer, String> {
     Ok(Answer { intents, file: s("file"), page: s("page").or_else(|| v["page"].as_u64().map(|n| n.to_string())), item, topic: s("topic") })
 }
 
-/// One `/route` call. Err: why it missed (never shown in the chat).
+/// One `/route` call. Err: why it missed (never shown in the chat); "unreachable: …" only when no connection could be
+/// made at all (no internet, host not found, refused), never for a slow answer ("timeout: …").
 pub fn call(t: &Target, message: &str, c: &Context) -> Result<Answer, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(TIMEOUT)).build().into();
     let mut r = agent.post(format!("{}/route", t.url))
         .header("authorization", format!("Bearer {}", t.key))
         .header("content-type", "application/json")
         .send(request_body(message, c).to_string())
-        .map_err(|e| format!("unreachable: {e}"))?;
+        .map_err(|e| match e {
+            ureq::Error::Timeout(_) => format!("timeout: {e}"),
+            ureq::Error::HostNotFound | ureq::Error::ConnectionFailed | ureq::Error::Io(_) => format!("unreachable: {e}"),
+            e => format!("error: {e}"),
+        })?;
     let st = r.status().as_u16();
     let body = r.body_mut().with_config().limit(64 * 1024).read_to_string().map_err(|e| format!("read: {e}"))?;
     if !(200..300).contains(&st) { return Err(format!("HTTP {st}")); }
@@ -243,36 +250,43 @@ pub fn plan(a: &Answer) -> Plan {
     Plan { groups: Groups(g), reasoning: a.has("reasoning"), carry: a.has("what_about") && !companion }
 }
 
-/// The session's router: the target, and whether the one quiet miss line was shown.
+/// The session's router: the target, whether the one quiet miss line was shown, and whether this turn's call could
+/// not reach it (then, and only then, the rules decide this turn).
 #[derive(Debug, Default)]
 pub struct Router {
     pub target: Option<Target>,
     told: bool,
+    /// the one line for "can't be reached, the rules decide" was shown (apart from `told`: the user learns who decides)
+    told_offline: bool,
+    unreachable: bool,
 }
 
 impl Router {
-    pub fn new(target: Option<Target>) -> Router { Router { target, told: false } }
+    pub fn new(target: Option<Target>) -> Router { Router { target, told: false, told_offline: false, unreachable: false } }
     pub fn on(&self) -> bool { self.target.is_some() }
-    /// Elisa's own intent rules may decide: no router, or one with `elisa_rules = "fallback"`
-    pub fn rules_on(&self) -> bool { self.target.as_ref().is_none_or(|t| t.fallback) }
-    /// the router and its `elisa_rules`, in one line (the startup line, `/router`, `/context`)
+    /// The hardcoded rules decide: no router (none set, or `decision = "rules"`), or this turn's router call could
+    /// not reach it. Only one part decides at a time.
+    pub fn rules_on(&self) -> bool { self.target.is_none() || self.unreachable }
+    /// which part decides, in one line (the startup line, `/router`, `/context`)
     pub fn describe(&self) -> String {
         match &self.target {
-            None => "intent router off (no [router] url and key in providers.toml): Elisa's own intent rules decide".into(),
-            Some(t) if t.fallback => format!("intent router on ({}) · Elisa's own intent rules: fallback (where the router gives no answer)", t.url),
-            Some(t) => format!("intent router on ({}) · Elisa's own intent rules: off (only the router decides; a miss offers every tool)", t.url),
+            None => "decision: the hardcoded rules (no router, or [router] decision = \"rules\")".into(),
+            Some(t) => format!("decision: the router ({}) · the hardcoded rules are off, except a turn where the router can't be reached", t.url),
         }
     }
 
     /// The router's answer for this turn, or None (off, or a miss). `info`: the one quiet line of a session's first
     /// miss; later misses say nothing.
     pub fn ask(&mut self, message: &str, c: &Context, info: &mut dyn FnMut(&str)) -> (Option<Answer>, Option<String>) {
+        self.unreachable = false;
         let Some(t) = &self.target else { return (None, None) };
         match call(t, message, c) {
             Ok(a) => (Some(a), None),
             Err(e) => {
-                if !std::mem::replace(&mut self.told, true) {
-                    info(if t.fallback { "The intent router did not answer; Elisa routes on her own for now." }
+                self.unreachable = e.starts_with("unreachable");
+                let told = if self.unreachable { &mut self.told_offline } else { &mut self.told };
+                if !std::mem::replace(told, true) {
+                    info(if self.unreachable { "The intent router can't be reached (no connection); the hardcoded rules decide until it answers again." }
                         else { "The intent router did not answer; the model gets every tool for now." });
                 }
                 (None, Some(e))
@@ -372,43 +386,42 @@ mod tests {
     }
 
     #[test]
-    fn elisa_rules_is_off_unless_set_to_fallback() {
+    fn only_one_part_decides_router_or_rules() {
         use crate::provider::Providers;
         let key = |_: &str| None;
         let conf = |extra: &str| Providers::parse(&format!("[router]\nurl = \"http://r\"\napi_key = \"k\"\n{extra}"), "t");
-        let target = |extra: &str| conf(extra).unwrap().router.unwrap().target(&key).unwrap();
-        assert!(!target("").fallback, "the default is off");
-        assert!(!target("elisa_rules = \"off\"\n").fallback);
-        assert!(target("elisa_rules = \"fallback\"\n").fallback);
-        let e = conf("elisa_rules = \"sometimes\"\n").unwrap_err();
-        assert!(e.contains("elisa_rules must be \"off\" or \"fallback\""), "{e}");
-        // the rules decide with no router, or with one set to fallback; never with one set to off
+        let target = |extra: &str| conf(extra).unwrap().router.unwrap().target(&key);
+        // a url and key: the router decides (the default, or "router"); "rules": the router is not called at all
+        assert!(target("").is_some() && target("decision = \"router\"\n").is_some());
+        assert!(target("decision = \"rules\"\n").is_none());
+        let e = conf("decision = \"both\"\n").unwrap_err();
+        assert!(e.contains("decision must be \"router\" or \"rules\""), "{e}");
+        // the old setting is gone
+        assert!(conf("elisa_rules = \"fallback\"\n").is_err());
         assert!(Router::new(None).rules_on());
-        assert!(Router::new(Some(target("elisa_rules = \"fallback\"\n"))).rules_on());
-        assert!(!Router::new(Some(target(""))).rules_on());
-        assert!(Router::new(Some(target(""))).describe().contains("intent rules: off"));
-        assert!(Router::new(Some(target("elisa_rules = \"fallback\"\n"))).describe().contains("intent rules: fallback"));
+        assert!(!Router::new(target("")).rules_on(), "with the router, the rules are off");
+        assert!(Router::new(target("")).describe().contains("hardcoded rules are off"));
+        assert!(Router::new(None).describe().contains("the hardcoded rules"));
     }
 
     #[test]
-    fn rules_are_saved_to_providers_toml_keeping_the_rest() {
+    fn decision_is_saved_to_providers_toml_keeping_the_rest() {
         use std::os::unix::fs::PermissionsExt;
-        let home = std::env::temp_dir().join(format!("elisa-router-rules-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        assert!(save_rules(&home, "fallback").is_err(), "no [router] table: nothing to change");
+        let home = crate::testdir::TempDir::new("router-decision");
+        assert!(save_decision(&home, "rules").is_err(), "no [router] table: nothing to change");
         let p = crate::provider::path_in(&home);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, "active = \"l\"\n[providers.l]\ntype = \"openai\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"m\"\n[router]\nurl = \"http://r\"\napi_key = \"k\"\n").unwrap();
-        assert!(save_rules(&home, "maybe").is_err());
-        save_rules(&home, "fallback").unwrap();
+        assert!(save_decision(&home, "fallback").is_err());
+        save_decision(&home, "rules").unwrap();
         let f = crate::provider::Providers::load(&home).unwrap();
         let r = f.router.clone().unwrap();
-        assert_eq!((r.url.as_str(), r.api_key.as_str(), r.elisa_rules.as_str()), ("http://r", "k", "fallback"));
+        assert_eq!((r.url.as_str(), r.api_key.as_str(), r.decision.as_str()), ("http://r", "k", "rules"));
+        assert!(r.target(&|_| None).is_none());
         assert_eq!((f.active.as_str(), f.providers["l"].model.as_str()), ("l", "m"));
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-        save_rules(&home, "off").unwrap();
-        assert!(!crate::provider::Providers::load(&home).unwrap().router.unwrap().target(&|_| None).unwrap().fallback);
-        let _ = std::fs::remove_dir_all(&home);
+        save_decision(&home, "router").unwrap();
+        assert!(crate::provider::Providers::load(&home).unwrap().router.unwrap().target(&|_| None).is_some());
     }
 
     /// a one-shot HTTP server on 127.0.0.1 that answers with `status` and `body` after `delay`; returns its URL and
@@ -454,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn every_miss_falls_back_with_one_quiet_line() {
+    fn every_miss_is_quiet_and_only_no_connection_hands_the_turn_to_the_rules() {
         let ctx = Context::default();
         let mut lines: Vec<String> = Vec::new();
         // HTTP error, bad JSON, no known label, a timeout, nothing listening: each a miss
@@ -471,8 +484,16 @@ mod tests {
             assert!(a.is_none(), "{u}");
             assert!(e.as_deref().unwrap_or("").contains(why), "{u}: {e:?}");
             assert!(t0.elapsed() < TIMEOUT + Duration::from_millis(700), "{u}: waited {:?}", t0.elapsed());
+            // the rules take over only when the router can't be reached; a slow or wrong answer keeps them off
+            assert_eq!(r.rules_on(), u == &dead, "{u}: {e:?}");
         }
-        assert_eq!(lines.len(), 1, "one quiet line per session: {lines:?}");
+        // reached again: the rules are off again
+        let (u5, h5) = serve(200, r#"{"intents": ["chat"]}"#, Duration::ZERO);
+        r.target = Some(Target::new(&u5, "k"));
+        assert!(r.ask("hi", &ctx, &mut |_| {}).0.is_some() && !r.rules_on());
+        let _ = h5.join();
+        assert_eq!(lines.len(), 2, "one quiet line per kind of miss: {lines:?}");
+        assert!(lines[1].contains("hardcoded rules decide"), "{lines:?}");
         for h in [h1, h2, h3, h4] { let _ = h.join(); }
     }
 }

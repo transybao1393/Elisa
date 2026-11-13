@@ -399,8 +399,9 @@ struct ScorecardView: View {
     @State private var ascending = true
     @State private var open: Set<String> = []
 
+    /// Passed: room for its runs line ("3 runs · 10–12/14") on one line
     private func width(_ c: Col) -> CGFloat? {
-        switch c { case .model: nil; case .passed: 96; case .turn, .ttft: 92; case .tools: 84; case .empty: 96; case .loops: 82; case .date: 92; case .version: 60 }
+        switch c { case .model: nil; case .passed: 124; case .turn, .ttft: 92; case .tools: 84; case .empty: 96; case .loops: 82; case .date: 76; case .version: 60 }
     }
 
     private var rows: [(String, EvalRun)] {

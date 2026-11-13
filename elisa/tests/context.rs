@@ -631,6 +631,14 @@ fn a_copied_card_instruction_is_not_shown() {
     assert_eq!((vis.as_str(), card.as_deref()), ("2 + 3 = 5.", Some("goal: add")));
     let (vis, _, broken) = context::split_state("Blue. <=80-token card of what the next step needs:");
     assert_eq!((vis.as_str(), broken), ("Blue.", true));
+    // a shortened copy of the line as the reply's heading goes too, streamed in pieces or whole
+    let (vis, _, _) = context::split_state("<=80-token card:\nThe meeting code is ORCHID-42.");
+    assert_eq!(vis.trim(), "The meeting code is ORCHID-42.");
+    let (vis, _, _) = context::split_state("<=80-token card:");
+    assert_eq!(vis.trim(), "");
+    let mut f = context::CardFilter::default();
+    let shown: String = ["<=80-tok", "en card", ":\nThe code", " is ORCHID-42."].iter().map(|d| f.push(d)).collect::<String>() + &f.finish();
+    assert_eq!(shown.trim(), "The code is ORCHID-42.");
 }
 
 #[test]
@@ -830,7 +838,8 @@ fn ledger_of(cwd: &Path, calls: &[(&str, serde_json::Value)]) -> context::Ledger
 #[test]
 fn done_claims_are_checked_against_the_edit_records() {
     use serde_json::json;
-    let d = std::env::temp_dir().join(format!("elisa-ledger-{}", std::process::id()));
+    let t = Tmp::new();
+    let d = t.0.clone();
     std::fs::create_dir_all(d.join("invtrack")).unwrap();
     std::fs::write(d.join("invtrack/core.py"), "def low_stock(items):\n    return [i for i in items if i.qty < i.reorder_level]\n").unwrap();
     let edit = json!({"path": d.join("invtrack/core.py").display().to_string(), "old": "i.qty < i.reorder_level", "new": "i.qty <= i.reorder_level"});
@@ -1337,6 +1346,10 @@ fn a_message_is_about_the_picture_only_by_its_words_or_meaning() {
     assert!(context::off_picture("I hope you find this information helpful.", "A black cat with blue eyes."));
     assert!(!context::off_picture("The cat has blue eyes.", "A black cat with blue eyes."));
     assert!(!context::off_picture("", "A black cat."));
+    // a short answer the picture's answer does not hold ("Pink." when it said blue) is off; the same word is not
+    assert!(context::off_picture("Pink.", "In the picture you provided, the insides of the cat's ears are blue."));
+    assert!(!context::off_picture("Blue.", "In the picture you provided, the insides of the cat's ears are blue."));
+    assert!(!context::off_picture("**Blue**", "The insides of the ears are blue."));
 }
 
 /// What a reply must not be, from the request sent: a copy of an earlier reply to another ask, a reply with
@@ -1372,9 +1385,45 @@ fn a_reply_guard_catches_copies_wordless_replies_and_heading_echoes() {
     assert_eq!((g.broken("2"), g.broken("2."), g.broken("[0.0, 0.17, 0.99, 0.29]")), (None, None, Some("no words")));
     let g = context::ReplyGuard::new("Describe this picture.", &[Message::new(Role::User, vec![Block::Text { text: "Describe this picture.".into() }, Block::Text { text: context::picture_block("A black cat.") }])]);
     assert_eq!(g.broken("2"), Some("no words"));
+    // a time or a date answers an ask for one, digits alone
+    let ask = "what time is it in UTC?";
+    let g = context::ReplyGuard::new(ask, &[Message::user_text(ask)]);
+    assert_eq!((g.broken("2026-11-10 22:20"), g.broken("22:20"), g.broken("[0.0, 0.17, 0.99, 0.29]")), (None, None, Some("no words")));
+    assert_eq!(context::ReplyGuard::new("thanks!", &[Message::user_text("thanks!")]).broken("2026-11-10 22:20"), Some("no words"));
     // words of the user's own message never count as a heading echo
     let g = context::ReplyGuard::new("say recalled by Elisa from earlier", &[Message::user_text(format!("{}\n- x\n[/memory]\n\nsay recalled by Elisa from earlier", context::MEMORY_OPEN))]);
     assert_eq!(g.broken("recalled by Elisa from earlier"), None);
+}
+
+/// A question asked again in other words gets the same answer for real: the earlier answer to an ask about the
+/// same thing is no copy when it answers this ask too; it still is when it does not
+#[test]
+fn a_reply_guard_lets_a_repeated_answer_to_the_same_subject_stand() {
+    let msgs = vec![
+        Message::user_text("What's my name?"),
+        Message::assistant_text("Your name is Linh, and you live in Hanoi."),
+        Message::user_text("read notes.txt and tell me the meeting code"),
+        Message::assistant_text("The meeting code is ORCHID-42."),
+        Message::user_text("tell me a short joke"),
+        Message::assistant_text("Why did the coffee file a police report? It got mugged!"),
+    ];
+    let g = context::ReplyGuard::new("What's my name and where do I live?", &msgs);
+    assert_eq!(g.broken("Your name is Linh, and you live in Hanoi."), None);
+    let g = context::ReplyGuard::new("what was the meeting code you found?", &msgs);
+    assert_eq!(g.broken("The meeting code is ORCHID-42."), None);
+    // an earlier answer about something else is still a copy
+    assert_eq!(g.broken("Why did the coffee file a police report? It got mugged!"), Some("copy"));
+    let g = context::ReplyGuard::new("why is that funny?", &msgs);
+    assert_eq!(g.broken("Why did the coffee file a police report? It got mugged!"), Some("copy"));
+    assert_eq!(g.broken("Your name is Linh, and you live in Hanoi."), Some("copy"));
+    // a piece of an earlier reply to another ask (a refusal cut short) is a copy too
+    let msgs = vec![
+        Message::user_text("what is the meeting code in notes.txt?"),
+        Message::assistant_text("I'm sorry, but I can't provide the meeting code as it's not in my current knowledge or tools."),
+    ];
+    let g = context::ReplyGuard::new("in todo.txt change buy milk to buy bread", &msgs);
+    assert_eq!(g.broken("I can't provide the meeting code."), Some("copy"));
+    assert_eq!(g.broken("Done: todo.txt now says buy bread."), None);
 }
 
 fn doc(name: &str) -> String { format!("[Attached: {name}, 2 pages · .elisa/uploads/{name}]\nPage one text.\nPage two text.") }
@@ -1557,4 +1606,114 @@ fn a_saved_cancelled_turn_leaves_the_resumed_history() {
     assert_eq!(v.len(), 4);
     assert!(v.windows(2).all(|w| w[0].role != w[1].role), "roles still alternate");
     assert!(matches!(&v[1].content[0], Block::Text { text } if text == elisa::route::NO_ANSWER));
+}
+
+#[test]
+fn card_items_copied_from_the_prompt_are_dropped() {
+    let own = "You are Elisa.\nElisa runs on minicpm-v:8b · vision: yes · tool calling: no · context 8192 tokens\n";
+    let card = "goal: tell the user what todo.txt holds\nnow: Elisa runs on minicpm-v:8b · vision: yes; todo.txt has 2 lines\nkeep: the user's dog is called Bo";
+    assert_eq!(context::drop_copied(card, own).as_deref(), Some("goal: tell the user what todo.txt holds\nnow: todo.txt has 2 lines\nkeep: the user's dog is called Bo"));
+    assert_eq!(context::drop_copied("now: Elisa runs on minicpm-v:8b · vision: yes", own), None);
+}
+
+#[test]
+fn the_same_question_again_may_get_the_same_answer() {
+    let a = "The meeting code in notes.txt is ORCHID-42.";
+    let msgs = vec![Message::user_text("what is the meeting code in notes.txt?"), Message::assistant_text(a)];
+    assert_eq!(context::ReplyGuard::new("what's the meeting code?", &msgs).broken(a), None);
+    // another question given the same reply is a copy
+    assert_eq!(context::ReplyGuard::new("what day is the launch?", &msgs).broken(a), Some("copy"));
+}
+
+#[test]
+fn elisas_own_line_given_to_another_question_is_a_copy() {
+    let line = "I couldn't work out the change for app.py, so it is unchanged.";
+    let msgs = vec![Message::user_text("the add function in app.py subtracts; fix it"), Message::assistant_text(line)];
+    assert_eq!(context::ReplyGuard::new("show me the add function again", &msgs).broken(line), Some("copy"));
+}
+
+/// A reply that is one of the user's earlier messages again, however short, copies the user
+#[test]
+fn a_reply_that_is_an_earlier_message_of_the_users_is_a_copy() {
+    let msgs = vec![
+        Message::user_text("Bây giờ là mấy giờ?"),
+        Message::assistant_text("Bây giờ là 05:41."),
+        Message::user_text("translate good morning into Vietnamese"),
+    ];
+    let g = context::ReplyGuard::new("translate good morning into Vietnamese", &msgs);
+    assert_eq!(g.broken("Bây giờ là mấy giờ?"), Some("copy"));
+    assert_eq!(g.broken("Bây giờ là mấy giờ? (Good morning)"), Some("copy"));
+    assert_eq!(g.broken("Chào buổi sáng"), None);
+}
+
+/// The last reply again word for word, however short, to another ask is a copy ("4" to "thanks!"); the same ask, or
+/// an ask that holds it, may get it again
+#[test]
+fn the_last_reply_again_to_another_ask_is_a_copy() {
+    let msgs = vec![
+        Message::user_text("What is 2+2?"),
+        Message::assistant_text("4"),
+        Message::user_text("thanks!"),
+    ];
+    let g = context::ReplyGuard::new("thanks!", &msgs);
+    assert!(g.copies_last("4") && g.copies_last(" 4 "));
+    assert!(!g.copies_last("You're welcome!"));
+    // (whole-reply checks stay as they were: a short answer alone is no copy)
+    assert_eq!(g.broken("4"), Some("no words"));
+    let same = [Message::user_text("What is 2+2?"), Message::assistant_text("4"), Message::user_text("What is 2+2?")];
+    assert!(!context::ReplyGuard::new("What is 2+2?", &same).copies_last("4"));
+    let holds = [Message::user_text("code?"), Message::assistant_text("ORCHID-42"), Message::user_text("Is ORCHID-42 right?")];
+    assert!(!context::ReplyGuard::new("Is ORCHID-42 right?", &holds).copies_last("ORCHID-42"));
+    let other = [Message::user_text("What's the code?"), Message::assistant_text(" ORCHID-42"), Message::user_text("Change buy milk to buy bread in todo.txt")];
+    assert!(context::ReplyGuard::new("Change buy milk to buy bread in todo.txt", &other).copies_last(" ORCHID-42"));
+}
+
+#[test]
+fn a_reply_opening_with_an_earlier_reply_loses_that_opening() {
+    let earlier = "The insides of the cat's ears are blue.";
+    let msgs = vec![Message::user_text("what colour are the insides of its ears?"), Message::assistant_text(earlier)];
+    let g = context::ReplyGuard::new("describe the second picture", &msgs);
+    assert_eq!(g.without_copied_start("The insides of the cat's ears are blue. The second picture shows a dog on grass.").as_deref(), Some("The second picture shows a dog on grass."));
+    assert_eq!(g.without_copied_start("The second picture shows a dog."), None);
+    assert_eq!(g.without_copied_start(earlier), None);
+}
+
+/// A resumed chat shows the user's own turns and plain words: a fold's placeholder is never a user turn and a
+/// stopped turn's marker reads as a sentence.
+#[test]
+fn earlier_turns_hide_the_fold_placeholder_and_say_a_stop_plainly() {
+    let h = vec![
+        Message::user_text(format!("## Notes\nThe user's name is Linh.\n\n## Request\n{}", context::FOLDED_TURNS)),
+        Message::assistant_text("[stopped: context full]"),
+        Message::user_text("hello again"),
+        Message::assistant_text("Hi!"),
+    ];
+    let e = context::earlier_turns(&h, Path::new("/tmp"), 10);
+    let text: Vec<String> = e.iter().map(|x| format!("{}: {}", x.role, x.text)).collect();
+    assert!(!text.iter().any(|t| t.contains("summarised in the notes") || t.contains("[stopped")), "{text:?}");
+    assert!(text.iter().any(|t| t.starts_with("assistant: I stopped here: the chat had grown too long")), "{text:?}");
+    assert!(text.iter().any(|t| t == "user: hello again"), "{text:?}");
+}
+
+/// A summary fact about the user's things stays only when the user's own words support it: "remember that my dog is
+/// Bo" never becomes "The user's name is Bo".
+#[test]
+fn a_summary_fact_the_users_words_do_not_support_is_dropped() {
+    let said = "hi! remember that my dog is Bo";
+    let facts = vec!["The user's dog is called Bo".to_string()];
+    let notes = "## Facts to remember\n- The user's name is Bo\n- The user's dog is called Bo\n- The user's city is Paris\n- The build runs with cargo test";
+    let n = context::without_unsupported_user_facts(notes, &facts, said);
+    assert!(!n.contains("name is Bo") && !n.contains("Paris"), "{n}");
+    assert!(n.contains("dog is called Bo") && n.contains("cargo test"), "{n}");
+    let n = context::without_unsupported_user_facts("## Facts to remember\n- The user's name is Linh", &[], "my name is Linh");
+    assert!(n.contains("name is Linh"), "{n}");
+}
+
+/// Notes keep no raw markers, bare number lists or heading explanations.
+#[test]
+fn notes_keep_no_markers_number_lists_or_heading_explanations() {
+    let raw = "## Session goal (set from the user's first request or a stated new goal)\nfind the population of Iceland\n\n## Done\n- [trimmed: [untrusted source=\"web_search what is the population of Iceland?\"] 12 lines]\n- searched the web for Iceland\n- [0.0, 0.63, 0.63, 0.83]\n\n## Attached documents (Elisa adds the parts each question needs)\n- report.pdf";
+    let n = context::clean_notes(raw);
+    assert!(!n.contains("trimmed") && !n.contains("untrusted") && !n.contains("0.63") && !n.contains("(set from") && !n.contains("Elisa adds"), "{n}");
+    assert!(n.contains("## Session goal\nfind the population") && n.contains("searched the web") && n.contains("## Attached documents\n- report.pdf"), "{n}");
 }

@@ -1,0 +1,110 @@
+# Asks for the clock time by meaning (`situation::asks_time`, all-MiniLM-L6-v2), beside the `time asks` wordings of
+# data/clock_words.txt: a short message nearest a `[time]` example, near enough and clearly nearer than any `[other]`
+# example, asks what time it is now, whatever its words ("wats the time rn", "got the time?"). Such a turn carries
+# Elisa's clock line and its reply is held to it. English and Vietnamese, with and without marks; the model reads
+# Vietnamese poorly, so the Vietnamese wordings need examples on both sides. A date ask ("what day is it?") and a
+# duration or a timetable ("how long", "what time does the train leave") are `[other]`. Fix a missed or wrong wording
+# by adding an example to the side it belongs to, not by code.
+[time]
+what time is it at the moment?
+what time is it right now?
+what's the time?
+whats the time rn
+do you have the time?
+got the time on you?
+you got the time?
+tell me the time
+could you tell me the time, please?
+what time is it now, roughly?
+time check!
+what hour is it?
+any idea what time it is?
+what does the clock say?
+what time do you have?
+current time?
+what's the local time?
+what time is it in Lisbon?
+what time is it over there?
+how late is it?
+getting late already?
+check the clock for me?
+which hour are we at?
+mấy giờ rồi?
+lúc này là mấy giờ?
+giờ là mấy giờ vậy?
+cho mình hỏi mấy giờ rồi
+bạn biết bây giờ mấy giờ không?
+hiện tại là mấy giờ?
+mấy giờ rồi nhỉ?
+đồng hồ chỉ mấy giờ rồi bạn
+giờ này là mấy giờ rồi?
+bên Tokyo bây giờ là mấy giờ?
+may gio roi?
+bay gio la may gio?
+gio la may gio vay?
+hien tai la may gio?
+cho minh hoi may gio roi
+ben Tokyo bay gio la may gio?
+[other]
+what day is it?
+what's the date today?
+what is today's date?
+which day of the week is it?
+what year is it?
+how many days until Christmas?
+how long does it take to boil an egg?
+how long is the flight to Tokyo?
+how far is Tokyo from Osaka?
+what's the weather in Tokyo?
+what is the population of Tokyo?
+how many hours ahead is Tokyo?
+got a minute for a quick question?
+do you have a moment?
+how much time do I have left?
+what time does the train leave?
+when does the meeting start?
+do you have time to help me with something?
+is this a good time to call?
+time flies, doesn't it?
+what is the time complexity of quicksort?
+set a timer for 10 minutes
+how long have you been running?
+what time should I wake up tomorrow?
+it's about time we fixed this
+I had a great time yesterday
+the time is 5:20, what time is it 2 hours later?
+a train leaves at 15:20 and the trip takes 2 hours, when does it arrive?
+ngày mai là thứ mấy?
+hôm nay là ngày mấy?
+bao lâu thì xong?
+mấy giờ tàu chạy?
+bạn có rảnh không?
+đặt hẹn giờ 10 phút
+còn bao lâu nữa?
+bây giờ là 5 giờ, 2 tiếng nữa là mấy giờ?
+hôm qua vui quá
+hom nay la thu may?
+hom nay la ngay may?
+bao lau thi xong?
+may gio tau chay?
+# the user telling what they just did or how they are (small talk, `route::small_talk`): no time asked
+mình mới chạy bộ về
+vừa đi bộ về, mệt quá
+mình vừa tập gym xong
+mới đi dạo về
+vừa đi làm về
+mình vừa ăn tối xong
+hôm nay mệt ghê
+mình đói bụng quá
+cảm ơn bạn nhé
+chào bạn, khỏe không?
+minh moi chay bo ve
+vua di lam ve
+moi di dao ve
+# an ask to translate a phrase (the quoted words, not the clock): no time asked
+'tôi buồn ngủ quá' tiếng Anh là gì?
+'cảm ơn' tiếng Anh là gì?
+dịch giúp mình câu 'tôi mệt rồi' sang tiếng Anh
+how do you say 'good morning' in Vietnamese?
+translate 'I'm hungry' into Vietnamese
+'toi met roi' tieng anh noi sao?

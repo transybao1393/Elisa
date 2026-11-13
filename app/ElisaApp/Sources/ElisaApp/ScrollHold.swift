@@ -129,6 +129,8 @@ enum ScrollHold {
     /// the transcript's scroll view (--script playback scrolls it)
     static weak var view: NSScrollView?
     static weak var watcher: ScrollWatcher.WatchView?
+    /// the "new output" pill's action while it shows (--selftest presses it through this)
+    static var jump: (() -> Void)?
     /// distance from the bottom (points) at which a user scroll counts as "scrolled up"
     static let holdAt: CGFloat = 24
 

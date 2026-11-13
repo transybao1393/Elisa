@@ -1,0 +1,17 @@
+# How a number in a word problem joins the total before it (`mcp_reason::own_reading`): Elisa's own reading of
+# "21 apples and give away 5 apples, how many are left?" as 21 - 5 when the model gives no usable expression (a tiny
+# model cannot write one), so every model gets the same answer. Each later number of the question needs one of these
+# words between it and the number before it, else Elisa does not read the question herself. "a | b | c", English and
+# Vietnamese, with and without accents. Fix a missed wording here, not in code.
+
+[minus]
+give away | gives away | gave away | given away | giving away | eat | eats | ate | eaten | eating | lose | loses | lost | losing | sell | sells | sold | selling | spend | spends | spent | spending | take away | takes away | took away | break | breaks | broke | broken | use | uses | used | using | remove | removes | removed | drop | drops | dropped | minus | fewer | less
+cho đi | cho di | cho bớt | cho bot | ăn | an | mất | mat | làm mất | lam mat | bán | ban | tiêu | tieu | dùng | dung | làm vỡ | lam vo | lấy đi | lay di | bớt | bot | trừ | tru
+
+[plus]
+buy | buys | bought | buying | get | gets | got | getting | receive | receives | received | find | finds | found | add | adds | added | gain | gains | gained | more | plus | another
+mua | nhận | nhan | được thêm | duoc them | thêm | them | tìm thấy | tim thay | nhặt được | nhat duoc | cộng | cong
+
+[divide]
+share equally among | shared equally among | split among | split between | divided among | divide among | divided between | shared among | shared between
+chia đều cho | chia deu cho | chia đều | chia deu | chia cho

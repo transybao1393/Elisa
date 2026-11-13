@@ -1,0 +1,9 @@
+# Common words of languages Elisa does not talk in, which a small model slips into a reply in the user's language
+# ("Halo! Hiện mình đang rảnh. Bagaimana có thể giúp bạn hôm nay?": Indonesian words in a Vietnamese reply). A
+# Vietnamese reply holding one of these, not taken from the user's message, is no reply in the user's language
+# (`reply_check::other_language_words`): asked once more, then Elisa's own line. Only a message that asks for no other
+# language is judged. One key per line, "language: wording | wording | …", lowercase, matched as whole words. Never
+# list a word that is also a Vietnamese word typed without its marks ("dan", "di", "ban") or a common English word.
+# Add a missed word here, not in code.
+indonesian: halo | bagaimana | saya | anda | kamu | bisa | terima kasih | selamat | tidak | dengan | untuk | sangat | hari ini | sekarang | apa kabar | membantu | silakan | maaf | sudah | belum | kami | mereka | bantuan | sesuatu | lakukan
+malay: boleh | awak | tolong | terima kasih | selamat | bagaimana | sahaja | sekarang

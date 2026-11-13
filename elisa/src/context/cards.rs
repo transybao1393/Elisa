@@ -43,6 +43,22 @@ pub fn split_state(text: &str) -> (String, Option<String>, bool) {
 const CARD_OPEN: [&str; 2] = ["<state>", "[state]"];
 const CARD_CLOSE: [&str; 2] = ["</state>", "[/state]"];
 
+/// The copied card instruction line in `buf`, whole or shortened by the model ("<=80-token card:", "<=80-token card of
+/// next step:"): from its head (`CARD_ECHO`'s words before " of") to the first ':' within `CARD_ECHO`'s length, or
+/// the head alone when none comes. Ok(range) to remove; Err(start) while the line may still go on (`done`: it cannot).
+fn card_echo(buf: &str, done: bool) -> Option<Result<(usize, usize), usize>> {
+    let head = CARD_ECHO.split(" of ").next().unwrap_or(CARD_ECHO);
+    let i = buf.find(head)?;
+    let at = i + head.len();
+    let room = CARD_ECHO.len() - head.len();
+    match buf[at..].char_indices().take_while(|(k, _)| *k <= room).find(|(_, c)| *c == ':' || *c == '\n') {
+        Some((k, ':')) => Some(Ok((i, at + k + 1))),
+        Some(_) => Some(Ok((i, at))),
+        None if done || buf.len() - at > room => Some(Ok((i, at))),
+        None => Some(Err(i)),
+    }
+}
+
 /// `line`'s card key (`goal`, `done`, `now`, `keep`, `next`, `open`) when it is a card line (`done: wrote x`).
 fn card_key(line: &str) -> Option<&'static str> {
     let t = line.trim().trim_start_matches(['-', '*']).trim_start();
@@ -76,14 +92,19 @@ impl CardFilter {
                     None => { let p = tag_partial(&self.buf, &CARD_CLOSE); self.buf.drain(..self.buf.len() - p); return out; }
                 }
             }
-            if let Some(i) = self.buf.find(CARD_ECHO) { self.buf.replace_range(i..i + CARD_ECHO.len(), ""); continue; }
+            // the copied card instruction line, whole or shortened ("<=80-token card:"); held while it may go on
+            let held = match card_echo(&self.buf, false) {
+                Some(Ok((i, j))) => { self.buf.replace_range(i..j, ""); continue; }
+                Some(Err(i)) => Some(i),
+                None => None,
+            };
             // a stray closing tag with no block open (e.g. "```tool_code\noutline\n</state>\n```") is dropped
             if let Some((i, n)) = first_tag(&self.buf, &CARD_CLOSE).filter(|c| first_tag(&self.buf, &CARD_OPEN).is_none_or(|o| c.0 < o.0)) {
                 self.buf.replace_range(i..i + n, "");
                 continue;
             }
-            let open = first_tag(&self.buf, &CARD_OPEN);
-            let end = open.map_or_else(|| self.buf.len() - tag_partial(&self.buf, &[CARD_OPEN[0], CARD_OPEN[1], CARD_CLOSE[0], CARD_CLOSE[1], CARD_ECHO]), |(i, _)| i);
+            let open = if held.is_some() { None } else { first_tag(&self.buf, &CARD_OPEN) };
+            let end = if let Some(h) = held { h } else { open.map_or_else(|| self.buf.len() - tag_partial(&self.buf, &[CARD_OPEN[0], CARD_OPEN[1], CARD_CLOSE[0], CARD_CLOSE[1], CARD_ECHO]), |(i, _)| i) };
             let seg = self.buf[..end].to_string();
             let used = self.feed(&seg, &mut out, open.is_some());
             match open {
@@ -98,6 +119,7 @@ impl CardFilter {
         let mut out = String::new();
         if !self.inside {
             let mut rest = std::mem::take(&mut self.buf);
+            while let Some(Ok((i, j))) = card_echo(&rest, true) { rest.replace_range(i..j, ""); }
             // a reply that stopped inside the copied instruction line ("…\n\n<=80-token card"): not text for the user
             let p = tag_partial(&rest, &[CARD_ECHO]);
             if p >= 6 { rest.truncate(rest.len() - p); }
@@ -152,6 +174,8 @@ fn tag_partial(s: &str, tags: &[&str]) -> usize {
 
 /// The fields of the system prompt's card template.
 pub(super) const CARD_KEYS: &[&str] = &["goal", "done", "now", "keep", "next", "open"];
+/// The card's field names (`CARD_KEYS`), for telling a card field copied into a reply (`reply_check`).
+pub fn card_keys() -> &'static [&'static str] { CARD_KEYS }
 /// The template's own values (`goal: …`, `keep: must-not-lose facts`): a small model copies them into its card
 /// (otherwise a card's placeholder lines get carried into later sessions).
 const CARD_PLACEHOLDERS: &[&str] = &["must-not-lose facts", "must not lose facts", "must-not-lose", "n/a", "tbd", "todo", "none yet"];
@@ -185,6 +209,31 @@ pub fn clean_card(card: &str) -> Option<String> {
     (!s.trim().is_empty()).then_some(s)
 }
 
+/// words in a run a card item must share with Elisa's own prompt before it counts as copied from it
+const COPIED_RUN: usize = 6;
+
+/// A card without the items the model copied from Elisa's own prompt (`own`: the system prompt less the user's
+/// project instructions) instead of noting the conversation: "now: Elisa runs on minicpm-v:8b · vision: yes …" is the
+/// session's facts line, not a step. An item goes when it shares a run of `COPIED_RUN` words with `own`; a field left
+/// with nothing goes too. None when nothing real is left.
+pub fn drop_copied(card: &str, own: &str) -> Option<String> {
+    let words = |t: &str| t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect::<Vec<_>>();
+    let runs: HashSet<String> = words(own).windows(COPIED_RUN).map(|g| g.join(" ")).collect();
+    let copied = |t: &str| words(t).windows(COPIED_RUN).any(|g| runs.contains(&g.join(" ")));
+    let mut out: Vec<String> = Vec::new();
+    for l in card.lines() {
+        match l.split_once(':').filter(|(k, _)| CARD_KEYS.contains(&k.trim().trim_start_matches(['-', '*']).trim().to_ascii_lowercase().as_str())) {
+            Some((k, v)) => {
+                let items: Vec<&str> = v.split(';').map(str::trim).filter(|x| !x.is_empty() && !copied(x)).collect();
+                if !items.is_empty() { out.push(format!("{}: {}", k.trim(), items.join("; "))); }
+            }
+            None => if !copied(l) { out.push(l.to_string()); },
+        }
+    }
+    let s = out.join("\n");
+    (!s.trim().is_empty()).then_some(s)
+}
+
 /// `text` (a first message) without the state card lines in its `[state]` block, the block gone when nothing else is
 /// left in it (the session goal and pinned facts stay). None when there is no card in it. An older Elisa put the
 /// latest card there; a resumed session sends a card only when the turn's topic picks it (`topics.rs`).
@@ -199,6 +248,26 @@ pub fn strip_state_card(text: &str) -> Option<String> {
     let end = j + "[/state]".len();
     let after = text[end..].strip_prefix("\n\n").or_else(|| text[end..].strip_prefix('\n')).unwrap_or(&text[end..]);
     Some(if keep.is_empty() { format!("{}{after}", &text[..i]) } else { format!("{}[state]\n{}\n[/state]\n\n{after}", &text[..i], keep.join("\n")) })
+}
+
+/// What `text` (a stored card, or notes holding card lines) says as facts, one item each: of the card lines only
+/// the `done` and `keep` items (the `goal` / `now` / `next` / `open` of an old task are its plan, not facts), a
+/// template value in front of an item dropped (`keep: must-not-lose facts: line 3` → `line 3`); any other line as it is.
+pub fn state_facts(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in text.lines() {
+        let t = l.trim().trim_start_matches(['-', '*']).trim();
+        if t.is_empty() { continue; }
+        match card_key(t) {
+            Some("done" | "keep") => for x in items(t.split_once(':').map_or("", |(_, v)| v)) {
+                let x = match x.split_once(':') { Some((a, b)) if is_placeholder(a) => b.trim().to_string(), _ => x };
+                if !is_placeholder(&x) { out.push(x); }
+            },
+            Some(_) => {}
+            None => out.push(t.to_string()),
+        }
+    }
+    out
 }
 
 /// Heading of the notes section a state-card fold writes (no model call): what the folded turns' cards said.

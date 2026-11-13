@@ -1,0 +1,50 @@
+# Elisa's own answer to her security checks (`repl/turn.rs` `deps_block`, `check_block`): the lines are built only
+# from the check's result, so the answer is the same on every model. One entry per line as "key.lang = text"; `lang` is en or vi (the
+# reply follows the user's language). Fields in braces are filled in by Elisa. Change the wording here, not in code.
+#   package:      one line per package with advisories ({name} {version} {count} {worst} {fix})
+#   package_one:  the same for a package with one advisory
+#   advisory:     one line per advisory under its package ({id} {level} {fixed} {title})
+#   no_level:     the level shown when the check gives none
+#   no_fix:       the fixed versions shown when the check gives none
+#   more:         the line after a list cut short ({count} advisories not shown)
+#   todo:         the label before the model's short note on what to do
+#   note:         Elisa's note to the model with the verified list ({block}); never shown to the user
+#   secrets_head / secrets_head_one: the first line of a secrets scan's answer ({hits} {files} {scanned})
+#   secret:       one line per finding, the secret masked as the check gives it ({file} {line} {rule} {masked})
+#   secrets_more: the line for findings the check did not list ({count})
+#   no_secrets:   a scan that found none ({scanned})
+#   binary_head:  the first line of a binary check's answer, its findings under it as the check gives them ({file} {bytes})
+#   jwt_head:     the first line of a token check's answer, the decoded parts under it as the check gives them
+#   check_note:   Elisa's note to the model for these checks ({block}); never shown to the user
+package.en = {name} {version} — {count} advisories (worst: {worst}) → update to {fix} or later
+package.vi = {name} {version} — {count} cảnh báo (nặng nhất: {worst}) → nâng lên {fix} trở lên
+package_one.en = {name} {version} — 1 advisory (worst: {worst}) → update to {fix} or later
+package_one.vi = {name} {version} — 1 cảnh báo (nặng nhất: {worst}) → nâng lên {fix} trở lên
+advisory.en =   {id} · {level} · fixed in {fixed} · {title}
+advisory.vi =   {id} · {level} · đã sửa ở {fixed} · {title}
+no_level.en = no level given
+no_level.vi = chưa rõ mức
+no_fix.en = no fix yet
+no_fix.vi = chưa có bản sửa
+more.en = {count} more — ask for the full list
+more.vi = còn {count} cảnh báo nữa — hãy hỏi để xem toàn bộ danh sách
+todo.en = What to do:
+todo.vi = Nên làm gì:
+note.en = Elisa already shows the user this verified list from the check, word for word: {block} Do not repeat the list, the advisory ids, the versions or the levels. Write only 2 or 3 short sentences in plain words, in the user's language, on what the user should do.
+note.vi = Elisa already shows the user this verified list from the check, word for word: {block} Do not repeat the list, the advisory ids, the versions or the levels. Write only 2 or 3 short sentences in plain words, in Vietnamese, on what the user should do.
+secrets_head.en = The check found {hits} likely secrets in {files} files ({scanned} text files scanned):
+secrets_head.vi = Kiểm tra thấy {hits} chỗ có thể là bí mật trong {files} tệp (đã quét {scanned} tệp văn bản):
+secrets_head_one.en = The check found 1 likely secret ({scanned} text files scanned):
+secrets_head_one.vi = Kiểm tra thấy 1 chỗ có thể là bí mật (đã quét {scanned} tệp văn bản):
+secret.en =   {file}, line {line} · {rule} · {masked}
+secret.vi =   {file}, dòng {line} · {rule} · {masked}
+secrets_more.en = {count} more not shown — ask to scan one folder
+secrets_more.vi = còn {count} chỗ nữa chưa hiện — hãy hỏi quét một thư mục
+no_secrets.en = No likely secrets found in the {scanned} text files scanned.
+no_secrets.vi = Không thấy bí mật nào trong {scanned} tệp văn bản đã quét.
+binary_head.en = What the check found in {file} ({bytes} bytes):
+binary_head.vi = Kiểm tra thấy trong {file} ({bytes} byte):
+jwt_head.en = The token, decoded here (its signature is not checked):
+jwt_head.vi = Mã token, giải mã tại máy (chữ ký không được kiểm tra):
+check_note.en = Elisa already shows the user this verified result from the check, word for word: {block} Do not repeat it or any secret. Write only 2 or 3 short sentences in plain words, in the user's language, on what the user should do.
+check_note.vi = Elisa already shows the user this verified result from the check, word for word: {block} Do not repeat it or any secret. Write only 2 or 3 short sentences in plain words, in Vietnamese, on what the user should do.

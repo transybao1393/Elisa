@@ -46,6 +46,9 @@ pub fn clean_notes(notes: &str) -> String {
         let t = l.trim();
         if t.starts_with('#') {
             skip = echo(t) && !headings.contains(&norm_words(t));
+            // a heading's explanation in brackets is Elisa's or the model's, not the user's note ("## Session goal
+            // (set from …)", "## Attached documents (Elisa adds …)")
+            let t = match t.rfind(" (").filter(|_| t.ends_with(')')) { Some(i) => t[..i].trim_end(), None => t };
             if !skip && !t.trim_start_matches('#').trim().is_empty() { lines.push(t.to_string()); }
             continue;
         }
@@ -62,6 +65,9 @@ pub fn clean_notes(notes: &str) -> String {
         // a raw tool call or result copied from a transcript is no note (lines like "[tool glob …]" would sit under
         // "## Files touched" and be carried forward)
         if raw_tool_line(body) { continue; }
+        // Elisa's own markers copied from the conversation ("[trimmed: … 12 lines]", an `[untrusted source=…]` fence)
+        // and a line with no letters at all ("[0.0, 0.63, 0.63, 0.83]": a picture model's box) are no notes
+        if body.starts_with(super::history::TRIM_MARK) || body.contains("untrusted source=") || !body.chars().any(char::is_alphabetic) { continue; }
         lines.push(l.trim_end().to_string());
     }
     // headings with nothing under them go; blank runs become one blank line
@@ -109,19 +115,18 @@ pub fn cap_notes(notes: &str, max_tokens: usize) -> String {
 /// The line in front of the notes after `/clear` or `/reset` (a new session carries no earlier notes at all): they
 /// are background, not the task (otherwise an old goal carried into a new
 /// session sends a small model on work the user never asked for).
-pub const NOTES_BACKGROUND: &str = "(Background from an earlier session; the user has not asked to continue it. Do not pursue its goal or next step unless the request asks.)";
+/// It also says whose the facts are: after /reset, "hello again" with a fact naming the user's dog was greeted as
+/// "Hey <dog>!".
+pub const NOTES_BACKGROUND: &str = "(Background from an earlier session; the user has not asked to continue it. Do not pursue its goal or next step unless the request asks. \
+    Its facts are about the user and what the user named; call the user by a name only when a fact says it is the user's own.)";
 
 /// Notes as the first message carries them after `/clear` or `/reset` (a new session carries none: repl starts it
 /// with no notes): the background line first, and without the `## Session goal` section, so the next request sets
 /// the goal from what the user asks.
 pub fn background_notes(notes: &str) -> String {
     let notes = notes.trim();
-    let rest = match notes.find(GOAL_NOTES) {
-        Some(i) => {
-            let after = &notes[i + GOAL_NOTES.len()..];
-            let end = after.find("\n## ").map_or(after.len(), |j| j + 1);
-            format!("{}{}", &notes[..i], &after[end..]).trim().to_string()
-        }
+    let rest = match goal_section(notes) {
+        Some((i, end)) => format!("{}{}", &notes[..i], &notes[end..]).trim().to_string(),
         None => notes.to_string(),
     };
     if rest.is_empty() { String::new() } else { format!("{NOTES_BACKGROUND}\n{rest}") }
@@ -218,17 +223,23 @@ pub fn goal_drift(goal: &str, input: &str) -> Option<bool> {
 pub const GOAL_DRIFT: u8 = 3;
 
 /// Heading of the notes section Elisa writes for the session goal (kept on top, replaced on every save).
-pub const GOAL_NOTES: &str = "## Session goal (set from the user's first request or a stated new goal)";
+/// (plain: its old "(set from the user's first request or a stated new goal)" showed in the app's notes)
+pub const GOAL_NOTES: &str = "## Session goal";
+
+/// Where `notes`' session goal section is: its heading line's start and the start of the next section (or the end).
+/// Old notes' longer heading counts too (`GOAL_NOTES` with an explanation after it).
+fn goal_section(notes: &str) -> Option<(usize, usize)> {
+    let i = if notes.starts_with(GOAL_NOTES) { 0 } else { notes.find(&format!("\n{GOAL_NOTES}"))? + 1 };
+    let line_end = notes[i..].find('\n').map_or(notes.len(), |j| i + j);
+    let end = notes[line_end..].find("\n## ").map_or(notes.len(), |j| line_end + j + 1);
+    Some((i, end))
+}
 
 /// `notes` with the session goal section first (an older one replaced).
 pub fn with_session_goal(notes: &str, goal: &str) -> String {
     let notes = notes.trim();
-    let rest = match notes.find(GOAL_NOTES) {
-        Some(i) => {
-            let after = &notes[i + GOAL_NOTES.len()..];
-            let end = after.find("\n## ").map_or(after.len(), |j| j + 1);
-            format!("{}{}", &notes[..i], &after[end..]).trim().to_string()
-        }
+    let rest = match goal_section(notes) {
+        Some((i, end)) => format!("{}{}", &notes[..i], &notes[end..]).trim().to_string(),
         None => notes.to_string(),
     };
     // a small-talk goal is no goal: the section goes (otherwise a greeting like "hey" is stored and carried forward)
@@ -249,8 +260,8 @@ fn tool_summary(name: &str, input: &Value) -> String {
 /// the assistant's own name, as the system prompt gives it
 pub(super) const ASSISTANT: &str = "Elisa";
 /// the speaker labels of a summary request's transcript (`transcript`)
-const USER_LABEL: &str = "User: ";
-const ELISA_LABEL: &str = "Elisa: ";
+pub const USER_LABEL: &str = "User: ";
+pub const ELISA_LABEL: &str = "Elisa: ";
 
 /// A summary's notes (`clean_notes`) without the lines that copy the transcript's dialogue: a line led by one of
 /// its speaker labels (`USER_LABEL`, `ELISA_LABEL`), such as `Elisa: “What's your name and your meeting code?”` (the
@@ -316,9 +327,26 @@ pub fn digest(msgs: &[Message], old_notes: Option<&str>, max_chars: usize) -> St
     }
     kept.reverse();
     let mut out = old_notes.map(str::trim).filter(|n| !n.is_empty()).map(|n| format!("{}\n\n", capped(n, NOTES_CAP))).unwrap_or_default();
-    out.push_str("Earlier turns (shortened, no summary):\n");
+    out.push_str(DIGEST_HEAD);
+    out.push('\n');
     for l in kept { out.push_str("- "); out.push_str(l); out.push('\n'); }
     out.trim_end().to_string()
+}
+
+/// The line `digest` puts before its shortened turns.
+pub const DIGEST_HEAD: &str = "Earlier turns (shortened, no summary):";
+
+/// What stored notes say as plain facts, for a recalled memory line (shown to the user and sent with the turn): no
+/// headings, no session goal (an old request, not a fact), no background line, no digest head and no dialogue lines
+/// (`summary_notes`), and of card lines only their facts (`state_facts`). Joined with "; "; empty when nothing is left.
+pub fn note_facts(notes: &str) -> String {
+    let mut goal = false;
+    let kept: Vec<&str> = notes.lines().filter(|l| {
+        let t = l.trim();
+        if t.starts_with('#') { goal = t.starts_with(GOAL_NOTES); return false; }
+        !goal && t != NOTES_BACKGROUND && t != DIGEST_HEAD
+    }).collect();
+    state_facts(&summary_notes(&kept.join("\n"))).join("; ")
 }
 
 pub fn compact_request(msgs: &[Message], old_notes: Option<&str>, budget_tokens: usize) -> Message {
@@ -442,6 +470,7 @@ pub fn tidy_notes(notes: &str) -> String {
     // a session goal that is only small talk is no goal (otherwise "## Session goal\nhey" is carried forward)
     for s in &mut secs {
         if heading_key(&s.0).starts_with("session goal") { s.1.retain(|l| !small_talk_goal(l)); }
+        if heading_key(&s.0).starts_with("facts") { s.1 = without_unowned_names(&s.1); }
     }
     secs.retain(|s| s.1.iter().any(|l| !l.trim().is_empty()));
     secs.sort_by_key(|s| if s.0.is_empty() { 254 } else { rank(&heading_key(&s.0)) });
@@ -456,6 +485,20 @@ pub fn tidy_notes(notes: &str) -> String {
     if !aliases.is_empty() { out.push(format!("Also known as: {}", aliases.join("; "))); }
     // clean_notes drops trivial alias items and squeezes blank lines
     clean_notes(&out.join("\n"))
+}
+
+/// A facts section's lines without a bare `Name: X` (no owner: whose name?) when another line of the section says
+/// X with its owner ("dog's name Bo", "The user's dog is Bo"). Read back, a bare "Name: Bo (pet)" made a small model
+/// greet the user as Bo.
+fn without_unowned_names(lines: &[String]) -> Vec<String> {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?i)^name\s*[:=–-]\s*(?P<v>[\p{L}\p{N}][\p{L}\p{N}'-]*)").unwrap());
+    let value = |l: &str| re.captures(l.trim().trim_start_matches(['-', '*', '•', ' ']).trim_start_matches("**").replace("**", "").trim()).map(|c| c["v"].to_lowercase());
+    let has_word = |l: &str, w: &str| l.to_lowercase().split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-').any(|x| x == w);
+    lines.iter().enumerate().filter(|(i, l)| match value(l) {
+        Some(v) => !lines.iter().enumerate().any(|(j, o)| j != *i && value(o).is_none() && has_word(o, &v)),
+        None => true,
+    }).map(|(_, l)| l.clone()).collect()
 }
 
 /// A session goal that is only small talk ("hey", "hi", "thanks", "ok"): never stored as the goal.
@@ -569,7 +612,14 @@ pub fn cap_notes_priority(notes: &str, max_tokens: usize) -> String {
         let key = heading_key(&secs[i].0);
         let b = &mut secs[i].1;
         let oldest_first = key.starts_with("done") || key.starts_with("from state");
-        let pos = if oldest_first { b.iter().position(|l| !l.trim().is_empty()) } else { b.iter().rposition(|l| !l.trim().is_empty()) };
+        // (a digest of earlier turns in the section, `digest`: its oldest turn goes first, the newest stays longest,
+        // since a later fold adds its turns at the digest's end and a cut from the end lost exactly those)
+        let digest_at = b.iter().position(|l| l.trim() == DIGEST_HEAD);
+        let pos = match digest_at.and_then(|d| (d + 1..b.len()).find(|&j| !b[j].trim().is_empty())) {
+            Some(j) => Some(j),
+            None if oldest_first => b.iter().position(|l| !l.trim().is_empty()),
+            None => b.iter().rposition(|l| !l.trim().is_empty() && l.trim() != DIGEST_HEAD).or_else(|| b.iter().rposition(|l| !l.trim().is_empty())),
+        };
         match pos { Some(p) => { b.remove(p); } None => break }
     }
     render(&secs, &aliases)

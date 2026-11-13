@@ -87,3 +87,7 @@ pub mod jsonl;
 pub mod eval;
 /// the scripted model behind `elisa eval`'s deterministic cases
 pub mod eval_fake;
+/// tests only: a temp folder that is removed when the test ends, the one the integration tests share
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+pub(crate) mod testdir;

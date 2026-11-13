@@ -1,0 +1,43 @@
+# Wordings with which a reply claims a tool's action or result (`reply_check::tool_claims`): that it read a file and
+# what it holds, that it saved or created a file, or that it changed one. On a turn where no such tool ran (and no
+# earlier read, write or edit of that file backs the sentence), the claim is false: the sentence goes and Elisa's own
+# line says what did and did not happen (`repl/docs.rs` `false_claim_line`, lines in `data/no_answer_lines.txt`).
+# A saved-file or change claim the older checks find themselves (`route::claims_file_saved`,
+# `reply_check::is_done_claim_for`) stays theirs: they ask the model once more first.
+# One key per line, "key: wording | wording | …", in an [en] and a [vi] section, with and without accents; matched as
+# whole words, in a sentence that names a file (or on a turn whose message names one). Fix a missed wording here,
+# not in code.
+#   read:  the reply says it read a file or tells its content ("I read notes.txt", "the file contains", "đọc file …,
+#          tôi thấy")
+#   write: it says a file was saved or created ("saved to hello.txt", "đã ghi lại … vào file hello.txt")
+#   edit:  it says a file was changed ("changed 'buy milk' to 'buy bread'", "đã đổi … thành …")
+#   run:   it reports a command's run or output ("It printed hello-elisa again.", "đã chạy lại, kết quả là …"); needs
+#          no file in the sentence; false on a turn that ran nothing where the message asks for a thing to be done
+#          ("again"), not where it asks about an earlier run ("what did it print?")
+#   run_result: a result told with no run in its words ("the result is …", "kết quả là …"): a run claimed only where
+#          the message is about a run (a `run_asks` word: "run", "lệnh"); to "tính giúp mình 25% của 480" it is the answer
+#   run_asks: words of a message about running a command or its output
+#   not:   a word that makes the sentence no claim (a denial or a failure: "not saved", "chưa", "lỗi")
+#   hedge: a word that makes it a plan, an offer or a condition, not a report ("I will save", "sẽ", "nếu bạn muốn"),
+#          or a fix in a release rather than here ("was fixed in 2.20.0", "trong phiên bản")
+#   file:  the words that stand for a file when none is named ("the file", "tệp")
+[en]
+read: i read | i ve read | i have read | i just read | having read | after reading | reading the file | reading it | i opened | i looked at | i looked into | i checked the file | i checked it | i see that | i can see | i found that | i found | the file contains | file contains | the file says | file says | the file has | the file holds | file holds | it contains | contains the word | contains the words | contains the line | the content is | its content is | its contents are | the contents are | according to the file | in the file i | the file shows | file shows | i saw
+write: saved | i saved | i ve saved | has been saved | was saved | i wrote | i ve written | i have written | has been written | was written | written to | wrote it to | created | i created | i ve created | has been created | was created | is now in | now contains | recorded | i recorded | noted down | i noted | put it in | added to the file | appended to
+edit: changed | i changed | i ve changed | has been changed | was changed | updated | i updated | i ve updated | has been updated | was updated | replaced | i replaced | has been replaced | edited | i edited | has been edited | fixed | i fixed | has been fixed | swapped | renamed | modified | has been modified | now reads | now says | is now | are now | the change is made | change has been made | changes have been made | made the change | made the changes
+run: it printed | printed again | here is the output | here s the output | it ran | ran it | ran again | ran it again | i ran | i executed | executed it | the command ran | command ran | it output | exit code
+run_result: the output was | the output is | output was | it returned | the result was | the result is | it gave
+run_asks: run | ran | runs | rerun | re run | execute | executed | command | commands | output | outputs | print | prints | printed | terminal | shell | script | echo
+not: not | n t | never | nothing | no file | unable | cannot | can t | couldn t | didn t | did not | haven t | have not | hasn t | has not | wasn t | was not | weren t | no edit | no change | no changes | without | failed | fail | fails | error | denied | refused | skipped | yet
+hedge: will | would | can | could | should | shall | may | might | let me | i ll | we ll | going to | if you | want me | would you like | do you want | once you | when you | to save | to write | to change | to update | to create | please | fixed in | patched in | resolved in | addressed in | released in | in version | since version | upstream | in a later version | in a newer version
+file: file | files | the file | this file | that file
+[vi]
+read: tôi đã đọc | toi da doc | mình đã đọc | minh da doc | đọc file | doc file | đọc tệp | doc tep | sau khi đọc | sau khi doc | tôi thấy | toi thay | mình thấy | minh thay | tôi xem | toi xem | mình xem | minh xem | tôi đã xem | toi da xem | mình đã xem | minh da xem | tôi đã mở | toi da mo | mình đã mở | minh da mo | file có | tệp có | tep co | file chứa | file chua | tệp chứa | tep chua | nội dung file | noi dung file | nội dung tệp | noi dung tep | trong file có | trong tệp có | theo file | theo tệp | theo tep | tôi tìm thấy | toi tim thay | mình tìm thấy | minh tim thay
+write: đã lưu | da luu | đã ghi | da ghi | đã ghi lại | da ghi lai | đã tạo | da tao | đã viết | da viet | ghi lại | ghi lai | ghi vào | ghi vao | lưu vào | luu vao | lưu lại | luu lai | đã thêm vào | da them vao | đã được lưu | da duoc luu | đã được ghi | da duoc ghi | đã được tạo | da duoc tao | tạo xong | tao xong | lưu xong | luu xong | ghi xong
+edit: đã đổi | da doi | đã sửa | da sua | đã thay | da thay | đã thay đổi | da thay doi | đã thay thế | da thay the | đã cập nhật | da cap nhat | đã chỉnh | da chinh | đã chỉnh sửa | da chinh sua | đổi thành | doi thanh | thay bằng | thay bang | đã được đổi | da duoc doi | đã được sửa | da duoc sua | đã được cập nhật | da duoc cap nhat | sửa xong | sua xong | đổi xong | doi xong | giờ là | gio la | bây giờ là | bay gio la
+run: đã chạy | da chay | chạy lại | chay lai | đã chạy lại | da chay lai | in ra | đã in | da in | kết quả chạy | ket qua chay | xuất ra | xuat ra | lệnh đã chạy | lenh da chay | đã thực thi | da thuc thi | mình đã chạy | minh da chay | tôi đã chạy | toi da chay
+run_result: kết quả là | ket qua la | đầu ra là | dau ra la
+run_asks: chạy | chay | lệnh | lenh | thực thi | thuc thi | in ra | đầu ra | dau ra | terminal | shell | script | echo
+not: không | khong | chưa | chua | chẳng | chang | lỗi | loi | thất bại | that bai | từ chối | tu choi | bị chặn | bi chan
+hedge: sẽ | se | có thể | co the | nếu | neu | bạn muốn | ban muon | muốn mình | muon minh | hãy | hay | để mình | de minh | để tôi | de toi | cần | can | trong phiên bản | trong phien ban | ở phiên bản | o phien ban | từ phiên bản | tu phien ban | bản mới hơn | ban moi hon
+file: file | tệp | tep | tập tin | tap tin | tệp này | tệp đó | file này | file đó

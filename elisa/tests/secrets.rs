@@ -5,17 +5,11 @@ use elisa::secrets::{self, Mode};
 use elisa::types::{Block, Message, Role};
 use elisa::untrusted;
 use serde_json::json;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-static N: AtomicUsize = AtomicUsize::new(0);
+mod common;
+use common::TempDir;
 
-fn tmp() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("elisa-secrets-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+fn tmp() -> TempDir { TempDir::new("secrets") }
 
 /// a GitHub-token-shaped fixture, assembled so this file holds no scannable literal
 fn token() -> String { ["ghp_", "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"].concat() }
@@ -30,7 +24,7 @@ fn load(user: Option<&str>, project: Option<&str>) -> Config {
         std::fs::create_dir_all(cwd.join(".elisa")).unwrap();
         std::fs::write(cwd.join(".elisa/config.toml"), p).unwrap();
     }
-    Config::load_from(&cwd, Some(home), |_| None).unwrap()
+    Config::load_from(&cwd, Some(home.to_path_buf()), |_| None).unwrap()
 }
 
 #[test]
@@ -53,7 +47,7 @@ fn bad_redact_value_is_an_error() {
     let (home, cwd) = (tmp(), tmp());
     std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
     std::fs::write(home.join(".config/elisa/config.toml"), "redact = \"sometimes\"\n").unwrap();
-    let e = Config::load_from(&cwd, Some(home), |_| None).err().unwrap();
+    let e = Config::load_from(&cwd, Some(home.to_path_buf()), |_| None).err().unwrap();
     assert!(e.contains("redact"), "{e}");
 }
 

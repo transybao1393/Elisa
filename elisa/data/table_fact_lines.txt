@@ -1,0 +1,23 @@
+# Elisa's own sentence for a fact she computed exactly from a table (`situation::table_facts`, the "Elisa computed it
+# exactly from sales.csv: highest units = South (340) · …" note), when she answers from the results herself
+# (`repl::turn` `computed_table_line`). One line per kind of fact, keyed by the words the note puts before the column
+# ("highest units" → highest), English and Vietnamese. {label}: the row (for highest and lowest), {column}: the column
+# as the table names it, {value}: the computed number, {file}: the table's name. A kind with no line here keeps the
+# note's own words. ties: the word joining tied rows' labels (the note joins them with " and "); "{kind} tie": the
+# kind's sentence for tied rows, where the language says it otherwise (else the kind's own line).
+[en]
+highest: {label} has the highest {column} in {file} ({value}).
+lowest: {label} has the lowest {column} in {file} ({value}).
+highest tie: {label} have the highest {column} in {file} ({value}).
+lowest tie: {label} have the lowest {column} in {file} ({value}).
+total: The total {column} in {file} is {value}.
+average: The average {column} in {file} is {value}.
+number of: {file} has {value} {column}.
+ties: and
+[vi]
+highest: {label} có {column} cao nhất trong {file} ({value}).
+lowest: {label} có {column} thấp nhất trong {file} ({value}).
+total: Tổng {column} trong {file} là {value}.
+average: {column} trung bình trong {file} là {value}.
+number of: {file} có {value} {column}.
+ties: và

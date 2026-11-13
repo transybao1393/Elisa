@@ -47,7 +47,7 @@ impl<'f> Session<'f> {
             Ok((n, ms)) => {
                 let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                 map.entries.insert(id, crate::backend::SlotEntry { file: file.clone(), server: self.client.base().to_string(), model: self.client.model().to_string(), tokens: n, at });
-                if let Err(e) = map.save(&self.store.dir) { self.fe.error(&format!("slot map: {e}")); }
+                if let Err(e) = map.save(&self.store.dir) { self.save_failed("session", &e.to_string()); }
                 self.fe.info(&format!("[llama.cpp: saved this session's {n} processed tokens to slot file {file} ({why}, {})]", ui::dur(ms / 1000.0, 1)));
             }
             Err(e) => self.fe.info(&format!("[llama.cpp: slot not saved: {e}]")),
@@ -80,6 +80,16 @@ impl<'f> Session<'f> {
             _ => self.fixed() + estimate_messages(&self.history),
         }
     }
+    /// A text estimate of the next request (`estimate` with no server count in it) on the scale of the context bar,
+    /// which shows the server's real counts: scaled by the last measured real/estimate ratio, either way (`calib`), so
+    /// a size shown after /clear compares with the one before it and with the next request's real count.
+    pub(super) fn shown_size(&self, text: usize) -> usize {
+        match self.calib {
+            Some((real, est)) if est > 0 && real > 0 => (text as u128 * real as u128).div_ceil(est as u128) as usize,
+            _ => text,
+        }
+    }
+
     /// The next request's size where going over the context is fatal (a step's results, the send check): the largest
     /// of the text estimate, the server's last reported tokens + the estimate of what was appended since, and the text
     /// estimate scaled by the last measured real/estimate ratio (`context::safe_request_tokens`).
@@ -129,7 +139,7 @@ impl<'f> Session<'f> {
         if show { self.fe.progress(Some(&Progress { label: "saving session".into(), ..Default::default() })); }
         // who wrote each reply, kept in the session (the next model must not take them as its own)
         context::stamp_model(&mut self.history, &self.cfg.model);
-        if let Err(e) = self.store.save_session(&self.history) { self.fe.error(&format!("session not saved: {e}")); }
+        if let Err(e) = self.store.save_session(&self.history) { self.save_failed("session", &e); }
         self.store.save_cards(&self.topic_cards);
         self.save_slow = t0.elapsed() > SLOW;
         if show { self.fe.progress(None); }
@@ -194,7 +204,7 @@ impl<'f> Session<'f> {
         let m = metrics::RequestMetrics {
             ts: r.ts, prompt: r.prompt, outcome: outcome.into(), calls, wall_s: r.t0.elapsed().as_secs_f64(), ..Default::default()
         }.finish();
-        if let Err(e) = metrics::append(&self.store.dir, &m) { self.fe.error(&format!("metrics not saved: {e}")); }
+        if let Err(e) = metrics::append(&self.store.dir, &m) { self.debug(&format!("[metrics not saved: {e}]")); }
         self.stats.add(m);
     }
 
@@ -223,8 +233,8 @@ impl<'f> Session<'f> {
     /// (the resumed session's file is not touched), so the next `--continue` finds them again.
     pub(super) fn adopt_notes(&mut self, notes: Option<String>) {
         self.resumed_facts = true;
-        if let Some(n) = &notes { if let Err(e) = self.store.save_notes(n) { self.fe.error(&format!("notes: {e}")); } }
-        else if let Err(e) = self.store.clear_notes() { self.fe.error(&format!("notes: {e}")); }
+        if let Some(n) = &notes { if let Err(e) = self.store.save_notes(n) { self.save_failed("notes", &e.to_string()); } }
+        else if let Err(e) = self.store.clear_notes() { self.save_failed("notes", &e.to_string()); }
         self.notes = notes;
     }
 
@@ -238,13 +248,13 @@ impl<'f> Session<'f> {
         let missing: Vec<String> = self.kept_docs.iter().map(|k| crate::attach::reference(&k.doc))
             .filter(|r| n.as_deref().is_some_and(|t| !t.contains(r.as_str()))).collect();
         let n = match n {
-            Some(t) if !missing.is_empty() => Some(format!("{t}\n\n## Attached documents (Elisa adds the parts each question needs)\n{}",
+            Some(t) if !missing.is_empty() => Some(format!("{t}\n\n## Attached documents\n{}",
                 missing.iter().map(|r| format!("- {r}")).collect::<Vec<_>>().join("\n"))),
             n => n,
         };
         if save {
             let r = match &n { Some(t) => self.store.save_notes(t), None => self.store.clear_notes() };
-            if let Err(e) = r { self.fe.error(&format!("notes: {e}")); }
+            if let Err(e) = r { self.save_failed("notes", &e.to_string()); }
         }
         self.notes = n;
         self.rebuild_system();
@@ -307,6 +317,12 @@ impl<'f> Session<'f> {
         let mut known = facts;
         known.extend(context::fact_lines(self.notes.as_deref().unwrap_or("")));
         let merged = context::without_contradicted_facts(&merged, &known);
+        // a fact about the user's things the user's own words do not support ("The user's name is Bo" from "my dog
+        // is Bo"): the user's messages only, never the replies
+        let user_said: String = self.history.iter().filter(|m| m.role == Role::User).flat_map(|m| &m.content)
+            .filter_map(|b| match b { Block::Text { text } if !text.starts_with(context::NUDGE_PREFIX) => Some(context::request_body(text).to_string()), _ => None })
+            .collect::<Vec<_>>().join("\n");
+        let merged = if user_said.trim().is_empty() { merged } else { context::without_unsupported_user_facts(&merged, &known, &user_said) };
         context::cap_notes_priority(&merged, self.notes_budget())
     }
 
@@ -337,7 +353,7 @@ impl<'f> Session<'f> {
     pub(super) fn summarise(&mut self, label: &str) -> Result<String, String> {
         let out = COMPACT_OUT.min(self.cfg.max_output);
         self.client.set_kind("summary");
-        self.fe.info(label);
+        if !label.is_empty() { self.fe.info(label); }
         CANCEL.store(false, Ordering::SeqCst);
         // the in-context form pays only where the server reuses the prefix; elsewhere the whole history would be read
         // again, and the plain transcript is smaller (no tools, small system: ~1.4K tokens less on llama.cpp without cache)
@@ -352,7 +368,7 @@ impl<'f> Session<'f> {
             let tool = r.content.iter().any(|b| matches!(b, Block::ToolUse { .. }));
             let n = summary_text(r.content);
             if !tool && !n.is_empty() { return Ok(n); }
-            self.fe.info("[in-context summary unusable; retrying from a transcript]");
+            self.debug("[in-context summary unusable; retrying from a transcript]");
         }
         let budget = self.max_ctx.saturating_sub(out + self.client.reasoning_room() + 64 + estimate_tokens(COMPACT_SYSTEM)) * 85 / 100;
         // the earlier notes are merged by Elisa afterwards (`context::merge_notes`), not left to the model
@@ -391,12 +407,23 @@ impl<'f> Session<'f> {
     /// with "say continue" every turn): earlier documents' text becomes their reference lines (`context::drop_doc_text`),
     /// then the fold, then the oldest turns go (`context::drop_old_turns`; their words stay in memory and the notes),
     /// then this turn's own document text is cut to fit.
+    /// Whether the newest message alone, with the fixed part, is over the window (no document request): no fold of
+    /// the earlier turns makes room for it. Before any tool step that is the user's own message, which only they can
+    /// shorten (the agent loop's note to them); after one it is this turn's results.
+    pub(super) fn message_alone_too_big(&self) -> bool {
+        self.doc_req.is_none() && self.history.last().is_some_and(|m| m.role == Role::User && m.content.iter().any(|b| matches!(b, Block::Text { .. })))
+            && !context::request_fits(self.fixed() + estimate_messages(&self.history[self.history.len() - 1..]), MIN_OUT + 64, self.max_ctx)
+    }
+
     pub(super) fn mid_turn_fold(&mut self) -> bool {
         let over = |s: &Self| s.est_safe() > s.limit();
         if !over(self) { return true; }
         let before = self.estimate();
         let cap = self.turn_cap(&self.history);
         if let Some(h) = context::drop_doc_text(&self.history, cap) { self.history = h; self.real = None; }
+        // the user's new message alone over the window (before any tool step): no fold of the earlier turns makes
+        // room, so they stay as they are (a 2K window lost a whole chat to a fold, then stopped anyway)
+        if self.message_alone_too_big() { return false; }
         // the size the fold already reported (`compacted`): not reported a second time below when nothing else shrank
         let mut reported = None;
         if !self.folded_this_turn && self.history.len() >= 2 && over(self) {
@@ -432,11 +459,13 @@ impl<'f> Session<'f> {
                 db.auto_index = false;
                 db.compact_every = 0;
                 self.index_rate = std::fs::read_to_string(self.cfg.memory_dir.join(RATE_FILE)).ok().and_then(|s| s.trim().parse().ok()).filter(|r: &f64| *r > 0.0);
-                let session = db.begin_session(&project);
-                // the last card is carried only into a continued session (`carry_card`)
-                self.mem = Some(Mem { db, session, project });
+                match db.try_begin_session(&project) {
+                    // the last card is carried only into a continued session (`carry_card`)
+                    Ok(session) => self.mem = Some(Mem { db, session, project }),
+                    Err(e) => self.save_failed("memory", &e.to_string()),
+                }
             }
-            Err(e) => self.fe.error(&format!("memory off: {}: {e}", self.cfg.memory_dir.display())),
+            Err(e) => self.save_failed("memory", &e.to_string()),
         }
     }
 
@@ -482,7 +511,7 @@ impl<'f> Session<'f> {
                     let _ = std::fs::write(self.cfg.memory_dir.join(RATE_FILE), format!("{rate:.3}"));
                 }
             }
-            Err(e) => self.fe.error(&format!("memory index: {e}")),
+            Err(e) => self.save_failed("memory", &e.to_string()),
         }
         shown
     }
@@ -492,7 +521,7 @@ impl<'f> Session<'f> {
         let big = self.mem.as_ref().is_some_and(|m| m.db.stats().hot_bytes > COMPACT_HOT_BYTES);
         if !big { return false; }
         let Some((r, shown)) = self.mem_call(|m| m.db.compact()) else { return false };
-        if let Err(e) = r { self.fe.error(&format!("memory compact: {e}")); }
+        if let Err(e) = r { self.save_failed("memory", &e.to_string()); }
         shown
     }
 
@@ -511,14 +540,15 @@ impl<'f> Session<'f> {
     /// No model call here, so quitting stays instant; indexing runs only within EXIT_INDEX_BUDGET_S.
     pub(super) fn end_memory(&mut self) {
         let Some((r, mut shown)) = self.mem_call(|m| m.db.end_session(m.session)) else { return };
-        if let Err(e) = r { self.fe.error(&format!("memory: {e}")); }
+        if let Err(e) = r { self.save_failed("memory", &e.to_string()); }
         shown |= self.index_pending(Some(EXIT_INDEX_BUDGET_S));
         if shown { self.fe.progress(None); }
     }
 
     pub(super) fn new_memory_session(&mut self) {
         self.end_memory();
-        if let Some(m) = self.mem.as_mut() { m.session = m.db.begin_session(&m.project); }
+        let r = self.mem.as_mut().map(|m| m.db.try_begin_session(&m.project).map(|id| m.session = id));
+        if let Some(Err(e)) = r { self.save_failed("memory", &e.to_string()); }
         self.turn_no = 0;
         self.fold_reset();
     }
@@ -529,13 +559,35 @@ impl<'f> Session<'f> {
         self.fold_retry_at = 0;
     }
 
+    /// Notes Elisa writes herself when the model gave no usable summary: the user's asks as done lines (small talk
+    /// and Elisa's own placeholders left out). The facts from the user's own words are added by `finish_notes`.
+    pub(super) fn own_notes(&self) -> String {
+        let asks: Vec<String> = self.history.iter().filter(|m| m.role == Role::User).flat_map(|m| &m.content).filter_map(|b| match b {
+            Block::Text { text } if !text.starts_with(context::NUDGE_PREFIX) && !context::is_picture_block(text) => {
+                let t = context::request_body(text).trim();
+                (!t.is_empty() && !context::fold_placeholder(t) && !crate::route::small_talk(t))
+                    .then(|| format!("- The user asked: \"{}\"", context::one_line(t, 160).replace('"', "'")))
+            }
+            _ => None,
+        }).collect();
+        if asks.is_empty() { String::new() } else { format!("## Done\n{}", asks.join("\n")) }
+    }
+
+    /// A save that failed (memory, the session file): the plain line once per run (`storage_line`), the raw error only
+    /// in debug mode. The turn goes on: memory and the saved session are extras, the reply is the user's.
+    pub(super) fn save_failed(&mut self, what: &str, err: &str) {
+        self.debug(&format!("[{what} save failed: {err}]"));
+        let line = storage_line(what, err);
+        if once(&line) { self.fe.info(&line); }
+    }
+
     /// Counts the turn for the fold (also without memory) and records it.
     pub(super) fn record(&mut self, role: MRole, text: &str) -> Option<u64> {
         self.turn_no += 1;
         let m = self.mem.as_mut()?;
         match m.db.add_turn(m.session, role, &crate::secrets::redact(text).0) {
             Ok(id) => { self.fold_ids.push(id); self.unindexed += 1; Some(id) }
-            Err(e) => { self.fe.error(&format!("memory: {e}")); None }
+            Err(e) => { self.save_failed("memory", &e.to_string()); None }
         }
     }
 
@@ -613,7 +665,7 @@ impl<'f> Session<'f> {
         if let Some(m) = self.mem.as_mut() {
             match m.db.add_card(m.session, &crate::secrets::redact(&card).0, prev, ids) {
                 Ok(id) => { self.card_id = Some(id); saved = Some(id); self.unindexed += 1; }
-                Err(e) => self.fe.error(&format!("memory: {e}")),
+                Err(e) => self.save_failed("memory", &e.to_string()),
             }
         }
         // the card number: its memory id (/state shows `card #n`), or with memory off its count in this run
@@ -695,7 +747,7 @@ impl<'f> Session<'f> {
         if let Some(m) = self.mem.as_mut() {
             match m.db.add_note(m.session, &crate::secrets::redact(notes).0, &self.fold_ids[..k]) {
                 Ok(_) => self.unindexed += 1,
-                Err(e) => self.fe.error(&format!("memory: {e}")),
+                Err(e) => self.save_failed("memory", &e.to_string()),
             }
         }
         self.fold_ids.drain(..k);
@@ -705,14 +757,17 @@ impl<'f> Session<'f> {
 
     /// Up to recall_k hits not already in the history or notes, one line each (<= 200 chars), <= recall_max_tokens.
     /// Skipped: turns of this memory session still in the window, the current card and its prev, the lower-scoring
-    /// of a Card/Turn pair saying the same thing (>= 60% word overlap), and other projects' hits below 2x
-    /// recall_min_score. User-turn hits score x0.5 and are skipped when the answer or a card of the same exchange is a
+    /// of a Card/Turn pair saying the same thing (>= 60% word overlap), a repeat of a kept line, and other projects'
+    /// hits unless they tell about the user and score >= 2x recall_min_score. User-turn hits score x0.5 and are skipped when the answer or a card of the same exchange is a
     /// candidate. At most 2 lines unless every candidate is strong (>= 2x recall_min_score).
     /// Every hit must also pass `context::recall_passes` (keyword evidence without the vector part, and the share of
     /// the query it covers; stricter mid-session), and other projects need a strong keyword score.
     pub(super) fn recall(&mut self, query: &str) -> Vec<String> {
         // a greeting or a one-word reply carries no topic: recalling on it only drags old replies back in
         if self.mem.is_none() || self.cfg.recall_k == 0 || query.split_whitespace().count() < 3 { return Vec::new(); }
+        // a message that only tells facts about the user asks nothing: no memory goes with it (old facts there are
+        // recited back unasked)
+        if context::only_user_facts(context::request_body(query)) { return Vec::new(); }
         let (k, t0, show) = (self.cfg.recall_k, Instant::now(), self.recall_slow);
         if show { self.fe.progress(Some(&Progress { label: "searching memory…".into(), ..Default::default() })); }
         // what other Elisa processes stored since this one last wrote is searched too (`Memory::refresh`)
@@ -765,21 +820,43 @@ impl<'f> Session<'f> {
             // an earlier lookup's answer on a turn that can look again: the model reads / searches now instead
             let g = self.route.groups;
             if context::stale_lookup(&h.text, g.has(crate::route::CODE), g.has(crate::route::WEB)) { continue; }
-            if h.lex < strong && !m.db.in_project(h.id, &m.project) { continue; }
+            // memory is shared by every project, so what the user told about themselves comes back anywhere; another
+            // project's work (its tool results, notes, cards) never does, and the user's facts from there only on a
+            // strong keyword match
+            let about_user = matches!(h.kind, HitKind::Turn | HitKind::Fact) && (asked.contains(&h.id) || h.kind == HitKind::Fact)
+                && !context::user_facts(&h.text).is_empty();
+            if !m.db.in_project(h.id, &m.project) && (h.lex < strong || !about_user) { continue; }
             // hits come best first: a Card/Turn twin of a kept hit is the weaker copy
             let twin = |a: &elisa_mem::Hit| matches!((&a.kind, &h.kind), (HitKind::Card, HitKind::Turn) | (HitKind::Turn, HitKind::Card))
                 && context::word_overlap(&a.text, &h.text) >= 0.6;
             if cand.iter().any(twin) { continue; }
+            // notes and cards as the facts they hold: their headings, old goal and plans, and copied dialogue are
+            // Elisa's scaffolding, not a memory to show (`note_facts`, `state_facts`); what is left must still match
+            let mut h = h;
+            match h.kind {
+                HitKind::Note => h.text = context::note_facts(&h.text),
+                HitKind::Card => h.text = context::state_facts(&h.text).join("; "),
+                _ => {}
+            }
+            if h.text.trim().is_empty() || !context::strong_recall(query, &h.text) { continue; }
             let flat = context::one_line(&h.text, usize::MAX);
             let key: String = flat.chars().take(80).collect();
             if key.is_empty() || hay.contains(&key) { continue; }
             // the same text, worded a little differently, is already in the visible conversation
             if self.history.iter().any(|msg| context::word_overlap(&h.text, &texts(msg)) >= 0.7) { continue; }
             // the user's own words as theirs ("The user's name is Linh"), never read as Elisa's ("My name is Elisa")
-            let mut h = h;
             if asked.contains(&h.id) {
-                for v in context::user_fact_values(&h.text) { if !self.recalled_values.contains(&v) { self.recalled_values.push(v); } }
+                let vals = context::user_fact_values(&h.text);
+                // facts this message states itself: the user is telling them now, there is nothing to bring back
+                let low = query.to_lowercase();
+                if !vals.is_empty() && vals.iter().all(|v| low.contains(&v.to_lowercase())) { continue; }
+                for v in vals { if !self.recalled_values.contains(&v) { self.recalled_values.push(v); } }
                 h.text = context::users_words(&h.text);
+            }
+            // the same memory twice (two sessions saved the same notes or told the same facts): one line, the fuller
+            if let Some(i) = cand.iter().position(|a| context::word_overlap(&a.text, &h.text) >= 0.7) {
+                if h.text.split_whitespace().count() > cand[i].text.split_whitespace().count() { cand[i] = h; }
+                continue;
             }
             cand.push(h);
         }
@@ -888,7 +965,7 @@ impl<'f> Session<'f> {
         // a fresh state card already says what the next step needs: no summary request
         if let (true, Some(k)) = (fresh, self.card_id) {
             {
-                let p = |done: Option<String>| Progress { label: "folding with state card".into(), frac: Some(if done.is_some() { 1.0 } else { 0.0 }), elapsed_s: t0.elapsed().as_secs_f64(), done };
+                let p = |done: Option<String>| Progress { label: "summarizing the chat".into(), frac: Some(if done.is_some() { 1.0 } else { 0.0 }), elapsed_s: t0.elapsed().as_secs_f64(), done };
                 self.fe.progress(Some(&p(None)));
                 let rest = hist.split_off(start);
                 let kept = rest.len();
@@ -896,7 +973,7 @@ impl<'f> Session<'f> {
                 // each card's "done" claims checked against Elisa's edit records first
                 let cards: Vec<String> = self.card_log.iter().map(|c| self.verified(c)).collect();
                 let merged = self.finish_notes(context::merge_card_notes(self.notes.as_deref(), &cards));
-                if !self.commit_fold(merged, rest, "[earlier turns are carried by the state card above]", before) {
+                if !self.commit_fold(merged, rest, context::FOLDED_BY_CARD, before) {
                     self.fe.progress(Some(&p(Some("fold skipped: it would not make the context smaller".into()))));
                     return;
                 }
@@ -966,7 +1043,8 @@ impl<'f> Session<'f> {
                 // summary was tried again (76 s on a small local model) before every request, and replies were cut
                 self.digest_only |= e.starts_with("the model reasoned");
                 let n = context::digest(&hist[..start], None, digest_chars);
-                return self.fold_finish(n, hist, start, nf, before, prog(1.0, Some(format!("summary failed: {e} · folded with a short digest"))));
+                self.debug(&format!("[summary failed: {e}; folded with a short digest]"));
+                return self.fold_finish(n, hist, start, nf, before, prog(1.0, Some("saved notes".into())));
             }
         };
         let p = prog(1.0, None);
@@ -980,7 +1058,7 @@ impl<'f> Session<'f> {
         let m = self.merge_kept(old.as_deref(), &v);
         let n = self.finish_notes(m);
         let rest = hist.split_off(start);
-        if !self.commit_fold(n.clone(), rest, "[earlier turns are summarised in the notes above]", before) {
+        if !self.commit_fold(n.clone(), rest, context::FOLDED_TURNS, before) {
             p.done = Some("fold skipped: it would not make the context smaller".into());
             self.fe.progress(Some(&p));
             return;
@@ -1026,8 +1104,83 @@ impl<'f> Session<'f> {
             self.fold_retry_at = before + self.min_gain();
             return false;
         }
-        if let Some(n) = &self.notes { if let Err(e) = self.store.save_notes(n) { self.fe.error(&format!("notes: {e}")); } }
+        if let Some(n) = &self.notes { if let Err(e) = self.store.save_notes(n) { self.save_failed("notes", &e.to_string()); } }
         true
+    }
+}
+
+// ----- facts Elisa works out herself for a turn, and checks a reply against (`situation::own_facts`) -----
+
+impl Session<'_> {
+    /// The table this turn is about: a sheet file (CSV, TSV, xlsx …) a tool read in this turn, else the newest
+    /// attached sheet document, else the newest sheet file read earlier in this conversation.
+    pub(super) fn turn_table(&self) -> Option<crate::situation::Table> {
+        let sheet_path = |m: &Message| -> Option<PathBuf> {
+            m.content.iter().rev().find_map(|b| match b {
+                Block::ToolUse { input, .. } => input.get("path").or_else(|| input.get("file_path")).and_then(|v| v.as_str())
+                    .map(|p| match p.strip_prefix("~/") {
+                        Some(r) => std::env::var("HOME").map(|h| Path::new(&h).join(r)).unwrap_or_else(|_| self.cwd.join(p)),
+                        None => self.cwd.join(p),
+                    }).filter(|p| crate::mcp_docs::is_sheet(p) && p.is_file()),
+                _ => None,
+            })
+        };
+        let table_of = |p: &Path, name: &str| crate::mcp_docs::sheet_rows(p).ok()?.iter().find_map(|(_, r)| crate::situation::Table::new(name, r));
+        let name_of = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        // a sheet file the user's words name ("read sales.csv and …"), in this folder: the table whatever reads it
+        let named = |text: &str| text.split_whitespace().map(|w| w.trim_matches(|c: char| !(c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '~'))).trim_end_matches('.'))
+            .map(|w| self.cwd.join(w)).find(|p| crate::mcp_docs::is_sheet(p) && p.is_file());
+        if let Some(p) = named(context::request_body(&self.input)) { if let Some(t) = table_of(&p, &name_of(&p)) { return Some(t); } }
+        let request = self.history.iter().rposition(is_request).unwrap_or(0);
+        let read_at = self.history.iter().rposition(|m| sheet_path(m).is_some());
+        let read = || read_at.and_then(|i| sheet_path(&self.history[i])).and_then(|p| table_of(&p, &name_of(&p)));
+        if read_at.is_some_and(|i| i > request) { if let Some(t) = read() { return Some(t); } }
+        // else an attached sheet, a sheet read earlier, or one an earlier message named
+        let earlier = || self.history.iter().rev().filter(|m| is_request(m)).find_map(|m| named(context::request_body(&texts(m))))
+            .and_then(|p| table_of(&p, &name_of(&p)));
+        self.kept_docs.iter().rev().filter(|k| crate::mcp_docs::is_sheet(&k.doc.path)).find_map(|k| table_of(&k.doc.path, &k.doc.name)).or_else(read).or_else(earlier)
+    }
+
+    /// The facts of this turn's table that the user's words ask for (`situation::table_facts`), as a situation part.
+    pub(super) fn table_part(&self, own: &str) -> Option<String> {
+        crate::situation::table_facts(own, &self.turn_table()?)
+    }
+
+    /// What a reply of this turn is checked against besides its own message (`situation::ReplyFacts`): Elisa's
+    /// computed notes in this turn's tool results, the table in the turn, and whose names the user's facts give (the
+    /// notes' fact lines and every fact the user told in this conversation).
+    pub(super) fn reply_facts(&self) -> crate::situation::ReplyFacts {
+        let request = self.history.iter().rposition(is_request).unwrap_or(0);
+        let results: String = self.history[request..].iter().flat_map(|m| &m.content).filter_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>().join("\n");
+        let mut facts: Vec<String> = self.notes.as_deref().map(context::fact_lines).unwrap_or_default();
+        for m in self.history.iter().filter(|m| m.role == Role::User) {
+            for b in &m.content {
+                if let Block::Text { text } = b {
+                    if context::is_picture_block(text) || crate::attach::is_block(text) { continue; }
+                    for f in context::user_facts(context::request_body(text)) { if !facts.contains(&f) { facts.push(f); } }
+                    // (the user's facts a recalled-memory block in the message says to them, "- your name is Linh":
+                    // read as their own words; after a model switch into a saved conversation they may be the only
+                    // place the facts stand)
+                    if let Some(i) = text.find("[memory") {
+                        for l in text[i..].lines().skip(1).take_while(|l| !l.starts_with("[/memory]")) {
+                            for f in context::user_facts(&crate::reply_check::said_by_user(l)) { if !facts.contains(&f) { facts.push(f); } }
+                        }
+                    }
+                }
+            }
+        }
+        let table = if results.contains(crate::situation::COMPUTED) || self.input_asks_table() { self.turn_table() } else { None };
+        // the request's own lines too: after a tool step the last user message is only results
+        let asked = self.history.get(request).filter(|m| is_request(m)).map(texts).unwrap_or_default();
+        crate::situation::ReplyFacts::from_turn(&asked).merge(crate::situation::ReplyFacts::session(&results, table.as_ref(), context::NameFix::new(&facts)))
+    }
+
+    /// whether this turn's message carries Elisa's computed facts of a table (`table_part`)
+    fn input_asks_table(&self) -> bool {
+        self.history.iter().rev().find(|m| is_request(m)).is_some_and(|m| texts(m).contains(&format!("{} from ", crate::situation::COMPUTED)))
     }
 }
 
@@ -1044,6 +1197,8 @@ pub(super) fn texts(m: &Message) -> String {
 /// instructions and template text (`context::clean_notes`). Empty = unusable.
 fn summary_text(content: Vec<Block>) -> String {
     let raw = texts(&Message::new(Role::Assistant, content));
+    // (an earlier turn's computed result copied from its message is that turn's answer, no fact to remember)
+    let raw: String = raw.lines().filter(|l| !l.contains(crate::situation::COMPUTED)).collect::<Vec<_>>().join("\n");
     context::summary_notes(&context::split_state(&raw).0)
 }
 
@@ -1086,5 +1241,41 @@ mod tests {
         assert_eq!(with_progress(&mut fe, || 1), (1, false));
         mem_progress("indexing 1 memories", Some(1.0));
         assert!(fe.0.is_empty());
+    }
+}
+
+/// Elisa's lines for a failed save (`data/storage_lines.txt`).
+const STORAGE_LINES: &str = include_str!("../../data/storage_lines.txt");
+
+/// The plain line for a save of `what` ("memory", "session", "notes") that failed with `err` (an error's text): the
+/// reason from the system's error code in it ("(os error 28)": the disk is full), never a path or the raw error.
+pub(super) fn storage_line(what: &str, err: &str) -> String {
+    let get = |k: &str| STORAGE_LINES.lines().filter(|l| !l.starts_with('#')).find_map(|l| l.split_once(" = ").filter(|(a, _)| a.trim() == k).map(|(_, b)| b.trim().to_string()));
+    let code = err.rsplit_once("os error ").and_then(|(_, r)| r.trim_end_matches(|c: char| !c.is_ascii_digit()).parse::<i32>().ok());
+    let full = code == Some(libc::ENOSPC) || code == Some(libc::EDQUOT) || err.contains("StorageFull");
+    let denied = code == Some(libc::EACCES) || code == Some(libc::EPERM) || code == Some(libc::EROFS);
+    let key = if full { "full" } else if denied { "denied" } else { "other" };
+    let thing = get(&format!("what.{what}")).unwrap_or_else(|| what.to_string());
+    get(key).unwrap_or_default().replace("{what}", &thing)
+}
+
+/// Shows `line` once per run: a full disk would otherwise say it on every turn.
+pub(super) fn once(line: &str) -> bool {
+    static SHOWN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    SHOWN.get_or_init(Default::default).lock().map(|mut s| s.insert(line.to_string())).unwrap_or(true)
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::storage_line;
+
+    #[test]
+    fn a_failed_save_reads_as_one_plain_line() {
+        let full = "Couldn't save memory: the disk is full. Free some space and I'll keep going.";
+        assert_eq!(storage_line("memory", "elisa-mem: hot.adj write: Os { code: 28, kind: StorageFull, message: \"No space left on device\" }"), full);
+        let s = storage_line("session", "/Users/x/.elisa/sessions/1794.json: No space left on device (os error 28)");
+        assert_eq!(s, "Couldn't save this chat: the disk is full. Free some space and I'll keep going.");
+        assert!(storage_line("notes", "/x/notes.md: Permission denied (os error 13)").starts_with("Couldn't save the notes: I'm not allowed"));
+        assert_eq!(storage_line("memory", "something odd"), "Couldn't save memory just now. I'll keep going.");
     }
 }

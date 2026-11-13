@@ -1,0 +1,76 @@
+# Date questions Elisa works out herself (`situation::date_part`): the days until or since a day, the day of the week
+# of a day, the date a number of days from today. Her result goes in the turn as an exact fact and the reply's number
+# is put right (a small model said "30 days" to Christmas on 11 Nov). Fix a missed wording here, not in code.
+#
+# One section per language; every list is "a | b | c". Keys:
+#   until      asks for the days left until a day        since      asks for the days gone since a day
+#   weekday    asks for the day of the week of a day      from now   follows "N" in "N days from now"
+#   months     January … December, ";" between months (each "name | short name"); "{n}" stands for the month's number
+#   day first  "yes" when a date in digits is day/month ("25/12"), else month/day ("12/25")
+#   date       how Elisa writes a date: {d} {m} {y}, {month} (the first month name, capitalised)
+#   weekday say  Elisa's own answer to a weekday question whose reply names no real day: {name} {day} {date}
+#   relative   words naming a day by its distance from today, "word:days" ("tomorrow:1"); one next to a date that is
+#              another day is dropped ("tomorrow, November 6" read on 11 Nov becomes "on November 6")
+#   spans      words naming a time by a span, not a day ("this weekend", "next week"; "cuối tuần"): with `relative`,
+#              a day phrase that, where a held file's line names a weekday, gives another time
+#              (`reply_check::held_contradictions_fixed`)
+#   on         the word put before a date in place of a dropped one
+#   ahead      words saying an event is still to come, before its verb ("will", "is set to"; "sẽ")
+#   ongoing    words before a verb's -ing form saying it is happening now ("is" launching)
+#   verbs      "base, -s form, -ing form, past" per verb, ";" between verbs: next to a date before today, "will
+#              launch", "is launching" or "launches" becomes "launched" ("Apple is launching … on November 6, 2026"
+#              read on 11 Nov). A language without verb forms uses `done` in place of the `ahead` word instead
+#   done       the word for "already happened" that takes an `ahead` word's place ("sẽ ra mắt" → "đã ra mắt"):
+#              "with accents | without"
+#
+# [holidays]: "MM-DD = name | name": days on the same date every year, in any language.
+# [moving]: days whose date changes from year to year ("Easter", "Tết"): Elisa asks the user which date they mean.
+
+[en]
+until = how many days until | how many days till | how many days to | how many days left until | days until | days till | days left until | how long until | how long till
+since = how many days since | how many days has it been since | days since | how long since | how many days ago was
+weekday = what day of the week | which day of the week | what weekday | which weekday
+from now = days from now | days from today | days after today
+months = january | jan ; february | feb ; march | mar ; april | apr ; may | may ; june | jun ; july | jul ; august | aug ; september | sep ; october | oct ; november | nov ; december | dec
+day first = no
+date = {month} {d}, {y}
+weekday say = {name} is on a {day}, {date}.
+relative = the day before yesterday:-2 | yesterday:-1 | today:0 | tonight:0 | the day after tomorrow:2 | tomorrow:1
+spans = this weekend | next weekend | the weekend | weekend | end of the week | end of this week | end of next week | this week | next week | later this week | early next week | this month | next month | end of the month
+on = on
+ahead = will | is going to | are going to | is set to | are set to | is expected to | are expected to | is scheduled to | are scheduled to | is due to | are due to
+ongoing = will be | is | are
+verbs = launch, launches, launching, launched ; release, releases, releasing, released ; announce, announces, announcing, announced ; unveil, unveils, unveiling, unveiled ; introduce, introduces, introducing, introduced ; reveal, reveals, revealing, revealed ; open, opens, opening, opened ; hold, holds, holding, held ; host, hosts, hosting, hosted ; start, starts, starting, started ; begin, begins, beginning, began ; debut, debuts, debuting, debuted ; ship, ships, shipping, shipped ; present, presents, presenting, presented ; showcase, showcases, showcasing, showcased ; kick off, kicks off, kicking off, kicked off ; take place, takes place, taking place, took place
+
+[vi]
+until = còn bao nhiêu ngày | con bao nhieu ngay | còn mấy ngày | con may ngay | bao nhiêu ngày nữa | bao nhieu ngay nua | mấy ngày nữa | may ngay nua
+since = bao nhiêu ngày kể từ | bao nhieu ngay ke tu | đã bao nhiêu ngày từ | da bao nhieu ngay tu | cách đây bao nhiêu ngày | cach day bao nhieu ngay
+weekday = là thứ mấy | la thu may | vào thứ mấy | vao thu may | rơi vào thứ | roi vao thu
+from now = ngày nữa là ngày | ngay nua la ngay | ngày nữa là | ngay nua la | ngày sau là | ngay sau la
+months = tháng {n} | thang {n}
+day first = yes
+date = {d}/{m}/{y}
+weekday say = {name} năm nay là {day}, {date}.
+relative = hôm kia:-2 | hom kia:-2 | hôm qua:-1 | hom qua:-1 | hôm nay:0 | hom nay:0 | ngày mốt:2 | ngay mot:2 | ngày mai:1 | ngay mai:1
+spans = cuối tuần | cuoi tuan | cuối tuần này | cuối tuần sau | tuần này | tuan nay | tuần sau | tuan sau | tuần tới | tuan toi | đầu tuần sau | tháng này | thang nay | tháng sau | thang sau | cuối tháng | cuoi thang
+on = vào
+ahead = dự kiến sẽ | du kien se | sẽ | se | sắp | sap
+done = đã | da
+
+[holidays]
+12-25 = christmas day | christmas | xmas | giáng sinh | giang sinh | noel | lễ giáng sinh
+12-24 = christmas eve | đêm giáng sinh | dem giang sinh | đêm noel
+12-31 = new year's eve | new years eve | đêm giao thừa dương lịch
+01-01 = new year's day | new years day | new year | tết dương lịch | tet duong lich | năm mới dương lịch
+02-14 = valentine's day | valentines day | valentine | lễ tình nhân | le tinh nhan
+03-08 = international women's day | women's day | quốc tế phụ nữ | quoc te phu nu | ngày 8/3
+04-30 = ngày thống nhất | ngay thong nhat | giải phóng miền nam | giai phong mien nam
+05-01 = labour day | labor day | may day | quốc tế lao động | quoc te lao dong
+06-01 = children's day | quốc tế thiếu nhi | quoc te thieu nhi
+07-04 = independence day | fourth of july | the 4th of july
+09-02 = quốc khánh | quoc khanh | vietnam national day
+10-31 = halloween
+11-20 = ngày nhà giáo việt nam | ngày nhà giáo | ngay nha giao
+
+[moving]
+easter | thanksgiving | mother's day | mothers day | father's day | fathers day | lunar new year | chinese new year | tết nguyên đán | tet nguyen dan | tết âm lịch | tet am lich | tết | tet | trung thu | tết trung thu | mid-autumn festival | mid autumn | diwali | ramadan | eid | hanukkah | black friday

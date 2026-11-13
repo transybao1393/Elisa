@@ -1,0 +1,29 @@
+# Wordings that say a thing's status: done, sent, bought, finished ("the items were read and sent", "đã gửi đi").
+# A reply about a file read this turn that says one of these where the file's lines do not hold it states a status the
+# file does not give ("- buy bread" is a thing to do, not one done): Elisa's own listing of the file stands instead
+# (`repl/docs.rs` `status_unheld`). One wording per line, lowercase, matched as whole words; add a language's wording
+# here, not in code.
+[en]
+done
+finished
+completed
+already
+been sent
+was sent
+were sent
+been bought
+was bought
+were bought
+checked off
+crossed off
+[vi]
+đã gửi
+gửi đi
+gửi rồi
+đã mua
+mua rồi
+đã xong
+xong rồi
+hoàn thành
+hoàn tất
+đã làm

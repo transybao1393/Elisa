@@ -562,15 +562,16 @@ pub fn report() -> String {
 mod tests {
     use super::*;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("elisa-cache-{tag}-{}-{}", std::process::id(), now_s()));
-        let _ = fs::remove_dir_all(&d);
-        d
+    /// a folder of the test's own and a cache path inside it that does not exist yet (`Cache::open` makes it)
+    fn tmp(tag: &str) -> (crate::testdir::TempDir, PathBuf) {
+        let t = crate::testdir::TempDir::new(&format!("cache-{tag}"));
+        let d = t.join("cache");
+        (t, d)
     }
 
     #[test]
     fn put_get_and_private_modes() {
-        let d = tmp("modes");
+        let (_t, d) = tmp("modes");
         let c = Cache::open(&d, 10, "t").unwrap();
         assert!(c.lookup(Kind::Docs, "k").is_none());
         c.put(Kind::Docs, "k", "hello").unwrap();
@@ -579,12 +580,11 @@ mod tests {
         assert_eq!(fs::metadata(c.entry_path(Kind::Docs, "k")).unwrap().permissions().mode() & 0o777, 0o600);
         // another kind, another key: separate entries
         assert!(c.lookup(Kind::WebFetch, "k").is_none());
-        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
     fn ttl_expires() {
-        let d = tmp("ttl");
+        let (_t, d) = tmp("ttl");
         let c = Cache::open(&d, 10, "t").unwrap();
         c.put(Kind::WebSearch, "q", "hits").unwrap();
         assert!(c.lookup(Kind::WebSearch, "q").is_some());
@@ -602,12 +602,11 @@ mod tests {
         v["created"] = json!(1);
         fs::write(&p, v.to_string()).unwrap();
         assert!(c.lookup(Kind::Docs, "d").is_some());
-        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
     fn corrupt_entry_is_ignored_and_removed() {
-        let d = tmp("corrupt");
+        let (_t, d) = tmp("corrupt");
         let c = Cache::open(&d, 10, "t").unwrap();
         c.put(Kind::Docs, "k", "good").unwrap();
         let p = c.entry_path(Kind::Docs, "k");
@@ -620,12 +619,11 @@ mod tests {
         v["key"] = json!("other");
         fs::write(&p, v.to_string()).unwrap();
         assert!(c.lookup(Kind::Docs, "k").is_none());
-        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
     fn least_recently_used_goes_first_past_the_cap() {
-        let d = tmp("evict");
+        let (_t, d) = tmp("evict");
         let c = Cache::open(&d, 1, "t").unwrap(); // 1 MB
         let body = "x".repeat(200 * 1024);
         for i in 0..4 { c.put(Kind::Docs, &format!("k{i}"), &body).unwrap(); }
@@ -643,12 +641,11 @@ mod tests {
         // an entry larger than a quarter of the cap is not stored
         c.put(Kind::Docs, "big", &"y".repeat(300 * 1024)).unwrap();
         assert!(c.lookup(Kind::Docs, "big").is_none());
-        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
     fn atomic_write_readers_never_see_half_an_entry() {
-        let d = tmp("atomic");
+        let (_t, d) = tmp("atomic");
         let c = Arc::new(Cache::open(&d, 50, "t").unwrap());
         let a = "a".repeat(1 << 20);
         let b = "b".repeat(1 << 20);
@@ -661,12 +658,11 @@ mod tests {
         assert!(seen > 0);
         // no temp files left
         assert!(fs::read_dir(d.join("entries/docs")).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")));
-        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
     fn in_flight_dedup_across_threads_and_no_secrets_stored() {
-        let d = tmp("dedup");
+        let (_t, d) = tmp("dedup");
         let c = Arc::new(Cache::open(&d, 10, "t").unwrap());
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let hs: Vec<_> = (0..6).map(|_| { let (c, runs) = (c.clone(), runs.clone()); std::thread::spawn(move || {
@@ -686,12 +682,11 @@ mod tests {
         let key = format!("AKIA{}", "ABCDEFGHIJKLMNOP");
         c.get_or_compute(Kind::WebFetch, "secret", Duration::from_secs(1), || Ok((format!("aws key {key} here"), true))).unwrap();
         assert!(!c.entry_path(Kind::WebFetch, "secret").exists());
-        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
     fn clear_by_kind_and_command_words() {
-        let d = tmp("clear");
+        let (_t, d) = tmp("clear");
         let c = Cache::open(&d, 10, "t").unwrap();
         c.put(Kind::Docs, "a", "1").unwrap();
         c.put(Kind::WebFetch, "b", "2").unwrap();
@@ -699,6 +694,5 @@ mod tests {
         assert!(c.lookup(Kind::WebFetch, "b").is_some());
         assert_eq!(c.clear(None).unwrap().0, 1);
         assert!(new_hits(&[(Kind::Docs, 1)], &[(Kind::Docs, 2), (Kind::WebFetch, 0)]) == ["docs"]);
-        let _ = fs::remove_dir_all(&d);
     }
 }

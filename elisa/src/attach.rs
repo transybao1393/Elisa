@@ -744,11 +744,15 @@ fn embed_chunks(d: &Doc) -> Vec<(usize, String)> {
     v
 }
 
+/// the docs cache part of the parts' embeddings: a new one with every text normalisation of the embedder (vectors of
+/// another one would score the question's embedding by noise)
+fn parts_key() -> String { format!("minilm_parts-{}", elisa_mem::embed::TEXT_NORM_VERSION) }
+
 /// The parts' MiniLM embeddings (per chunk), computed and cached by file content (`cache::docs_json`, kind docs).
 /// For a background thread: `prefetch_embeddings`.
 fn embed_parts(d: &Doc) -> Result<Vec<(usize, Vec<f32>)>, String> {
     let dir = elisa_mem::embed::model_dir().ok_or("no embedding model")?;
-    crate::cache::docs_json(&d.path, "minilm_parts", || {
+    crate::cache::docs_json(&d.path, &parts_key(), || {
         let ch = embed_chunks(d);
         let refs: Vec<&str> = ch.iter().map(|c| c.1.as_str()).collect();
         let vocab = std::env::temp_dir().join("elisa-minilm-vocab.bin");
@@ -767,7 +771,7 @@ pub fn prefetch_embeddings(d: &Doc) -> Option<std::thread::JoinHandle<()>> {
 
 /// cosine similarity of each part (its best chunk) to the question, when the parts' embeddings are already cached
 fn embed_scores(d: &Doc, question: &str) -> Option<Vec<f32>> {
-    if !crate::cache::docs_has(&d.path, "minilm_parts") { return None; }
+    if !crate::cache::docs_has(&d.path, &parts_key()) { return None; }
     let parts = embed_parts(d).ok()?;
     let dir = elisa_mem::embed::model_dir()?;
     let vocab = std::env::temp_dir().join("elisa-minilm-vocab.bin");
@@ -1412,12 +1416,7 @@ pub fn first_line(block: &str) -> &str { block.lines().next().unwrap_or(block) }
 mod tests {
     use super::*;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("elisa-attach-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d.canonicalize().unwrap()
-    }
+    fn tmp(tag: &str) -> crate::testdir::TempDir { crate::testdir::TempDir::real(&format!("attach-{tag}")) }
 
     #[test]
     fn docx_xml_to_text() {

@@ -1,0 +1,136 @@
+# Weather conditions a reply may claim and a page Elisa read may show (`repl/turn.rs` `weather_claim_fix`): after her
+# own search for the weather, a sentence of the reply claiming a condition the page contradicts for the same day
+# ("ngày mai dự báo nắng" when the page says "Ngày mai … kèm theo mưa"; "trời mưa nhẹ" when it shows "U ám" and
+# "Lượng mưa 0 mm") is replaced by the page's own sentence for that day, or taken out. One section per condition,
+# "[name]"; its first line "against: a | b" names the conditions it cannot hold with; every other line is a wording of
+# it, matched as whole words, the longest first ("không mưa" is no rain), never right before a number ("Nắng 7g 51p"
+# is a sunshine count, "mưa 94%" a chance), and an example of its meaning (all-MiniLM-L6-v2) for a sentence put in
+# other words. The `[other]` section holds weather sentences that claim no condition (a temperature, humidity, wind).
+# A page's condition counts from a line that is that condition alone ("U ám"), a reading with its value ("Lượng mưa
+# 0 mm"), or a sentence naming the day ("Tối nay …", "Ngày mai …", `relative` of `data/date_words.txt`, `now` of
+# `data/live_asks.txt`); a reply's from any sentence, its day the same way (none named: today). English and
+# Vietnamese, with and without accents. Fix a missed wording or a wrong pairing here, not in code.
+[sunny]
+against: cloudy | rain | storm | fog | snow
+sunny
+sunny skies
+clear skies
+clear sky
+sunshine
+bright sunshine
+nắng
+trời nắng
+nắng ráo
+nắng đẹp
+có nắng
+trời quang
+quang mây
+trong xanh
+troi nang
+nang rao
+[cloudy]
+against: sunny
+cloudy
+overcast
+overcast skies
+heavy clouds
+u ám
+âm u
+nhiều mây
+phủ mây
+mây che phủ
+trời mây
+bầu trời phủ mây
+u am
+nhieu may
+[rain]
+against: dry | sunny
+rain
+rainy
+raining
+showers
+light showers
+scattered showers
+drizzle
+light rain
+moderate rain
+heavy rain
+mưa
+mưa nhẹ
+mưa vừa
+mưa rào
+mưa rào nhẹ
+mua rao nhe
+mưa rào rải rác
+mua rao rai rac
+mưa phùn
+mưa to
+mưa lớn
+mưa dông
+mưa giông
+mua vua
+có mưa
+trời mưa
+kèm theo mưa
+đổ mưa
+mua nhe
+troi mua
+co mua
+[dry]
+against: rain | storm | snow
+no rain
+dry
+dry weather
+không mưa
+khô ráo
+trời khô
+0 mm
+0mm
+khong mua
+kho rao
+[storm]
+against: sunny | dry
+storm
+storms
+thunderstorm
+thunderstorms
+thunder
+lightning
+dông
+giông
+bão
+sấm sét
+mưa dông
+mua dong
+[fog]
+against: sunny
+fog
+foggy
+mist
+misty
+sương mù
+suong mu
+[snow]
+against: sunny | dry
+snow
+snowy
+snowfall
+tuyết
+có tuyết
+[other]
+temperature 19°C
+feels like 21°C
+humidity 84%
+wind 5 km/h from the north
+pressure 1020 hPa
+UV index 0
+visibility 12 km
+air quality is good
+nhiệt độ 19°C
+cảm giác như 21°C
+độ ẩm 84%
+gió tây bắc 5 km/h
+áp suất 1020 hPa
+chỉ số UV thấp
+tầm nhìn 12 km
+chất lượng không khí tốt

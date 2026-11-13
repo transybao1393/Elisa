@@ -158,6 +158,11 @@ const OUT_MAX: usize = 4000;
 /// care slash commands, handled here (never reach the agent): the TUI does the same
 const CARE: &[(&str, &str)] = &[("/water", "water"), ("/feed", "food"), ("/food", "food"), ("/play", "toy"), ("/toy", "toy"), ("/poke", "poke")];
 
+/// Shade's event for a care action (`CARE`, or the care tray's `{"type":"care"}`)
+fn care_event(a: &str) -> ShEv<'static> {
+    match a { "water" => ShEv::Water, "food" => ShEv::Food, "toy" => ShEv::Toy, _ => ShEv::Poke }
+}
+
 /// what the agent thread and the stdin reader send to the main loop
 pub enum Ev {
     Banner(Banner), User(String), Waiting, Delta(String), Done(Status), ToolStart(String),
@@ -220,7 +225,7 @@ fn intake_in_background(path: String) {
         let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let t0 = Instant::now();
         let act = |phase: Phase, text: String, summary: String, error: bool| {
-            let mut v = Activity { id, phase, kind: "docs".into(), text, summary, ms: t0.elapsed().as_millis() as u64, error, waiting_ok: false, slow: None, steps: 0 }.json();
+            let mut v = Activity { id, phase, kind: "docs".into(), text, summary, ms: t0.elapsed().as_millis() as u64, error, skipped: false, waiting_ok: false, slow: None, steps: 0 }.json();
             v["background"] = json!(true);
             v
         };
@@ -583,11 +588,30 @@ struct Server<W: Write> {
     last_tool: String,
     /// the model request on the live line: its start, when it came, and whether it got a slow / reasoning update
     model_act: Option<(crate::activity::Activity, Instant, bool, bool)>,
+    /// reply text after its last space, held until the word ends: a secret split across deltas is masked whole
+    held: crate::frontend::ShownText,
 }
 
 impl<W: Write> Server<W> {
     fn now(&self) -> u64 { self.t0.elapsed().as_millis() as u64 }
-    fn emit(&mut self, kind: &str, f: Value) {
+    /// One event out. Every string in it is masked for the screen (`secrets::mask_shown`: a key read from a file or
+    /// written in a reply shows as "sk-l…"); reply text goes through `ShownText`, its unfinished last word held
+    /// until the word ends or another event goes out, so a key streamed in pieces is masked whole.
+    fn emit(&mut self, kind: &str, mut f: Value) {
+        if kind == "delta" {
+            let Some(t) = f["text"].as_str() else { return self.write_ev(kind, f) };
+            let shown = self.held.push(t);
+            if shown.is_empty() { return; }
+            f["text"] = Value::String(shown);
+        } else if !matches!(kind, "activity" | "shade" | "progress" | "watch" | "thinking" | "queued") {
+            // (the live line, the character and the meters are not in the reply's text: the held word stays held)
+            let h = self.held.finish();
+            if !h.is_empty() { self.write_ev("delta", json!({"text": h})); }
+        }
+        self.write_ev(kind, f);
+    }
+    fn write_ev(&mut self, kind: &str, mut f: Value) {
+        crate::secrets::mask_shown_json(&mut f);
         let _ = self.out.write_all(event(kind, f).as_bytes());
         let _ = self.out.flush();
     }
@@ -630,15 +654,26 @@ impl<W: Write> Server<W> {
 
     fn submit_all(&mut self, text: String, imgs: Vec<Block>, docs: Vec<String>, refused: usize) {
         let t = text.trim();
-        if imgs.is_empty() && docs.is_empty() && refused == 0 { if let Some((_, a)) = CARE.iter().find(|(c, _)| *c == t) { return self.care(a); } }
+        if imgs.is_empty() && docs.is_empty() && refused == 0 { if let Some((c, a)) = CARE.iter().find(|(c, _)| *c == t) { return self.care_typed(c, a); } }
         match self.input.take() {
             Some(tx) => { hand_over_all(&tx, text, imgs, docs, refused); }
             None => { self.queue.push_back((text, imgs, docs, refused)); let n = self.queue.len(); self.emit("queued", json!({"n": n})); }
         }
     }
 
-    fn care(&mut self, a: &str) {
-        self.sh(match a { "water" => ShEv::Water, "food" => ShEv::Food, "toy" => ShEv::Toy, _ => ShEv::Poke });
+    fn care(&mut self, a: &str) { self.sh(care_event(a)); }
+
+    /// a care command typed in the chat: the same as the care button, then shown like any other command (its echo, a
+    /// line with Shade's bubble) and ended with "ready" while the session waits for input, so the frontend is not left
+    /// waiting for a turn that never starts. During a running turn the turn's own "ready" ends it.
+    fn care_typed(&mut self, cmd: &str, a: &str) {
+        self.care(a);
+        if self.input.is_none() { return; }
+        let st = crate::shade::state_for(care_event(a));
+        let (what, _) = crate::shade::care_of(st);
+        self.emit("user", json!({"text": cmd}));
+        self.emit("info", json!({"text": format!("{} · {}", crate::shade::verb(st), what)}));
+        self.emit("ready", json!({}));
     }
 
     fn on_cmd(&mut self, c: Cmd) {
@@ -668,7 +703,14 @@ impl<W: Write> Server<W> {
             Cmd::Pick(i) => if let Some(tx) = self.pick.take() { let _ = tx.send(i); },
             Cmd::Interrupt => {
                 let busy = self.input.is_none();
-                if !self.queue.is_empty() { self.queue.clear(); self.emit("queued", json!({"n": 0})); }
+                // a message still waiting (the agent was busy finishing the last turn) is not sent: said so, as a
+                // cancelled reply, or the app waits for an answer that never comes
+                if !self.queue.is_empty() {
+                    let n = self.queue.len();
+                    self.queue.clear();
+                    self.emit("queued", json!({"n": 0}));
+                    self.emit("info", json!({"text": format!("Stopped. {} waiting message{} not sent.", n, if n == 1 { " was" } else { "s were" })}));
+                }
                 if let Some(tx) = self.pick.take() { let _ = tx.send(None); }
                 if busy {
                     CANCEL.store(true, Ordering::SeqCst);
@@ -865,7 +907,7 @@ pub fn run(args: Args) -> i32 {
     drop(tx);
     let sleep = (cfg.sleep_after_s > 0).then_some(cfg.sleep_after_s * 1000);
     let mut s = Server { out, t0: Instant::now(), shade: Companion::new(0, sleep), light, shown: None, input: None, queue: VecDeque::new(),
-        approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None };
+        approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None, held: Default::default() };
     let mut quit_at: Option<Instant> = None;
     let code = loop {
         let r = rx.recv_timeout(TICK);
@@ -975,8 +1017,7 @@ b"}"#] {
 
     #[test]
     fn edit_detail_has_old_and_new_line_numbers() {
-        let d = std::env::temp_dir().join(format!("elisa-jsonl-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testdir::TempDir::new("jsonl");
         std::fs::write(d.join("a.rs"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
         let det = crate::tui::detail("edit", &json!({"path": "a.rs", "old": "two\nthree", "new": "2\n2b\n3"}), &d).unwrap();
         let j = detail_json(&det);
@@ -987,7 +1028,6 @@ b"}"#] {
         // the context after the change: old 4 / new 5
         assert_eq!((ls[6]["o"].as_u64(), ls[6]["n"].as_u64(), ls[6]["t"].as_str()), (Some(4), Some(5), Some("four")));
         assert_eq!((ls[1]["o"].as_u64(), ls[1]["n"].as_u64()), (Some(2), None));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -1028,15 +1068,33 @@ b"}"#] {
     #[test]
     fn state_cards_are_stripped_across_deltas() {
         let mut s = Server { out: Vec::new(), t0: Instant::now(), shade: Companion::new(0, None), light: false, shown: None, input: None,
-            queue: VecDeque::new(), approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None };
+            queue: VecDeque::new(), approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None, held: Default::default() };
         let got: String = ["Done. <st", "ate>goal: x", "</sta", "te> bye"].iter().map(|d| s.unstate(d)).collect();
         assert_eq!(got, "Done.  bye");
     }
 
     #[test]
+    fn a_typed_care_command_ends_with_ready() {
+        let mut s = Server { out: Vec::new(), t0: Instant::now(), shade: Companion::new(0, None), light: false, shown: None, input: None,
+            queue: VecDeque::new(), approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None, held: Default::default() };
+        // during a turn: Shade only (the turn's own "ready" ends it), nothing queued for the agent
+        s.submit("/water".into(), Vec::new());
+        assert!(s.out.is_empty() && s.queue.is_empty());
+        // waiting for input: echoed, one line, "ready", and the agent still waits
+        let (tx, _rx) = std::sync::mpsc::channel();
+        s.input = Some(tx);
+        s.submit("/feed".into(), Vec::new());
+        let out = String::from_utf8(s.out.clone()).unwrap();
+        let kinds: Vec<String> = out.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["type"].as_str().unwrap().to_string()).collect();
+        assert_eq!(kinds, ["user", "info", "ready"]);
+        assert!(out.contains("NOM NOM"));
+        assert!(s.input.is_some() && s.queue.is_empty());
+    }
+
+    #[test]
     fn a_copied_card_instruction_is_dropped_across_deltas() {
         let mut s = Server { out: Vec::new(), t0: Instant::now(), shade: Companion::new(0, None), light: false, shown: None, input: None,
-            queue: VecDeque::new(), approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None };
+            queue: VecDeque::new(), approve: None, pick: None, cardf: Default::default(), quitting: false, last_tool: String::new(), model_act: None, held: Default::default() };
         let got: String = ["Blue. <=80-tok", "en card of what the next ", "step needs:\n<state>goal: x</state>", " a<b"].iter().map(|d| s.unstate(d)).collect();
         // "<b" starts neither a tag nor the line, so it is not held
         assert_eq!(got, "Blue. \n a<b");

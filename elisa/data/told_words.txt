@@ -1,0 +1,49 @@
+# Who told whom (`context::NameFix`): a reply saying Elisa told the user one of the user's own facts ("I told you your
+# name is Linh") has the people the wrong way round; the user told Elisa. Each line is "wrong = right", English and
+# Vietnamese, with and without accents. Only a sentence naming a fact the user gave is changed. Fix a wording here.
+#
+# The [asked] section holds wordings that are wrong only when the user asks what they told Elisa ("what did I tell
+# you my name was?" got "I said your name is Linh"): `asks` are the words that make a question such an ask (the user
+# telling, in the first person), and each other line is "wrong = right" as above. The [asked] lines are tried after
+# the ones above.
+i already told you = you already told me
+i've already told you = you've already told me
+i have told you = you have told me
+i've told you = you've told me
+as i told you = as you told me
+i told you = you told me
+tôi đã nói với bạn = bạn đã nói với tôi
+mình đã nói với bạn = bạn đã nói với mình
+tôi đã bảo bạn = bạn đã nói với tôi
+mình đã bảo bạn = bạn đã nói với mình
+tôi đã cho bạn biết = bạn đã cho tôi biết
+mình đã cho bạn biết = bạn đã cho mình biết
+toi da noi voi ban = ban da noi voi toi
+minh da noi voi ban = ban da noi voi minh
+
+[asked]
+asks = did i tell you | i told you | did i say | i said | did i mention | i mentioned | did i share | i shared | i've told you | i have told you | tôi đã nói | tôi nói | tôi đã bảo | tôi bảo | tôi đã kể | tôi kể | tôi đã chia sẻ | mình đã nói | mình nói | mình đã bảo | mình bảo | mình đã kể | mình kể | toi da noi | toi noi | toi da bao | toi bao | toi da ke | minh da noi | minh noi | minh da bao | minh bao | minh da ke
+i've already said = you've already told me
+i already said = you already told me
+i have said = you have told me
+i've said = you've told me
+as i said = as you told me
+as i mentioned = as you told me
+i have mentioned = you have told me
+i've mentioned = you've told me
+i mentioned = you told me
+i've shared = you've told me
+i shared = you told me
+i said = you told me
+tôi đã nói = bạn đã nói với tôi
+tôi đã bảo = bạn đã nói với tôi
+tôi đã kể = bạn đã kể với tôi
+tôi đã chia sẻ = bạn đã chia sẻ với tôi
+mình đã nói = bạn đã nói với mình
+mình đã bảo = bạn đã nói với mình
+mình đã kể = bạn đã kể với mình
+toi da noi = ban da noi voi toi
+toi da bao = ban da noi voi toi
+toi da ke = ban da ke voi toi
+minh da noi = ban da noi voi minh
+minh da ke = ban da ke voi minh

@@ -1,0 +1,37 @@
+# Wordings that say the user's package or pinned version was changed ("The `requests` package has been updated to
+# 2.33.0", "I upgraded flask"): in a dependency check's reply, a sentence naming a checked package with one of these,
+# when no change ran in the turn, goes; Elisa's summary gives the update to make (`repl/turn.rs` `drop_wrong_status`).
+# A release that fixed something ("2.33.0 fixed …", "has been fixed in later versions") is no such wording. One wording
+# per line, lowercase, matched as whole words; add a language's wording here, not in code.
+has been updated
+have been updated
+was updated
+were updated
+has been upgraded
+have been upgraded
+was upgraded
+were upgraded
+has been bumped
+was bumped
+has been changed
+was changed
+has been pinned
+is now pinned
+i updated
+i upgraded
+i changed
+i bumped
+i've updated
+i've upgraded
+i have updated
+i have upgraded
+đã được cập nhật
+da duoc cap nhat
+đã được nâng cấp
+da duoc nang cap
+đã được nâng lên
+da duoc nang len
+tôi đã cập nhật
+toi da cap nhat
+tôi đã nâng cấp
+toi da nang cap

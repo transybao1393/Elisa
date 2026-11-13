@@ -1,0 +1,61 @@
+# Elisa's own line for a step she ran, in the user's language, when she tells the results herself ("Here's what I
+# found:" / "Đây là kết quả:" and then one line per step: `repl/turn.rs` `plain_results`, `reply_check::step_line`).
+# One key per line, "key: line", in an [en] and a [vi] section; the key is the step's group as the activity rows
+# count it (`activity::Phrase::group`: read, look, search_project, edit, create, run, tests, build, install, lint,
+# git, doc, web_search, web_fetch, code, calc, time, sec, think, plan; "plugin" for any plugin's tool), "{target}" is
+# what the step acted on (a file, a query, a command). A group with no line here gets the activity row's own words.
+#   failed:  the step did not work ("{act}" is the step's live wording, "Reading notes.txt", English; a Vietnamese
+#            line names the target instead)
+#   skipped: the step was said no to
+#   stopped: the step was cancelled
+# A line that needs "{target}" where the step has none is not used (the activity row's words then).
+[en]
+read: Read {target}
+look: Looked through your project files
+search_project: Searched your project
+edit: Edited {target}
+create: Created {target}
+run: Ran {target}
+tests: Ran the tests
+build: Built the project
+install: Installed packages
+lint: Checked the code
+git: Checked git
+doc: Read {target}
+web_search: Searched the web for “{target}”
+web_fetch: Read {target}
+code: Ran code
+calc: Calculated
+time: Checked the time
+sec: Ran a security check
+think: Thought it through
+plan: Planned the steps
+plugin: Used {target}
+failed: {act} didn't work
+skipped: Skipped: {act} (you said no)
+stopped: Stopped: {act}
+[vi]
+read: Đã đọc {target}
+look: Đã xem qua các tệp trong dự án
+search_project: Đã tìm trong dự án
+edit: Đã sửa {target}
+create: Đã tạo {target}
+run: Đã chạy {target}
+tests: Đã chạy kiểm thử
+build: Đã dựng dự án
+install: Đã cài các gói
+lint: Đã kiểm tra mã
+git: Đã xem git
+doc: Đã đọc {target}
+web_search: Đã tìm trên mạng với “{target}”
+web_fetch: Đã đọc {target}
+code: Đã chạy mã
+calc: Đã tính
+time: Đã xem giờ
+sec: Đã chạy kiểm tra bảo mật
+think: Đã suy nghĩ
+plan: Đã lên các bước
+plugin: Đã dùng {target}
+failed: Bước với {target} không chạy được
+skipped: Đã bỏ qua bước với {target} (bạn đã nói không)
+stopped: Đã dừng bước với {target}

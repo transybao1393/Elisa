@@ -1,0 +1,24 @@
+# Words that ask for a number, a time or a date (`reply_check::asks_number`): a message holding one of these as whole
+# words may be answered with digits alone ("2026-11-10 22:20" to "what time is it in UTC?", "3" to "how many…?").
+# One wording per line, English and Vietnamese, with and without accents. Fix a missed wording here, not in code.
+how many
+how much
+how long
+how old
+how far
+what time
+what date
+what year
+which year
+when
+bao nhiêu
+bao nhieu
+mấy
+mấy giờ
+may gio
+khi nào
+khi nao
+lúc nào
+luc nao
+năm nào
+ngày nào

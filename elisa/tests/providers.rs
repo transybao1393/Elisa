@@ -7,18 +7,14 @@ use elisa::types::{Block, Message, Role, ToolDef};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-static N: AtomicUsize = AtomicUsize::new(0);
+mod common;
+use common::TempDir;
 
-fn tmp() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("elisa-providers-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+fn tmp() -> TempDir { TempDir::new("providers") }
 
 fn write_providers(home: &Path, text: &str) {
     let p = path_in(home);

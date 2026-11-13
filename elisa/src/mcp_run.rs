@@ -786,21 +786,21 @@ mod tests {
 
     #[test]
     fn the_daemon_is_docker_host_then_colima_then_the_system_socket() {
-        let d = std::env::temp_dir().join(format!("elisa-run-test-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("run-test");
+        let d = dir.path();
         std::fs::create_dir_all(d.join(".colima/default")).unwrap();
         let sock = d.join(".colima/default/docker.sock");
         // no Colima socket and (on a dev Mac) no /var/run/docker.sock: the "start Colima" message
         if !Path::new("/var/run/docker.sock").exists() {
-            assert_eq!(find_daemon(None, Some(&d)).unwrap_err(), NOT_RUNNING);
+            assert_eq!(find_daemon(None, Some(d)).unwrap_err(), NOT_RUNNING);
         }
         std::fs::write(&sock, "").unwrap();
-        assert_eq!(find_daemon(None, Some(&d)).unwrap(), Daemon { host: format!("unix://{}", sock.display()), from_env: false });
-        assert!(!find_daemon(Some(""), Some(&d)).unwrap().from_env);
+        assert_eq!(find_daemon(None, Some(d)).unwrap(), Daemon { host: format!("unix://{}", sock.display()), from_env: false });
+        assert!(!find_daemon(Some(""), Some(d)).unwrap().from_env);
         // DOCKER_HOST wins; a unix socket that is not there is the same clear message
-        assert_eq!(find_daemon(Some("tcp://10.0.0.1:2375"), Some(&d)).unwrap(), Daemon { host: "tcp://10.0.0.1:2375".into(), from_env: true });
-        let e = find_daemon(Some("unix:///nonexistent/docker.sock"), Some(&d)).unwrap_err();
+        assert_eq!(find_daemon(Some("tcp://10.0.0.1:2375"), Some(d)).unwrap(), Daemon { host: "tcp://10.0.0.1:2375".into(), from_env: true });
+        let e = find_daemon(Some("unix:///nonexistent/docker.sock"), Some(d)).unwrap_err();
         assert!(e.starts_with(NOT_RUNNING), "{e}");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

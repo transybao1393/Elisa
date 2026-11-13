@@ -1,0 +1,11 @@
+# Words for a severity score in a dependency check's reply ("a score of 10.0 on the CVSS", "điểm CVSS 9.8"): a number
+# from 0 to 10 up to six words after one of these, or three before, that the check's own results do not hold, takes
+# its sentence out (`repl/turn.rs` `drop_unbacked_scores`); the check gives levels, not made-up scores. One word per
+# line, lowercase, matched as whole words; add a language's word here, not in code.
+score
+scored
+scores
+scoring
+cvss
+điểm
+diem

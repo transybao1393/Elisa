@@ -25,6 +25,8 @@ pub(super) fn approve_choices(tool: &str) -> Vec<(String, Approval)> {
     v
 }
 pub(super) const DONE_KEEP: Duration = Duration::from_secs(6);
+/// rows one PgUp / PgDn moves the approval box's whole command
+const APPROVE_PAGE: usize = 5;
 // memory bounds: Elisa stays tiny (the model server owns the RAM)
 const MAX_ENTRIES: usize = 1500;
 const MAX_BYTES: usize = 2 << 20;
@@ -43,7 +45,7 @@ impl App {
             menu_sel: 0, menu_off: false, queue: VecDeque::new(), pending: None, phase: Phase::Thinking, since: Instant::now(),
             status: None, first_delta: None, dchars: 0, sum_in: 0, sum_out: 0, model: String::new(), max_ctx: 0, yolo, scroll: 0, last_total: 0, view_h: 10,
             quit_at: None, flash: None, code: None,
-            views: vec![], sel: None, last_read: None, last_cmd: None, awaiting: Await::No, pscroll: 0, panel_h: 10,
+            views: vec![], sel: None, last_read: None, last_cmd: None, awaiting: Await::No, pscroll: 0, ascroll: 0, panel_h: 10,
             split: SPLIT, panel_pref: None, term_w: 0, main_r: Rect::default(),
             jobs: vec![], memory: false, rss: 0, rss_at: None,
             cardf: Default::default(), cards: 0, watch: None, audit: None,
@@ -216,8 +218,9 @@ impl App {
                 if let Some(s) = &mut self.status { s.ctx_used = b; }
                 let keep = self.entries.iter().rposition(|i| matches!(i.e, Entry::User(_))).unwrap_or(self.entries.len());
                 self.entries.drain(..keep);
-                self.entries.insert(0, Item::new(Entry::Info(format!(
-                    "[compacted: {} → {} tokens · earlier turns summarised (/notes)]", k(a), k(b)))));
+                let line = if b >= a { "[earlier turns saved to the notes (/notes); the conversation was already short, so nothing was compacted]".to_string() }
+                    else { format!("[compacted: {} → {} tokens · earlier turns summarised (/notes)]", k(a), k(b)) };
+                self.entries.insert(0, Item::new(Entry::Info(line)));
                 self.scroll = 0;
             }
             Ev::Approve(t, s, tx) => {
@@ -226,6 +229,7 @@ impl App {
                 self.sh(ShEv::Permission);
                 self.pending = Some(Pending::Approve(t, s, 0, tx));
                 self.scroll = 0;
+                self.ascroll = 0;
             }
             Ev::Pick(l, tx) => {
                 if quitting || l.is_empty() { let _ = tx.send(None); } else { self.pending = Some(Pending::Pick(l, 0, tx)); }
@@ -441,6 +445,14 @@ impl App {
             KeyCode::Up if alt => { self.pscroll = self.pscroll.saturating_sub(3); return; }
             KeyCode::Down if alt => { self.pscroll += 3; return; }
             _ => {}
+        }
+        // while the approval box asks: PgUp / PgDn move through its whole command or code
+        if matches!(self.pending, Some(Pending::Approve(..))) {
+            match code {
+                KeyCode::PageUp => { self.ascroll = self.ascroll.saturating_sub(APPROVE_PAGE); return; }
+                KeyCode::PageDown => { self.ascroll += APPROVE_PAGE; return; }
+                _ => {}
+            }
         }
         match code {
             KeyCode::PageUp => { self.scroll += self.view_h.saturating_sub(2).max(1); return; }
@@ -768,6 +780,30 @@ mod watch_tests {
         assert_eq!(arx.recv().unwrap(), Approval::Always);
     }
 
+    /// the approval box shows the whole command, wrapped, never cut: a long one ends where it really ends, and one taller
+    /// than the box moves with PgUp / PgDn while the choices stay
+    #[test]
+    fn the_permission_box_shows_the_whole_command() {
+        let cmd = format!("echo a && {}rm -rf x", (1..=12).map(|i| format!("echo step-{i} && ")).collect::<String>());
+        let (mut a, _rx) = replied();
+        let (tx, _arx) = mpsc::channel();
+        a.on_ev(Ev::Approve("bash".into(), crate::tools::approval_text("bash", &serde_json::json!({"command": cmd})), tx));
+        let rows = screen(&mut a);
+        let all: String = rows.iter().map(|r| r.trim_end().trim_start_matches(['│', '╭', '╰', ' ']).trim_end_matches(['│', ' ']).trim_start_matches(crate::tools::FULL_LINE)).collect();
+        assert!(all.replace(' ', "").contains(&cmd.replace(' ', "")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("rm -rf x")) && rows.iter().any(|r| r.contains("1. Yes")), "{rows:#?}");
+        // 40 lines of code in a 24-row screen: a part shows with where it is, the rest by PgDn, the choices stay
+        let code: String = (1..=40).map(|i| format!("print({i})\n")).collect();
+        let (tx, _arx) = mpsc::channel();
+        a.on_ev(Ev::Approve("run_code".into(), crate::tools::approval_text("run_code", &serde_json::json!({"language": "python", "code": code})), tx));
+        let rows = screen(&mut a);
+        assert!(rows.iter().any(|r| r.contains("print(1)")) && !rows.iter().any(|r| r.contains("print(40)")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("PgUp / PgDn")) && rows.iter().any(|r| r.contains("1. Yes")), "{rows:#?}");
+        for _ in 0..10 { a.on_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)); }
+        let rows = screen(&mut a);
+        assert!(rows.iter().any(|r| r.contains("print(40)")) && rows.iter().any(|r| r.contains("1. Yes")), "{rows:#?}");
+    }
+
     #[test]
     fn mcp_permission_box_names_the_server() {
         let (mut a, _rx) = replied();
@@ -979,8 +1015,8 @@ mod watch_tests {
     fn companion_window_hides_the_dock() {
         use crate::shade::link::{decode, encode_care, Care, Link};
         use std::io::{BufRead, Write};
-        let p = std::env::temp_dir().join(format!("elisa-tui-link-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&p);
+        let sock = crate::testdir::TempDir::new("tui-link");
+        let p = sock.join("c.sock");
         let mut a = shaded();
         a.on_ev(Ev::Banner(Banner { model: "m".into(), ..Default::default() }));
         let (tx, _rx) = mpsc::channel();
@@ -1015,7 +1051,6 @@ mod watch_tests {
         screen_wide(&mut a, 160, 40);
         screen_wide(&mut a, 160, 40);
         assert!(a.dock.is_some(), "dock back when the window is gone");
-        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

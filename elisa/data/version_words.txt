@@ -1,0 +1,55 @@
+# Where a version stands in a dependency check's reply (`repl/turn.rs` `raised`): only a version in an update or
+# fixed-in place ("update to 0.12.3", "fixed in 2.31", "0.12.3 and later") that is below the check's fix is raised
+# to it; a version in an in-use place ("associated with Flask 0.12.0", "vulnerable in 0.12") never is, nor one that is
+# the version in use. One wording per line as "key: wording", lowercase, matched as whole words; add a language's
+# wording here, not in code.
+#   before:  a wording up to three words before the version that makes it an update or fixed-in version
+#   after:   a wording right after the version that does
+#   in_use:  a wording up to four words before the version that makes it the one in use, or an affected one
+before: to
+before: fixed in
+before: patched in
+before: resolved in
+before: upgrade
+before: update
+before: at least
+before: lên
+before: len
+before: bản sửa
+before: ban sua
+after: or later
+after: and later
+after: or higher
+after: or above
+after: or newer
+after: and above
+after: and newer
+after: fixes
+after: fixed
+after: patches
+after: patched
+after: resolves
+after: trở lên
+after: tro len
+in_use: associated with
+in_use: affected
+in_use: affects
+in_use: vulnerable
+in_use: in use
+in_use: installed
+in_use: pinned
+in_use: current
+in_use: currently
+in_use: using
+in_use: uses
+in_use: đang dùng
+in_use: dang dung
+in_use: bị ảnh hưởng
+in_use: bi anh huong
+#   one:     "plural = singular", for a sentence left with one version after a fixed one was taken out of its list
+#            ("versions `0.12` are vulnerable" → "version `0.12` is vulnerable")
+one: versions = version
+one: are = is
+one: were = was
+one: các phiên bản = phiên bản
+one: cac phien ban = phien ban

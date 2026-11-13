@@ -62,10 +62,12 @@ impl App {
         if let Some(p) = pr { self.draw_panel(f, p); }
 
         // approval box at the bottom of the chat column
-        let tr = match &self.pending {
-            Some(Pending::Approve(t, s, i, _)) => {
+        let ask = match &self.pending { Some(Pending::Approve(t, s, i, _)) => Some((t.clone(), s.clone(), *i)), _ => None };
+        let tr = match ask {
+            Some((t, s, i)) => {
                 let w = tr.width.saturating_sub(4) as usize;
-                let lines = self.approve_lines(t, s, *i, w);
+                let (lines, top) = self.approve_lines(&t, &s, i, w, tr.height.saturating_sub(3) as usize);
+                self.ascroll = self.ascroll.min(top);
                 let h = (lines.len() as u16 + 2).min(tr.height.saturating_sub(1));
                 let [c, b] = Layout::vertical([Constraint::Min(1), Constraint::Length(h)]).areas(tr);
                 let b = b.inner(Margin { horizontal: 1, vertical: 0 });
@@ -292,7 +294,10 @@ impl App {
     }
 
     /// approval box body: title, optional Write/Edit detail, the choices (`approve_choices`, `sel` highlighted)
-    fn approve_lines(&self, tool: &str, summary: &str, sel: usize, w: usize) -> Vec<Line<'static>> {
+    /// The approval box's lines in at most `max_h` rows, and the furthest its whole command can scroll: the question,
+    /// the call's whole command or code (`tools::FULL_LINE` lines, wrapped, never cut; PgUp / PgDn move through what
+    /// does not fit), its notes, the choices.
+    fn approve_lines(&self, tool: &str, summary: &str, sel: usize, w: usize, max_h: usize) -> (Vec<Line<'static>>, usize) {
         let choices = approve_choices(tool);
         let choice_lines = |out: &mut Vec<Line<'static>>| for (i, (l, _)) in choices.iter().enumerate() {
             let on = i == sel;
@@ -304,7 +309,7 @@ impl App {
         if tool.starts_with(QUESTION) {
             let mut out: Vec<Line<'static>> = summary.lines().map(|l| group(cut(cells(l, st(TITLE).bold()), w))).collect();
             choice_lines(&mut out);
-            return out;
+            return (out, 0);
         }
         let tool = tool.split_once(RULE).map_or(tool, |(t, _)| t);
         let is_out = tool.starts_with(OUTSIDE);
@@ -327,13 +332,31 @@ impl App {
             _ => None,
         };
         if let Some(d) = det { out.push(group(cut(cells(&d, st(DIM)), w))); }
+        // the whole command or code, wrapped to the box (every character shown, none cut)
+        let mark = crate::tools::FULL_LINE;
+        let tw = w.saturating_sub(mark.chars().count()).max(1);
+        let rows: Vec<Line<'static>> = where_.lines().filter_map(|l| l.strip_prefix(mark)).flat_map(|l| {
+            let c = cells(l, st(CODE));
+            let parts: Vec<Cells> = if c.is_empty() { vec![Vec::new()] } else { c.chunks(tw).map(<[_]>::to_vec).collect() };
+            parts.into_iter().map(|p| { let mut r = cells(mark, st(DIM)); r.extend(p); group(r) }).collect::<Vec<_>>()
+        }).collect();
+        let notes = where_.lines().filter(|l| !l.trim().is_empty() && !l.starts_with(mark)).count();
+        let room = max_h.saturating_sub(out.len() + notes + choices.len());
+        let top = if rows.len() > room { rows.len() - room.saturating_sub(1).max(1) } else { 0 };
+        if rows.len() > room && room >= 2 {
+            let from = self.ascroll.min(top);
+            let shown = room - 1;
+            out.extend(rows.iter().skip(from).take(shown).cloned());
+            let hint = format!("lines {}-{} of {} · PgUp / PgDn shows the rest", from + 1, (from + shown).min(rows.len()), rows.len());
+            out.push(group(cut(cells(&hint, st(YELLOW)), w)));
+        } else { out.extend(rows); }
         // the summary's later lines: the outside line (⚠), or a note such as the rule that asked
-        for l in where_.lines().filter(|l| !l.trim().is_empty()) {
+        for l in where_.lines().filter(|l| !l.trim().is_empty() && !l.starts_with(mark)) {
             let warn = is_out && l.starts_with("outside the project");
             out.push(group(cut(cells(&if warn { format!("⚠ {l}") } else { l.to_string() }, if warn { st(YELLOW).bold() } else { st(DIM) }), w)));
         }
         choice_lines(&mut out);
-        out
+        (out, top)
     }
 
     /// wrapped input lines and the cursor (col, row) inside the box
@@ -655,7 +678,7 @@ pub(super) fn render_entry(e: &Entry, w: usize, out: &mut Vec<Line<'static>>) {
             out.push(group(cut(t, w)));
         }
         Entry::Card(c, true) => {
-            out.push(Line::styled("  ◇ state card (ctrl-s to collapse)", st(DIM)));
+            out.push(Line::styled("  ◇ running facts (ctrl-s to collapse)", st(DIM)));
             for l in c.lines().filter(|l| !l.trim().is_empty()) { wrap(cells(&format!("    {l}"), st(DIM)), w, 6, out) }
         }
     }
@@ -690,7 +713,7 @@ fn banner(b: &Banner, w: usize, out: &mut Vec<Line<'static>>) {
     for c in rows { wrap(c, w.max(12) - 4, 9, &mut body); }
     labeled_box("ELISA", "local assistant", body, w, out);
     out.push(Line::styled("  / commands · esc interrupts · ctrl-o edits · /resume past sessions · ctrl-c quits", st(DIM)));
-    out.push(Line::styled("  wheel, ↑↓ (empty input), PgUp/PgDn scroll · ctrl-p/n history · ctrl-s state card · /copy copies the last reply", st(DIM)));
+    out.push(Line::styled("  wheel, ↑↓ (empty input), PgUp/PgDn scroll · ctrl-p/n history · ctrl-s running facts · /copy copies the last reply", st(DIM)));
     out.push(Line::styled("  click Elisa or ctrl-g to poke · /water /feed /play or F2 F3 F4 · idle, and it dozes off", st(DIM)));
 }
 

@@ -501,12 +501,7 @@ pub fn runs_network_tool(cmd: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("elisa-sbx-unit-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        real(&p)
-    }
+    fn tmp(tag: &str) -> crate::testdir::TempDir { crate::testdir::TempDir::real(&format!("sbx-unit-{tag}")) }
 
     #[test]
     fn colima_mode_parses_and_is_the_strictest() {

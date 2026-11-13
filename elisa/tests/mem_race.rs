@@ -3,8 +3,11 @@
 //! turn used to panic in elisa-mem (`text`: index out of bounds, B had rewritten the shared hot files under A), and
 //! the ids both handed out collided. The child process is this test binary run again with `MEM_RACE_CHILD` set.
 use elisa_mem::{Memory, Role};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
+
+mod common;
+use common::TempDir;
 
 fn open(d: &Path) -> Memory {
     let mut m = Memory::open(d).unwrap();
@@ -13,12 +16,7 @@ fn open(d: &Path) -> Memory {
     m
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("elisa-memrace-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+fn tmp(tag: &str) -> TempDir { TempDir::new(&format!("memrace-{tag}")) }
 
 /// Session B (the child process): turns, end of session, a new session, more turns, a compaction, interleaved with
 /// whatever A does at the same time.
@@ -95,5 +93,4 @@ fn two_processes_share_one_memory_store() {
         assert!(r.recall(&q, "/proj/a", 5, false).iter().any(|h| h.text == q), "{q} missing");
     }
     drop(r);
-    let _ = std::fs::remove_dir_all(&d);
 }

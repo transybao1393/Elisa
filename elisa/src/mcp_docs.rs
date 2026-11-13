@@ -503,12 +503,7 @@ fn read_sheet(p: &str, sheet: Option<&str>, range: Option<&str>, cfg: &DocsCfg) 
 mod tests {
     use super::*;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("elisa-docs-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
+    fn tmp(tag: &str) -> crate::testdir::TempDir { crate::testdir::TempDir::new(&format!("docs-{tag}")) }
 
     fn cfg(root: &Path, max_chars: usize) -> DocsCfg { DocsCfg { root: outside::root(root), max_chars } }
 

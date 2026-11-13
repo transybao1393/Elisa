@@ -1,0 +1,30 @@
+# Wordings that say a change was made ("Changed 'buy milk' to 'buy bread'", "has been updated", "Đã đổi …"): after
+# Elisa's own edit, a reply that holds the new text in a sentence with one of these (and no future word,
+# `future_words.txt`) confirms it; any other reply gets Elisa's own line (`repl/turn.rs` `edit_reply_fix`). One wording
+# per line, lowercase, matched as whole words; add a language's wording here, not in code.
+changed
+updated
+replaced
+edited
+fixed
+swapped
+renamed
+done
+now reads
+now says
+is now
+now is
+has been
+have been
+was set
+đã đổi
+da doi
+đã sửa
+da sua
+đã thay
+da thay
+đã cập nhật
+da cap nhat
+xong
+giờ là
+gio la

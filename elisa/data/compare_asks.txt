@@ -1,0 +1,50 @@
+# A choice between two numbers ("which is bigger, 3 GB or 5 GB?"): Elisa picks the one asked for herself
+# (`situation::compare_part`) and a reply naming the other is put right. One section per direction, one wording per
+# line, English and Vietnamese, with and without accents. Only two numbers with the same unit (or none) are
+# compared. moondream:1.8b answered "3 GB". Fix a missed wording by adding it here, not in code.
+
+[bigger]
+bigger
+larger
+greater
+higher
+more
+heavier
+longer
+older
+biggest
+largest
+most
+lớn hơn
+lon hon
+to hơn
+to hon
+nhiều hơn
+nhieu hon
+cao hơn
+cao hon
+dài hơn
+dai hon
+nặng hơn
+nang hon
+
+[smaller]
+smaller
+less
+fewer
+lower
+lighter
+shorter
+younger
+smallest
+least
+nhỏ hơn
+nho hon
+ít hơn
+it hon
+thấp hơn
+thap hon
+ngắn hơn
+ngan hon
+nhẹ hơn
+nhe hon

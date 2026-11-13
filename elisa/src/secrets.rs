@@ -408,6 +408,38 @@ pub fn redact(text: &str) -> (String, usize) {
     replace(text, merge(sp))
 }
 
+/// `text` as shown on screen: each secret (the rules' matches and every value this session has seen, as `redact`)
+/// cut to its first four characters and "…", as the secret scan shows it ("sk-l…").
+pub fn mask_shown(text: &str) -> String {
+    let mut sp = spans(text);
+    let mut s = session();
+    s.add_spans(text, &sp);
+    if !s.is_empty() { sp.extend(s.occurrences(text)); }
+    drop(s);
+    let sp = merge(sp);
+    if sp.is_empty() { return text.to_string(); }
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    for &(a, e, _) in &sp {
+        out.push_str(&text[pos..a]);
+        out.push_str(&mask(&text[a..e]));
+        pos = e;
+    }
+    out.push_str(&text[pos..]);
+    out
+}
+
+/// Every string inside a JSON value masked for the screen in place (`mask_shown`; keys stay).
+pub fn mask_shown_json(v: &mut serde_json::Value) {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => { if !s.is_empty() { let m = mask_shown(s); if m != *s { *s = m; } } }
+        Value::Array(a) => a.iter_mut().for_each(mask_shown_json),
+        Value::Object(o) => o.values_mut().for_each(mask_shown_json),
+        _ => {}
+    }
+}
+
 /// Every string inside a JSON value redacted in place (keys stay); returns the count.
 pub fn redact_json(v: &mut serde_json::Value) -> usize {
     use serde_json::Value;

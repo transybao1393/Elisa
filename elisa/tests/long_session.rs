@@ -24,6 +24,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod common;
+use common::TempDir;
+
 const MAX_CTX: usize = 8192;
 const COMPACT_SYSTEM: &str = "You write short, concrete session notes for an assistant.";
 
@@ -222,17 +225,11 @@ fn summarise(text: &str) -> String {
 
 // ---------- the project and the binary ----------
 
-fn tmpdir(tag: &str) -> PathBuf {
-    static N: AtomicUsize = AtomicUsize::new(0);
-    let d = std::env::temp_dir().join(format!("elisa-long-{}-{}-{}", std::process::id(), tag, N.fetch_add(1, Ordering::SeqCst)));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d.canonicalize().unwrap()
-}
+fn tmpdir(tag: &str) -> TempDir { TempDir::real(&format!("long-{tag}")) }
 
 const WC0: &str = "import sys\nfrom collections import Counter\n\n\ndef count_words(text):\n    return Counter(text.split())\n\n\ndef main(argv):\n    text = open(argv[1]).read()\n    for w, n in count_words(text).items():\n        print(w, n)\n\n\nif __name__ == \"__main__\":\n    main(sys.argv)\n";
 
-fn project(tag: &str) -> PathBuf {
+fn project(tag: &str) -> TempDir {
     let d = tmpdir(tag);
     for p in ["src", "tests", "data", ".elisa"] { std::fs::create_dir_all(d.join(p)).unwrap(); }
     std::fs::write(d.join("src/wc.py"), WC0).unwrap();
@@ -398,7 +395,13 @@ fn print_rows(title: &str, rows: &[Row]) {
 /// widen: a call to a session tool outside the route adds that group, so the tool list only grows.
 fn assert_stable_prefix(reqs: &[&Rec]) {
     let names = |r: &Rec| -> Vec<String> { r.body["tools"].as_array().cloned().unwrap_or_default().iter().filter_map(|t| t["name"].as_str().map(String::from)).collect() };
-    let turn_start = |r: &Rec| msgs(&r.body).last().is_some_and(|m| m["role"] == "user" && m["content"][0]["type"] == "text");
+    // a turn also starts with Elisa's own calls (ids `elisa_…`) and their results already in place after the user text
+    let turn_start = |r: &Rec| {
+        let m = msgs(&r.body);
+        let own = |x: &Value| x["role"] == "assistant" && x["content"].as_array().is_some_and(|c| !c.is_empty() && c.iter().all(|b| b["id"].as_str().is_some_and(|id| id.starts_with("elisa_"))));
+        m.last().is_some_and(|x| x["role"] == "user" && x["content"][0]["type"] == "text")
+            || (m.len() >= 3 && own(&m[m.len() - 2]) && m[m.len() - 3]["role"] == "user" && m[m.len() - 3]["content"][0]["type"] == "text")
+    };
     for (i, w) in reqs.windows(2).enumerate() {
         let (a, b) = (w[0], w[1]);
         if turn_start(b) { continue; }

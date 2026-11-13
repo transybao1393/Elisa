@@ -1,0 +1,37 @@
+# Words of an ask about the present state of the world ("giá vàng hôm nay thế nào?", "population of Iceland these
+# days"): a reply to such an ask that gives a figure (a number of three digits or more, or one with a unit sign: "28°C",
+# "$42") that nothing Elisa holds has (no web or tool result this turn, not her clock or date lines) states a figure
+# from nowhere as today's, and is not shown (`reply_check::live_number_unbacked`: Elisa's `no_live` line of
+# `data/no_answer_lines.txt` instead, offering to search). A clock ask (`data/clock_words.txt`) and an ask with a number
+# of its own (a sum) are never judged. One key per line, "key: wording | wording | …", in an [en] and a [vi] section,
+# with and without accents. Fix a missed wording here, not in code.
+#   now: the words that place the ask in the present (a bare "now" / "giờ" is not one: "now look at flask" orders the
+#        steps, "3 giờ" is an hour). After Elisa's own web search for such an ask, the figure must come from a page she
+#        read, or a snippet dating it today (`repl/turn.rs` `fetch_for_live_figure`), and one dated before today is
+#        said with its date (`live_figure_fix`). The words naming the quantity an ask wants ("population", "dân số")
+#        are the `ask` words of `data/amount_words.txt`, by the kind of value each takes.
+#   updated: the words a page stamps its figures with ("Nguồn: giavang.net … - Cập nhật lúc 05:58 (13/11/2026)",
+#        "Last updated: 13 Nov 2026"): the page's first line holding one with a day written dates the page's lines
+#        that write no day of their own (`repl/turn.rs` `page_stamp`), so a price table on a page updated today is
+#        today's, and an article dated yesterday on it keeps its own day.
+#   currency: the currency an ask in the section's language means by default, as a price sentence writes it ("139
+#        triệu đồng/lượng", "$3,877"). Of two figure sentences as fresh, one in that currency comes first, one in
+#        another language's currency alone ("3.900 USD/ounce" to a Vietnamese ask about gold) last, one naming none
+#        ("SJC Mua 136,000 Bán 139,000") between (`repl/turn.rs` `home_currency`, `LiveFigure::rank`). The only key
+#        read by section: the others count in any language.
+#   aside: the labels of a reading given beside the asked quantity, never in its place: a weather page's "Cảm giác như
+#        24°C" (feels like), "Điểm sương 17°C", a forecast's high and low. A page sentence or reading whose figures all
+#        follow one of these in their clause is an aside: the current reading is the answer ("22°C", "Hiện tại trời âm
+#        u, nhiệt độ mát 22°C") and an aside is given only when the page has nothing else; a reply giving the reading
+#        with an aside labelled beside it ("22°C, cảm giác như 24°C") stands (`repl/turn.rs` `aside_sentence`,
+#        `LiveFigure::rank`, `live_figure_fix`).
+[en]
+now: today | right now | rn | these days | currently | current | at the moment | as of now | as of today | latest | this week | this month | this year | nowadays | tonight | this morning | this evening
+updated: updated | last updated | last update | refreshed | data as of | prices as of | rates as of
+currency: $ | us$ | usd | dollar | dollars | cent | cents
+aside: feels like | feel like | feeling like | real feel | realfeel | apparent temperature | wind chill | heat index | dew point | dewpoint | high | highs | low | lows | max | maximum | min | minimum
+[vi]
+now: hôm nay | hom nay | bây giờ | bay gio | hiện nay | hien nay | hiện tại | hien tai | dạo này | dao nay | lúc này | luc nay | tuần này | tuan nay | tháng này | thang nay | năm nay | nam nay | mới nhất | moi nhat | tối nay | toi nay | sáng nay | sang nay
+updated: cập nhật lúc | cap nhat luc | cập nhật lần cuối | cap nhat lan cuoi | cập nhật ngày | cap nhat ngay | cập nhật vào | cap nhat vao | số liệu lúc | so lieu luc | số liệu ngày | so lieu ngay
+currency: ₫ | đ | vnd | vnđ | đồng | dong | xu
+aside: cảm giác như | cam giac nhu | cảm giác | cam giac | cảm nhận | cam nhan | điểm sương | diem suong | cao nhất | cao nhat | thấp nhất | thap nhat | tối đa | toi da | tối thiểu | toi thieu | lớn nhất | lon nhat | nhỏ nhất | nho nhat

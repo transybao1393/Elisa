@@ -122,7 +122,23 @@ const MAXN: usize = 500; // lines kept per view
 
 fn own(l: &str) -> String { l.chars().take(MAXL).collect() }
 
+/// The panel's view of a tool call (`detail_raw`) as the screen shows it: every secret in its lines masked as the
+/// secret scan shows it ("sk-l…", `secrets::mask_shown`), so a diff or file view never shows a key in full.
 pub(crate) fn detail(name: &str, input: &serde_json::Value, cwd: &std::path::Path) -> Option<Detail> {
+    let m = crate::secrets::mask_shown;
+    let lines = |b: &mut Vec<PL>| for l in b.iter_mut() {
+        match l { PL::Ctx(_, t) | PL::Del(_, t) | PL::Add(_, t) | PL::Note(t) => *t = m(t), PL::Gap => {} }
+    };
+    let mut d = detail_raw(name, input, cwd)?;
+    match &mut d {
+        Detail::View(v) => lines(&mut v.body),
+        Detail::Read(r) => lines(&mut r.body),
+        Detail::Cmd(c) => *c = m(c),
+    }
+    Some(d)
+}
+
+fn detail_raw(name: &str, input: &serde_json::Value, cwd: &std::path::Path) -> Option<Detail> {
     let sv = |k: &str| input.get(k).and_then(|v| v.as_str()).unwrap_or("");
     let num = |k: &str| input.get(k).and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))).map(|v| v as usize);
     let full = cwd.join(sv("path"));
@@ -287,5 +303,37 @@ mod edit_preview_tests {
         assert!(matches!(&tail[..], [PL::Note(t)] if t.contains("line endings")), "{tail:?}");
         let two = edit_body("x\ny\nx\n", "x", "z", true);
         assert!(two.contains(&PL::Add(1, "z".into())) && two.contains(&PL::Add(3, "z".into())), "{two:?}");
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::{detail, Detail, PL};
+
+    fn texts(d: &Detail) -> String {
+        let body = match d { Detail::View(v) => &v.body, Detail::Read(r) => &r.body, Detail::Cmd(c) => return c.clone() };
+        body.iter().map(|l| match l { PL::Ctx(_, t) | PL::Del(_, t) | PL::Add(_, t) | PL::Note(t) => t.clone(), PL::Gap => String::new() })
+            .collect::<Vec<_>>().join("\n")
+    }
+
+    /// A key in a diff, a new file's view or a file read shows masked ("sk-l…"), never in full
+    #[test]
+    fn the_edit_panel_masks_keys() {
+        let key = "sk-live-4f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c";
+        let dir = crate::testdir::TempDir::new("mask-panel");
+        std::fs::write(dir.join("c.toml"), "model = \"m\"\n").unwrap();
+        let cases = [
+            ("write", serde_json::json!({"path": "new.toml", "content": format!("api_key = \"{key}\"\n")})),
+            ("write", serde_json::json!({"path": "c.toml", "content": format!("model = \"m\"\napi_key = \"{key}\"\n")})),
+            ("edit", serde_json::json!({"path": "c.toml", "old": "model = \"m\"", "new": format!("model = \"m\"\napi_key = \"{key}\"")})),
+            ("bash", serde_json::json!({"command": format!("curl -H 'Authorization: Bearer {key}' https://x")})),
+        ];
+        for (name, input) in cases {
+            let t = texts(&detail(name, &input, &dir).unwrap());
+            assert!(!t.contains("4f9a8b7c6d5e") && t.contains("sk-l…"), "{name}: {t}");
+        }
+        std::fs::write(dir.join("k.toml"), format!("api_key = \"{key}\"\n")).unwrap();
+        let t = texts(&detail("read", &serde_json::json!({"path": "k.toml"}), &dir).unwrap());
+        assert!(!t.contains("4f9a8b7c6d5e") && t.contains("sk-l…"), "read: {t}");
     }
 }

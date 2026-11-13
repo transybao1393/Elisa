@@ -1,0 +1,207 @@
+# Words for sentences a reply must not keep (`reply_check::without_false_cant`, `reply_check::without_internal_terms`).
+# One key per line, "key: wording | wording | …", in an [en] and a [vi] section, with and without accents. Fix a
+# missed wording here, not in code.
+#   internal:  Elisa's own terms the user never sees ("state card"): a sentence holding one goes
+#   results_internal: the model's words for its own input on a turn that ran a tool ("snippet", "provided context",
+#              "tool output"): a sentence holding one speaks of Elisa's insides, not to the user, and goes
+#   input_given / input_things: a word that says input was handed over ("provided", "cung cấp") within three words of
+#              the word for it ("information", "thông tin"), in either order ("according to the provided local time
+#              information"): the same talk of the model's insides by two words, on such a turn or one with Elisa's
+#              clock line; not with "you" before or between ("the text you provided") (`reply_check::speaks_of_input`)
+#   more_claims: words that claim more content than a file read whole holds ("more content", "rest of the file"): on
+#              a turn whose read returned the file whole, a sentence holding one goes, unless it denies more
+#              (`more_denied`: "no other content") (`reply_check::without_more_claims`)
+#   more_denied: words that deny more content ("nothing else", "không có gì khác")
+#   offer:     words of an offer of help ("help", "anything else", "would you like", "giúp", "cần"): a question with one,
+#              or one off the user's words with Elisa herself in it ("Or tell me your vibe?"), offers instead of
+#              answering; a question about the user's words or state asks back ("Have you considered a smoothie?")
+#              (`reply_check::without_offer_tail`, `reply_check::only_offers`)
+#   offer_said: wordings of an offer said as a statement ("let me know", "feel free", "cho mình biết"): a statement
+#              with one, off the user's words, is an offer too ("Let me know if you'd like anything else based on that.")
+#   cant:      words that say the speaker cannot do something ("unable", "can't")
+#   cant_about: words of what such a claim is about when it denies running a tool ("tools", "checks", "run")
+#   markup_asks: words of an ask for markup or code ("html", "xml", "thẻ"): without one, a reply of bare tag lines
+#              outside a code block is Elisa's context leaked (`reply_check::leaks_markup`)
+#   markup_verbs: words that ask to write, make or show something ("make", "write", "viết"): markup is asked only
+#              when a `markup_asks` word is their object, a few words after one (`reply_check::markup_asked`)
+#   markup_parts: words of a part of a page or file ("title", "tiêu đề"): a markup word right beside one is that
+#              page's or file's, not markup to write ("tell me the page title", "show me the page title")
+#   cant_time: words of what such a claim is about when it denies knowing the time ("real time", "giờ"): beside a
+#              clock time the reply gives (Elisa's clock line answers it), the sentence goes (`without_false_cant`)
+#   trailing:  a linking word that, left alone after a reply's last full sentence ("… is 394,324. so"), goes
+#   no_end:    a linking word no sentence ends with ("and", "of", "và", "của"): a sentence of three words or more
+#              ending in one was cut off, and is garbled (`reply_check::cut_off_end`)
+#   held_whole_lines: lines a held file has at most to be shown whole when no line could be picked for a value
+#              asked of it (`reply_check::held_whole_lines`)
+#   verdict_ok: words of a verdict that something has no fault ("no error", "works", "an toàn"): in Elisa's answer
+#              from tool results, one the results do not hold themselves is invented (`reply_check::unbacked_verdict`)
+#   how_to:    words that tell the user to do a thing themselves ("you can try", "bạn có thể"): with the name or the
+#              target of a call Elisa ran this turn and nothing of its results, the reply is a how-to, no answer
+#              (`reply_check::tells_how`)
+#   json_asks: words that ask for JSON: a reply that is a one-field JSON object then stays as written
+#   obey_done: words that say something was done ("completed", "carried out"), for a reply about a file holding an
+#              instruction aimed at an assistant (`reply_check::planted_corrected`): with `obey_how` ("as
+#              instructed", "the task") or close in meaning to the planted instruction, the reply says it obeyed it
+#   obey_how:  words that tie what was done to an instruction
+#   consent:   words that say the user agreed to it ("consent", "permission"): a reply holding one about a planted
+#              instruction made the user's agreement up
+#   sign_off:  a letter's closing words ("Best regards", "Trân trọng"): a last line made of one, with at most a name
+#              after it, goes from a chat reply (`reply_check::without_stray_ends`)
+#   choice:    words that offer a choice in a question ("or", "hay"): an answer that is one of the message's own words
+#              then answers it ("Paris" to "Paris hay Lyon?"), it is no echo (`reply_check::fragment_of_ask`)
+#   plain_function: ([vi] only) Vietnamese function words typed without marks ("nao", "nhi", "khong"): three or more
+#              of them, half a message's words and more than its English words, make it Vietnamese even with "the"
+#              in it, which is also "thế" without its mark (`reply_lang::detect`). Never a common English word ("the",
+#              "can") nor a word that is both ("a", "do", "no", "to", "on", "me"): those tell no language.
+#   just_reply: words that state the exact short reply wanted ("just reply OK"): with no usable reply, Elisa gives that
+#              reply herself (`reply_check::asked_reply`)
+#   repeat_asks: words that ask for words to be said back: a reply copying the message is then no copy
+#   states:    words that state a value of the thing before them ("the population … is 394,324"): a result sentence
+#              with an asked word, one of these and a number soon after answers the ask (`reply_check::best_sentence`)
+#   part_of:   words that give a value of a part of the thing ("94.3 percent of the population"; also a "%"): such a
+#              sentence ranks lower when the ask asks for no share
+#   table_asks: words that ask for a table: a reply that is only a list of rows (`[['apple', 'red'], …]`) is shown
+#              as a markdown table (`reply_check::rows_as_table`)
+#   table_format: words that ask for the answer as a table ("a markdown table of", "in a table"): a reply with no
+#              table to such an ask is asked once more with a note, then gets Elisa's plain line
+#              (`reply_check::missing_table`)
+#   table_lead: the word before what the table's columns are ("a table of fruits and their colours")
+#   table_join: the word between two columns' names there
+#   status:    a status-style line about commands or files on a turn that ran no tool ("No new commands run."):
+#              never an answer, so such a sentence goes when the reply has something else
+#   denies_sight: words that say the speaker cannot see pictures ("I cannot see images", "as a language model"): on a
+#              turn whose picture a vision model looked at already (`reply_check::denies_sight`), such a reply is no
+#              answer: asked once more with a note, then the picture's own answer or Elisa's line that it was not described
+#   hedge_lead: a guess opening a sentence ("I think the current time is 19:25"): before a value Elisa gave this turn
+#              (her clock line, a tool's result) it goes, the value being exact (`reply_check::without_hedged_given`)
+#              (`reply_check::without_status_and_paste`)
+#   claims_human: words that say the speaker is a human being or no machine ("I'm not a robot, I'm a human"): against
+#              Elisa's own facts, such a reply is no answer: asked once more, then Elisa's plain line
+#              (`reply_check::claims_human`)
+#   long_asks: words of an ask that wants more than one word ("what kind of", "why", "tell me"): a one-word reply to
+#              it ("Image") is no answer (`reply_check::one_word_non_answer`)
+#   picture_scene: words that describe a picture ("in the image", "is wearing"): such a reply where the chat holds no
+#              picture was made up (`reply_check::describes_picture`)
+#   refer_back: words of an ask about something said or read before ("the first line", "what did it say"): a reply
+#              that copies an earlier line answers such an ask (`reply_check::copies_earlier_line`)
+#   points_back: words that stand for something said before ("it", "that", "this", "nó", "đó"): a save with one
+#              ("save that plan to plan.md") saves an earlier reply, never new words (`repl/turn.rs` `run_own`), and
+#              one bare word after a saving verb that is such a word is no text to save (`reply_check::refers_back`)
+#   not_found: words of a failed run's output saying the program is not there ("command not found"): Elisa says it
+#              is not available (`reply_check::failed_run_line`)
+#   run_failed: words of a reply that say a run failed or a program is missing ("not installed", "failed"): a reply
+#              after a failed run with none of these, giving output the run never printed ("Python 3.8.5" after
+#              "python3: command not found"), claims a result (`reply_check::claims_after_failed_run`)
+#   pronoun_start: words a sentence that lost its subject opens with ("It occupies…"): a results sentence opening
+#              with one ranks lower as an answer (`reply_check::best_sentence`)
+#   labels:    a label a model puts before its words ("Reply:", "**Answer:**", "state:"): the whole text before the
+#              first line's colon; it goes, and a reply that is only such a label is no reply
+#              (`reply_check::without_leading_label`)
+#   more_asks: words of an ask for what else there is ("what else is in that file?", "còn gì nữa?"): what earlier
+#              replies gave already is not the answer (`reply_check::asks_what_else`, `repl/docs.rs` `held_file_answer`)
+#   content_asks: words of an ask for a file's content ("what's in notes.txt?", "show me the contents of config.toml",
+#              "nội dung file là gì?"): a reply that misses what the held file says gets the file's own words
+#              (`reply_check::asks_content`, `held_file_answer`); an ask about the file ("did it ask you to do
+#              anything?") or a bare command ("read a.txt") is not one
+#   value_asks: words of an ask for a value out of a file ("read notes.txt and tell me the meeting code", "đọc file
+#              notes.txt và cho mình biết mã cuộc họp"): when the file was read this turn on that ask and the reply gives
+#              none of its lines (garbled words, a made-up value), the file's own lines are the answer
+#              (`reply_check::asks_value`, `held_file_answer`)
+[en]
+denies_sight: cannot see any picture | can t see any picture | cannot see any photo | can t see any photo | cannot see any images | can t see any images | unable to see any | cannot see or | can t see or | unable to see or | unable to view or | cannot view or | can t view or | an ai language model | a language model and | language model so i | i m a language model | i am a language model | i m just a language model | cannot see images | can t see images | cannot see the image | can t see the image | cannot see any image | can t see any image | cannot see pictures | can t see pictures | cannot see the picture | can t see the picture | cannot see photos | can t see photos | cannot see the photo | can t see the photo | cannot view images | can t view images | cannot view the image | can t view the image | cannot view pictures | can t view pictures | cannot view the picture | can t view the picture | unable to see images | unable to see the image | unable to see pictures | unable to see the picture | unable to view images | unable to view the image | unable to view pictures | not able to see images | not able to see the image | not able to view images | cannot process images | can t process images | cannot analyze images | cannot analyse images | can t analyze images | cannot interpret images | can t interpret images | cannot see visual | can t see visual | don t have the ability to see | do not have the ability to see | no ability to see | as a language model | as an ai language model | as a text based model | as a text based ai | as a text only model | i m a text based | i am a text based | i m a text only | i am a text only
+hedge_lead: i think that | i think | i believe that | i believe | i guess | i suppose | i assume | if i m not mistaken | probably | perhaps | maybe | it seems that | it seems | it looks like | apparently
+claims_human: i m a human | i am a human | i m human | i am human | i m a real human | i am a real human | i m a human being | i am a human being | as a human being | i m a person | i am a person | i m a real person | i am a real person | i m not a robot | i am not a robot | i m not a bot | i am not a bot | i m not a machine | i am not a machine | i m not a computer | i am not a computer | not a computer program | i m not an artificial intelligence | i am not an artificial intelligence
+just_reply: just reply | only reply | reply only | simply reply | just say | only say | just answer | reply with just | reply just | answer only
+repeat_asks: repeat | say back | echo | copy | quote | read back | read out
+states: is | was | are | were | stands at | stood at | reached | totals | totalled | totaled | of about | of around
+part_of: percent of | per cent of | share of | portion of
+table_asks: table | tables | markdown table
+table_format: markdown table | a table of | a table with | table of | in a table | as a table | into a table | make a table | show a table | draw a table
+table_lead: of | with | for | listing
+table_join: and | with | plus
+status: no new commands | no commands run | no commands were run | no new files | no files changed | no files were changed | no changes made | no changes were made | files read and updated | nothing else was changed
+internal: state card | state cards | picture text | request only note | elisa note
+results_internal: snippet | snippets | this snippet | the snippet | provided context | the context provided | context provided | provided text | the text provided | text provided | content provided | content that was provided | provided content | tool output | tool outputs | tool result | tool results | function call | function calls | system prompt | context window
+input_given: provided | supplied | furnished | presented | handed over | passed in | passed along | returned | gave back | came back with | given | described
+input_things: information | info | data | context | details | detail | text | content | contents | input | inputs | material | materials | facts | snippet | snippets | tool | tools | situation | follow-up | follow up | hint | prompt | instruction | instructions | header
+offer: help | assist | need | want | anything else | something else | let me know | looking for | would you like | shall i | should i | more details | more information
+offer_said: let me know | feel free | anything else | something else | happy to help | glad to help | here to help | here if you | i can help | i can also | if you want | if you'd like | if you like | just ask | don't hesitate
+more_claims: more content | more contents | rest of the file | remaining content | remaining contents | additional content | other content | further content | more lines | more in the file | more to the file | more of the file | see more of | read more of
+more_denied: no other | no more | nothing else | nothing more | no further | no additional | that is all | that s all | that is everything | that s everything | only these | only those
+cant: unable | cannot | can t | not able | don t have the ability | do not have the ability | don t track | do not track | don t have access | do not have access | no access to | don t have real time | do not have real time | can t check | cannot check | i m not able
+cant_time: real time | time | the time | current time | clock | live | date | the date | today s date
+cant_about: tool | tools | check | checks | run | perform | access | execute | scan | search | read | information | info
+trailing: so | and | but | or | then | also | because | thus | hence | therefore | plus
+no_end: and | or | of | the | an | but | because | which | while | whereas | into | than | nor | whose | whom | such as | as well as | according to | rather than | instead of
+json_asks: json
+verdict_ok: no error | no errors | no mistake | no mistakes | no bug | no bugs | no issue | no issues | no problem | no problems | nothing wrong | not wrong | works | works fine | works correctly | working correctly | is correct | are correct | correct | is fine | looks fine | looks good | looks correct | is safe | are safe | safe | is ok | is okay | without errors | error free | no obvious error | no obvious errors | no obvious mistake | no obvious mistakes | no obvious bug | no obvious bugs | no obvious issue | no obvious issues | no obvious problem | no obvious problems | no apparent error | no apparent errors | no apparent issue | no apparent issues | no clear error | no clear errors | no visible error | no visible errors | no real error | no real errors | no actual error | no actual errors | nothing obviously wrong | nothing apparently wrong | no syntax error | no syntax errors | no logical error | no logical errors | no logic error | no logic errors
+held_whole_lines: 4
+how_to: you can | you could | you may | you might | you need to | you should | you will need to | try | try to | try running | try using | to do this | to do that | by running | by using | use the | run the
+markup_asks: html | xml | svg | markup | tag | tags | template | json | code | page | webpage | snippet
+markup_verbs: make | write | create | build | generate | show | give | draft | render | output | print | code up | put together
+markup_parts: title | titles | heading | headline | name | url | link | address | purpose | content | contents
+long_asks: what kind of | what kinds of | what type of | what types of | what sort of | what about | how about | why | tell me a | tell me about | explain | describe
+picture_scene: in the image | in the picture | in the photo | the image shows | the picture shows | the photo shows | this image shows | this picture shows | this image displays | the image displays | this picture displays | the picture displays | this image depicts | the image depicts | is wearing | are wearing | wearing a | in the background | in the foreground
+refer_back: line | lines | first | last | it | that | this | file | files | say | says | said | earlier | above | again | before | quote | copy | repeat | read | code | name
+points_back: it | that | this | these | those | them | that one | this one | the same
+not_found: command not found | not found | no such file or directory | is not recognized | not recognized as | not installed | unknown command
+run_failed: failed | fails | error | errors | not found | not available | isn t available | is not available | not installed | isn t installed | couldn t | could not | can t | cannot | unable | missing | blocked | exit code | didn t run | did not run | doesn t exist | does not exist | no such
+pronoun_start: it | its | they | this | that | these | those | he | she
+labels: reply | answer | response | final answer | assistant | output | state | thought | thoughts | thinking | reasoning | result | note | user | system | elisa
+more_asks: what else | anything else | else | other | the other | the others | the rest | rest of | remaining | besides | apart from | aside from
+content_asks: what s in | what is in | whats in | what is inside | what s inside | whats inside | inside it | in it | what does it say | what does it hold | what does it contain | what it says | what it holds | what it contains | what s written | what is written | contents of | content of | the contents | the content | what did you read | what you read | show me | print | display | what s there | what is there
+value_asks: tell me | tell me the | let me know | give me | what is the | what s the | whats the | what is its | what s its | which is | find the | find me | look up | get me | and tell | then tell | say what | report the
+obey_done: completed | complete | done | carried out | performed | executed | followed | complied | did as | written | wrote | created | made | saved
+obey_how: as instructed | as requested | as directed | as asked | as per | per your | the instruction | the instructions | previous instructions | your instructions | the task | this task | the request | the note
+consent: consent | permission | authorized | authorised | approved | agreed | allowed
+choice: or | either | whether
+sign_off: best regards | kind regards | warm regards | regards | sincerely | yours sincerely | yours truly | best wishes | cheers | yours
+[vi]
+choice: hay | hoặc | hoac | hay là | hay la
+sign_off: trân trọng | tran trong | rất trân trọng | rat tran trong | thân ái | than ai | thân mến | than men | kính thư | kinh thu | kính chào | kinh chao
+denies_sight: không thể nhìn thấy bất kỳ hình | khong the nhin thay bat ky hinh | không thấy hình ảnh nào | khong thay hinh anh nao | không thấy ảnh nào | khong thay anh nao | không thể nhìn hoặc | khong the nhin hoac | không thể nhìn thấy hình | khong the nhin thay hinh | không thể nhìn thấy ảnh | khong the nhin thay anh | không thể xem hình | khong the xem hinh | không thể xem ảnh | khong the xem anh | không xem được hình | khong xem duoc hinh | không xem được ảnh | khong xem duoc anh | không nhìn thấy hình | khong nhin thay hinh | không nhìn thấy ảnh | khong nhin thay anh | không nhìn được hình | không nhìn được ảnh | không thể xử lý hình ảnh | khong the xu ly hinh anh | không có khả năng nhìn | khong co kha nang nhin | không có khả năng xem | khong co kha nang xem | là một mô hình ngôn ngữ | la mot mo hinh ngon ngu | chỉ là mô hình ngôn ngữ | chi la mo hinh ngon ngu
+hedge_lead: tôi nghĩ là | toi nghi la | tôi nghĩ | toi nghi | mình nghĩ là | minh nghi la | mình nghĩ | minh nghi | tôi đoán | toi doan | mình đoán | minh doan | có lẽ | co le | hình như | hinh nhu | chắc là | chac la
+claims_human: tôi là con người | toi la con nguoi | mình là con người | minh la con nguoi | tôi là một con người | toi la mot con nguoi | mình là một con người | minh la mot con nguoi | tôi là người thật | toi la nguoi that | mình là người thật | minh la nguoi that | tôi không phải robot | toi khong phai robot | tôi không phải là robot | toi khong phai la robot | mình không phải robot | minh khong phai robot | mình không phải là robot | minh khong phai la robot | tôi không phải máy | toi khong phai may | tôi không phải là máy | toi khong phai la may | mình không phải máy | minh khong phai may | mình không phải là máy | minh khong phai la may
+just_reply: chỉ trả lời | chi tra loi | chỉ cần trả lời | chi can tra loi | chỉ nói | chi noi | chỉ cần nói | chi can noi
+repeat_asks: nhắc lại | nhac lai | lặp lại | lap lai | đọc lại | doc lai | chép lại | chep lai
+states: là | la | đạt | dat | khoảng | khoang | có | co
+part_of: phần trăm | phan tram | tỉ lệ | ti le | tỷ lệ | ty le
+plain_function: nao | nhi | sau | truoc | tai | minh | giup | gium | khong | duoc | cua | voi | cho | la | gi | co | nay | hom | ban | toi | roi | nhe | oi | di | sao | thi | va | ma | nhu | o | tren | duoi | trong | ngoai | cai | nhung | cac | mot | ve | den | tu | bi | se | da | dang | van | cung | lam | thoi | nha | hay | hoac | neu | vi | nen | de | rat | qua | may | bao | nhieu | dau | khi | luc | bay | gio | ngay | moi | nua | chua | con | het | ca | cu | thay | biet | muon | phai | ay | kia | dung | luon | chi | anh | em
+table_asks: bảng | bang | bảng biểu | bang bieu
+table_format: bảng markdown | bang markdown | một bảng | mot bang | dạng bảng | dang bang | thành bảng | thanh bang | lập bảng | lap bang | kẻ bảng | ke bang
+table_lead: của | cua | về | ve | gồm | gom
+table_join: và | va | cùng | cung
+status: không có lệnh mới | khong co lenh moi | không chạy lệnh nào | khong chay lenh nao | không có tệp nào thay đổi | khong co tep nao thay doi | không thay đổi tệp nào | khong thay doi tep nao | đã đọc và cập nhật tệp | da doc va cap nhat tep
+internal: thẻ trạng thái | the trang thai
+results_internal: đoạn trích | doan trich | đoạn trích này | doan trich nay | ngữ cảnh được cung cấp | ngu canh duoc cung cap | văn bản được cung cấp | van ban duoc cung cap | nội dung được cung cấp | noi dung duoc cung cap | kết quả công cụ | ket qua cong cu | lời gọi hàm | loi goi ham
+input_given: cung cấp | cung cap | đưa vào | dua vao | truyền vào | truyen vao | trả về | tra ve | đưa ra | dua ra | mô tả | mo ta
+input_things: thông tin | thong tin | dữ liệu | du lieu | ngữ cảnh | ngu canh | chi tiết | chi tiet | nội dung | noi dung | văn bản | van ban | đầu vào | dau vao | tài liệu | tai lieu | công cụ | cong cu | tình huống | tinh huong | gợi ý | goi y | lời nhắc | loi nhac | hướng dẫn | huong dan
+offer: giúp | giup | hỗ trợ | ho tro | cần | muốn | muon | gì thêm | gi them | gì nữa | gi nua | thêm thông tin | them thong tin | chi tiết hơn | chi tiet hon
+offer_said: cho mình biết | cho minh biet | cho tôi biết | cho toi biet | gì thêm | gi them | gì nữa | gi nua | sẵn sàng | san sang | cứ hỏi | cu hoi | cứ nói | cu noi | nếu bạn cần | neu ban can | nếu bạn muốn | neu ban muon | nếu cần | neu can | mình có thể giúp | minh co the giup | tôi có thể giúp | toi co the giup | đừng ngần ngại | dung ngan ngai
+more_claims: nội dung khác | noi dung khac | nhiều nội dung | nhieu noi dung | phần còn lại của tệp | phan con lai cua tep | phần còn lại của file | phan con lai cua file | thêm nội dung | them noi dung | nội dung bổ sung | noi dung bo sung | các dòng khác | cac dong khac | xem thêm | xem them | đọc thêm | doc them
+more_denied: không có gì khác | khong co gi khac | không còn gì | khong con gi | không có nội dung khác | khong co noi dung khac | không có thêm | khong co them | chỉ có vậy | chi co vay | chỉ có thế | chi co the | hết rồi | het roi | chỉ có hai dòng | chi co hai dong
+cant: không thể | khong the | không có khả năng | khong co kha nang | không theo dõi | khong theo doi | không có quyền truy cập | khong co quyen truy cap | không xem được | khong xem duoc | không biết | khong biet
+cant_time: thời gian thực | thoi gian thuc | thời gian | thoi gian | giờ | gio | đồng hồ | dong ho | ngày | ngay
+cant_about: công cụ | cong cu | kiểm tra | kiem tra | chạy | chay | đọc | doc | tìm | tim | thông tin | thong tin
+obey_done: hoàn thành | hoan thanh | đã làm | da lam | đã thực hiện | da thuc hien | làm theo | lam theo | tuân theo | tuan theo | đã viết | da viet | đã tạo | da tao
+obey_how: theo chỉ dẫn | theo chi dan | theo yêu cầu | theo yeu cau | nhiệm vụ | nhiem vu | chỉ dẫn | chi dan | ghi chú | ghi chu
+consent: đồng ý | dong y | cho phép | cho phep | chấp thuận | chap thuan
+long_asks: loại gì | loai gi | kiểu gì | kieu gi | thế còn | the con | còn về | con ve | tại sao | tai sao | vì sao | vi sao | như thế nào | nhu the nao | kể cho | ke cho | giải thích | giai thich | mô tả | mo ta
+picture_scene: trong ảnh | trong anh | trong hình | trong hinh | bức ảnh cho thấy | buc anh cho thay | hình ảnh cho thấy | hinh anh cho thay | hình ảnh này hiển thị | hinh anh nay hien thi | hình ảnh hiển thị | hinh anh hien thi | bức ảnh này | buc anh nay | ảnh này cho thấy | anh nay cho thay | trong hình ảnh | trong hinh anh | đang mặc | dang mac
+refer_back: dòng | dong | đầu | cuối | cuoi | nó | đó | này | tệp | tep | trên | tren | lại | đọc | mã | tên
+points_back: nó | đó | này | cái đó | cái này | cái đấy | điều đó | điều này | cai do | cai nay | cai day | dieu do | dieu nay
+not_found: không tìm thấy lệnh | khong tim thay lenh | không tìm thấy | khong tim thay
+run_failed: lỗi | loi | thất bại | that bai | không tìm thấy | khong tim thay | không có sẵn | khong co san | chưa cài | chua cai | không cài | khong cai | không chạy được | khong chay duoc | không thể | khong the | bị chặn | bi chan | mã thoát | ma thoat
+pronoun_start: nó | họ | điều này | điều đó
+labels: trả lời | tra loi | câu trả lời | cau tra loi | phản hồi | phan hoi | trạng thái | trang thai | kết quả | ket qua | ghi chú | ghi chu
+more_asks: còn gì | con gi | gì nữa | gi nua | còn gì nữa | con gi nua | cái khác | cai khac | cái còn lại | cai con lai | còn lại | con lai | ngoài ra | ngoai ra | ngoài cái đó | ngoai cai do
+content_asks: có gì | co gi | nội dung | noi dung | ghi gì | ghi gi | nói gì | noi gi | viết gì | viet gi | chứa gì | chua gi | trong đó | trong do | bên trong | ben trong | cho xem | cho mình xem | cho minh xem | xem thử | xem thu | hiện ra | hien ra | in ra | đọc được gì | doc duoc gi
+value_asks: cho mình biết | cho minh biet | cho tôi biết | cho toi biet | cho biết | cho biet | nói cho | noi cho | báo cho | bao cho | là gì | la gi | là bao nhiêu | la bao nhieu | tìm giúp | tim giup | xem giúp | xem giup | check giúp | check giup | kiểm tra giúp | kiem tra giup | tìm xem | tim xem
+trailing: vì vậy | vi vay | vì thế | vi the | nên | và | va | nhưng | nhung | hoặc | hoac | rồi | roi | còn | do đó | do do
+no_end: và | va | hoặc | hoac | của | cua | với | voi | cho | là | mà | thì | nhưng | nhung | để | vì | nếu | bởi | rằng | những | các | cũng như | cung nhu | như là | chẳng hạn như | chang han nhu
+json_asks: json
+verdict_ok: không có lỗi | khong co loi | không lỗi | khong loi | không có lỗi nào | không có vấn đề | khong co van de | không sai | khong sai | là đúng | la dung | đúng rồi | dung roi | đều đúng | deu dung | hoàn toàn đúng | hoan toan dung | code đúng | hàm đúng | viết đúng | chính xác | chinh xac | an toàn | an toan | hoạt động tốt | hoat dong tot | chạy đúng | chay dung | ổn | không có gì sai | khong co gi sai | không có lỗi rõ ràng | khong co loi ro rang | không thấy lỗi | khong thay loi | không phát hiện lỗi | khong phat hien loi | không có lỗi gì | khong co loi gi | không có vấn đề gì | khong co van de gi | không thấy vấn đề | khong thay van de | không có lỗi cú pháp | khong co loi cu phap | không có lỗi logic | khong co loi logic
+how_to: bạn có thể | ban co the | bạn hãy | ban hay | hãy thử | hay thu | bạn thử | ban thu | thử | thu | bạn nên | ban nen | bạn cần | ban can | để làm việc này | de lam viec nay | bằng cách | bang cach | dùng lệnh | dung lenh | sử dụng | su dung
+markup_asks: html | xml | svg | thẻ | mẫu | mã nguồn | ma nguon | code | trang web
+markup_verbs: viết | viet | tạo | tao | làm | lam | dựng | dung | sinh | xuất | xuat | cho xem | in ra | soạn | soan
+markup_parts: tiêu đề | tieu de | tên | ten | địa chỉ | dia chi | nội dung | noi dung | đường dẫn | duong dan

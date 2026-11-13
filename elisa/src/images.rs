@@ -781,20 +781,16 @@ pub fn cli(args: &[String]) -> i32 {
 mod tests {
     use super::*;
 
-    fn dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("elisa-images-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+    fn dir(tag: &str) -> crate::testdir::TempDir {
+        let d = crate::testdir::TempDir::new(&format!("images-{tag}"));
         std::fs::create_dir_all(d.join(".git")).unwrap();
         d
     }
 
     fn pick(lang: &str, files: &[(&str, &str)]) -> Choice {
-        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let d = dir(&format!("{lang}-{}", N.fetch_add(1, Ordering::Relaxed)));
+        let d = dir(lang);
         for (f, t) in files { std::fs::write(d.join(f), t).unwrap(); }
-        let c = resolve(lang, None, Some(&d), &|_| false).unwrap();
-        let _ = std::fs::remove_dir_all(&d);
-        c
+        resolve(lang, None, Some(d.path()), &|_| false).unwrap()
     }
 
     #[test]
@@ -892,7 +888,6 @@ mod tests {
         assert_eq!(resolve("go", None, Some(&sub), &|_| false).unwrap().from, "../../go.mod");
         assert!(uses("go", &sub) && !uses("rust", &sub));
         assert_eq!(project_images(&sub, &|_| false).iter().map(|i| i.image).collect::<Vec<_>>(), ["python:3.14-alpine", "golang:1.27-alpine"]);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -906,8 +901,7 @@ mod tests {
         // an explicit version beats the project's
         let d = dir("explicit");
         std::fs::write(d.join(".python-version"), "3.13\n").unwrap();
-        assert_eq!(resolve("python", Some("3.14"), Some(&d), &|_| false).unwrap().img.image, "python:3.14-alpine");
-        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(resolve("python", Some("3.14"), Some(d.path()), &|_| false).unwrap().img.image, "python:3.14-alpine");
     }
 
     #[test]
@@ -915,12 +909,12 @@ mod tests {
         let d = dir("present");
         let old = |i: &Img| ["python:3.13-alpine", "node:22-alpine", "rust:1.91-alpine", "bash:5.2"].contains(&i.image);
         // nothing declared: the newest present line, with a once-per-session hint when it is not stable
-        let c = resolve("python", None, Some(&d), &old).unwrap();
+        let c = resolve("python", None, Some(d.path()), &old).unwrap();
         assert_eq!((c.img.image, c.from.as_str(), c.fallback, c.note.as_deref()), ("python:3.13-alpine", "present", None, None));
         assert_eq!(c.hint.as_deref(), Some("using python 3.13 (on this Mac); stable is 3.15, /sandbox pull python to get it"));
         assert_eq!(resolve("bash", None, None, &old).unwrap().img.image, "bash:5.2");
         // nothing present: stable (the download is offered), no hint
-        let c = resolve("go", None, Some(&d), &old).unwrap();
+        let c = resolve("go", None, Some(d.path()), &old).unwrap();
         assert_eq!((c.img.image, c.hint, c.fallback), ("golang:1.27-alpine", None, None));
         // stable present: no hint
         assert_eq!(resolve("python", None, None, &|i: &Img| i.lang == "python").unwrap().hint, None);
@@ -928,25 +922,24 @@ mod tests {
         assert_eq!(default_line("rust", &|_| false).image, "rust:1.99-alpine");
         // a project minimum: the newest line that fits (asked for), the newest present one that fits on a no
         std::fs::write(d.join("Cargo.toml"), "[package]\nname='x'\nrust-version = \"1.80\"\n").unwrap();
-        let c = resolve("rust", None, Some(&d), &old).unwrap();
+        let c = resolve("rust", None, Some(d.path()), &old).unwrap();
         assert_eq!((c.img.image, c.fallback.map(|i| i.image), c.from.as_str()), ("rust:1.99-alpine", Some("rust:1.91-alpine"), "Cargo.toml"));
         std::fs::write(d.join("Cargo.toml"), "[package]\nname='x'\nrust-version = \"1.95\"\n").unwrap();
-        assert_eq!(resolve("rust", None, Some(&d), &old).unwrap().fallback, None, "1.91 does not meet 1.95");
+        assert_eq!(resolve("rust", None, Some(d.path()), &old).unwrap().fallback, None, "1.91 does not meet 1.95");
         // the declared line present: used, nothing to ask
         std::fs::write(d.join(".python-version"), "3.13\n").unwrap();
-        let c = resolve("python", None, Some(&d), &old).unwrap();
+        let c = resolve("python", None, Some(d.path()), &old).unwrap();
         assert_eq!((c.img.image, c.fallback, c.hint), ("python:3.13-alpine", None, None));
         std::fs::write(d.join(".python-version"), "3.14\n").unwrap();
-        assert_eq!(resolve("python", None, Some(&d), &old).unwrap().fallback, None, "an exact pin has no other line");
+        assert_eq!(resolve("python", None, Some(d.path()), &old).unwrap().fallback, None, "an exact pin has no other line");
         // a pin outside the list: the present line, with the note
         std::fs::write(d.join(".python-version"), "3.9\n").unwrap();
-        let c = resolve("python", None, Some(&d), &old).unwrap();
+        let c = resolve("python", None, Some(d.path()), &old).unwrap();
         assert_eq!(c.img.image, "python:3.13-alpine");
         assert_eq!(c.note.as_deref(), Some("project asks for Python 3.9 (.python-version); using 3.13 (on this Mac), the oldest supported here is 3.13"));
         // an explicit range: the same rule
         let c = resolve("javascript", Some(">=22"), None, &old).unwrap();
         assert_eq!((c.img.image, c.fallback.map(|i| i.image)), ("node:26-alpine", Some("node:22-alpine")));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -996,6 +989,5 @@ mod tests {
         l.set("bash:5.3", &Local { id: "sha256:aaa".into(), bytes: 1, digest: Some("bash@sha256:bbb".into()) });
         l.save(&h).unwrap();
         assert_eq!(Lock::load(&h).get("bash:5.3").as_deref(), Some("bash@sha256:bbb"));
-        let _ = std::fs::remove_dir_all(&h);
     }
 }

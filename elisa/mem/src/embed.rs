@@ -9,8 +9,16 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
+use unicode_normalization::UnicodeNormalization;
+use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 pub const DIM: usize = 384;
+/// How `embed` normalises text before the word pieces, noted beside every store of its vectors (`elisa-mem`'s
+/// `vectors.ver`, Elisa's document cache keys), so vectors made under another normalisation never mix with new ones.
+/// 1: lowercased, Latin-1 accents folded, every other mark kept (a Vietnamese letter with a tone mark was `[UNK]`,
+/// so "chạy lệnh" and "đọc ảnh" embedded alike). 2: lowercased, decomposed (NFD) and every nonspacing mark removed,
+/// in any script, as the model's own BERT normaliser reads text.
+pub const TEXT_NORM_VERSION: u32 = 2;
 const LAYERS: usize = 6;
 const HEADS: usize = 12;
 const FF: usize = 1536;
@@ -152,12 +160,12 @@ impl Vocab {
         let unk = self.id("[UNK]").unwrap_or(100);
         let mut out = vec![self.id("[CLS]").unwrap_or(101)];
         let mut norm = String::with_capacity(text.len());
-        for c in text.chars() {
+        for c in folded(text) {
             if c == '\0' || c == '\u{fffd}' || (c.is_control() && !c.is_whitespace()) { continue }
             if c.is_whitespace() { norm.push(' '); continue }
             let cjk = matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0x20000..=0x2A6DF | 0xF900..=0xFAFF | 0x2F800..=0x2FA1F);
             if cjk || c.is_ascii_punctuation() || (!c.is_ascii() && !c.is_alphanumeric()) { norm.push(' '); norm.push(c); norm.push(' '); continue }
-            for l in c.to_lowercase() { norm.push(strip_accent(l)) }
+            norm.push(c);
         }
         'w: for w in norm.split(' ').filter(|w| !w.is_empty()) {
             if out.len() >= MAX_TOK - 1 { break }
@@ -182,11 +190,12 @@ impl Vocab {
         out
     }
 }
-fn strip_accent(c: char) -> char {
-    match c {
-        'à'..='å' => 'a', 'ç' => 'c', 'è'..='ë' => 'e', 'ì'..='ï' => 'i', 'ñ' => 'n', 'ò'..='ö' | 'ø' => 'o', 'ù'..='ü' => 'u', 'ý' | 'ÿ' => 'y',
-        _ => c,
-    }
+/// `text` as the model's BertNormalizer (lowercase, strip_accents) reads it: lowercased, decomposed (NFD) and without
+/// its nonspacing marks (Unicode Mn: accents, Vietnamese tone marks, the breve, circumflex and horn of ă â ơ ư), so
+/// "lệnh" reads "lenh" and "Việt" "viet", in any script. "đ" carries no mark and stays: the vocabulary has it ("đ",
+/// "##đ"). Lowercasing comes first, so a mark it adds (İ → i̇) goes too. (`TEXT_NORM_VERSION`)
+fn folded(text: &str) -> impl Iterator<Item = char> + '_ {
+    text.chars().flat_map(char::to_lowercase).nfd().filter(|c| c.general_category() != GeneralCategory::NonspacingMark)
 }
 
 // ---------- safetensors, read tensor by tensor ----------
@@ -450,4 +459,60 @@ pub fn embed(dir: &Path, vocab_cache: &Path, texts: &[&str], progress: &mut dyn 
     crate::trim_heap();
     if std::env::var_os("ELISA_MEM_DEBUG").is_some() { eprintln!("embed: {} texts {:.1} ms rss {:.1} MB", texts.len(), t0.elapsed().as_secs_f64() * 1e3, rss_mb()) }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tokenizer_tests {
+    use super::*;
+
+    /// a vocabulary table of one test of this process (its own: the tests run at once and remove theirs with `done`)
+    fn vocab_cache(tag: &str) -> PathBuf { std::env::temp_dir().join(format!("elisa-mem-test-vocab-{tag}-{}.bin", std::process::id())) }
+    /// None without the model
+    fn vocab(tag: &str) -> Option<Vocab> { Vocab::open(&model_dir()?.join("tokenizer.json"), &vocab_cache(tag)).ok() }
+    fn done(tag: &str) { let _ = std::fs::remove_file(vocab_cache(tag)); }
+
+    /// The normalisation needs no model: marks go in every script, "đ" stays, ASCII text is only lowercased.
+    #[test]
+    fn folding_strips_marks_of_any_script_and_keeps_ascii() {
+        let f = |s: &str| folded(s).collect::<String>();
+        assert_eq!(f("chạy lệnh"), "chay lenh");
+        assert_eq!(f("Đọc ảnh, viết thơ"), "đoc anh, viet tho");
+        assert_eq!(f("Việt Nam ơi, ưu tiên"), "viet nam oi, uu tien");
+        assert_eq!(f("café naïve Ångström"), "cafe naive angstrom");
+        // a decomposed input (a + combining dot below) reads as the precomposed letter
+        assert_eq!(f("a\u{0323}"), "a");
+        let ascii = "Run the tests in src/main.rs, then read notes.txt!";
+        assert_eq!(f(ascii), ascii.to_lowercase());
+    }
+
+    /// With the model's vocabulary: Vietnamese phrases that tokenised alike (every marked letter `[UNK]`) get their own
+    /// word pieces, and ASCII and Latin-1 sentences tokenise as before (the ids of the earlier tokenizer).
+    #[test]
+    fn vietnamese_gets_word_pieces_and_ascii_is_unchanged() {
+        let Some(v) = vocab("pieces") else { return };
+        let unk = v.id("[UNK]").unwrap();
+        let (a, b, c) = (v.encode("chạy lệnh"), v.encode("đọc ảnh"), v.encode("viết thơ"));
+        assert!(a != b && b != c && a != c, "{a:?} {b:?} {c:?}");
+        for t in [&a, &b, &c] { assert!(!t.contains(&unk) && t.len() > 3, "{t:?}"); }
+        assert_eq!(v.encode("Run the tests in src/main.rs, then read notes.txt!"),
+            [101, 2448, 1996, 5852, 1999, 5034, 2278, 1013, 2364, 1012, 12667, 1010, 2059, 3191, 3964, 1012, 19067, 2102, 999, 102]);
+        assert_eq!(v.encode("café naïve"), [101, 7668, 15743, 102]);
+        drop(v);
+        done("pieces");
+    }
+
+    /// Embedded: a Vietnamese pair of one meaning scores well above an unrelated pair (a shell ask and a web ask, each
+    /// in two wordings, against a poem ask), and the two phrases that embedded as one (cosine 0.9999993) are apart.
+    #[test]
+    fn vietnamese_meaning_reaches_the_embedding() {
+        let Some(dir) = model_dir() else { return };
+        let texts = ["chạy lệnh echo xin chào", "thực thi lệnh echo xin chào", "tìm trên mạng giá vàng hôm nay", "tra cứu trên internet giá vàng hôm nay",
+            "viết một bài thơ về mùa thu", "chạy lệnh", "đọc ảnh"];
+        let v = embed(&dir, &vocab_cache("meaning"), &texts, &mut |_| {}).unwrap();
+        let cos = |a: usize, b: usize| v[a].iter().zip(&v[b]).map(|(x, y)| x * y).sum::<f32>();
+        assert!(cos(0, 1) > cos(0, 4) + 0.3 && cos(0, 1) > cos(0, 2) + 0.3, "shell ask: same meaning {} vs poem {} vs web {}", cos(0, 1), cos(0, 4), cos(0, 2));
+        assert!(cos(2, 3) > cos(2, 4) + 0.3 && cos(2, 3) > cos(2, 1) + 0.3, "web ask: same meaning {} vs poem {} vs shell {}", cos(2, 3), cos(2, 4), cos(2, 1));
+        assert!(cos(5, 6) < 0.9, "chạy lệnh / đọc ảnh {}", cos(5, 6));
+        done("meaning");
+    }
 }

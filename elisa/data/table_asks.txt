@@ -1,0 +1,69 @@
+# What a question about a table (an attached or read CSV / spreadsheet) asks Elisa to compute
+# (`situation::table_facts`): one section per fact, one wording per line, English and Vietnamese, with and without
+# accents. A question holding a wording of a section gets that fact computed exactly from the table's numbers
+# column (the one it names, else the only one) and given to the model, and a reply with another number is put right
+# (`situation::ReplyFacts`). A small model answered "which region sold the most units?" with the wrong row and
+# "what's the total?" with 1200 for 555. Fix a missed wording by adding it here, not in code.
+#
+# [count] counts rows: only when the question also names the table's label column ("how many regions").
+
+[sum]
+total
+sum
+altogether
+in all
+combined
+overall
+add up
+tổng
+tong
+cộng lại
+cong lai
+tất cả
+tat ca
+
+[max]
+most
+highest
+largest
+biggest
+greatest
+maximum
+max
+top
+best
+nhiều nhất
+nhieu nhat
+cao nhất
+cao nhat
+lớn nhất
+lon nhat
+
+[min]
+least
+lowest
+smallest
+fewest
+minimum
+min
+worst
+ít nhất
+it nhat
+thấp nhất
+thap nhat
+nhỏ nhất
+nho nhat
+
+[average]
+average
+mean
+avg
+trung bình
+trung binh
+
+[count]
+how many
+number of
+bao nhiêu
+bao nhieu
+mấy

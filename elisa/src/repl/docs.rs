@@ -1,5 +1,5 @@
 use super::*;
-use super::agent_loop::{CheckRun, api_error_line};
+use super::agent_loop::CheckRun;
 use super::memory::{is_request, texts};
 
 /// the line after the text of documents attached with this message (request only)
@@ -20,9 +20,13 @@ impl<'f> Session<'f> {
         let after = last.trim() == mine(false) || last.trim() == mine(true);
         // the router's `refused_picture` replaces the word check when it answered; with Elisa's own rules off, a miss
         // leaves only the fact of a picture refused now
+        // (Elisa's rules: words that ask for something else, a file, a URL, a search, any `route::signals` group, and
+        // name no picture are that other ask, a picture refused with them or not: "read note.txt and tell me the word
+        // in it" is about the file)
+        let elsewhere = || !crate::route::signals(context::request_body(input)).is_empty() && !context::picture_words(input, false);
         match self.router_says("refused_picture") {
             Some(asked) => (now || asked).then(|| context::no_picture_text(&model, vi)),
-            None if self.own_rules() => context::no_picture_line(input, &model, vi, now, after),
+            None if self.own_rules() => if elsewhere() { None } else { context::no_picture_line(input, &model, vi, now, after) },
             None => now.then(|| context::no_picture_text(&model, vi)),
         }
     }
@@ -76,7 +80,7 @@ impl<'f> Session<'f> {
     /// turn is about that talk: only a message that names a picture or is close in meaning to what was learned
     /// about it (`context::about_picture_later`), the pictures' answers alone: the ask that brought them ("what is
     /// this?") is close in meaning to any other "what is this …?". The word and meaning checks are Elisa's own rules:
-    /// with them off (`router.rs` `elisa_rules`), only the router's follow-up right after the picture turn.
+    /// with them off (`router.rs` `decision`), only the router's follow-up right after the picture turn.
     fn about_last_pictures(&self, input: &str, next: bool) -> bool {
         let seen = &self.last_pic_seen;
         let rules = self.own_rules();
@@ -151,11 +155,11 @@ impl<'f> Session<'f> {
                 // the server failed on this question (moondream:1.8b: "prediction aborted, token repeat limit
                 // reached" on "Describe this picture in one sentence.", read at once with the plain question): the
                 // next question, or on the turn after, no picture text (that turn's own ask goes on)
-                Err(e) if i < last || !new => self.debug(&format!("[the picture request failed: {}]", api_error_line(&e))),
+                Err(e) if i < last || !new => self.debug(&format!("[the picture request failed: {}]", context::one_line(&e, 200))),
                 Err(e) => {
                     self.acts.end_with(&mut *self.fe, aid, "failed", true);
                     self.unsent = true;
-                    return Err(TurnEnd::Failed(api_error_line(&e)));
+                    return Err(TurnEnd::Failed(self.failed_line(&e)));
                 }
             }
         }
@@ -228,7 +232,11 @@ impl<'f> Session<'f> {
                     self.debug(&format!("[attached {} · {} · ~{} tokens · budget {budget} · {:?} · block ~{} tokens]", d.name, d.units, d.tokens, pick, estimate_tokens(&block)));
                     // the retry block when the reply refuses: the overview (or the same block for a whole text)
                     let retry = if matches!(pick, crate::attach::Pick::Parts(_)) { crate::attach::render(&d, &crate::attach::Pick::Overview, budget) } else { block.clone() };
-                    self.doc_retry = Some((d.name.clone(), retry));
+                    // (every document of the message: the retry gives them all again)
+                    self.doc_retry = Some(match self.doc_retry.take() {
+                        Some((n, b)) => (format!("{n}, {}", d.name), format!("{b}\n\n{retry}")),
+                        None => (d.name.clone(), retry),
+                    });
                     if pick != crate::attach::Pick::Whole { let _ = crate::attach::prefetch_embeddings(&d); }
                     self.docs.push((crate::attach::reference(&d), large));
                     req.push(block);
@@ -388,6 +396,9 @@ impl<'f> Session<'f> {
         let Some(i) = self.topic.doc.filter(|&i| i < self.kept_docs.len()) else { return };
         let q = context::request_body(input).trim().to_string();
         if q.is_empty() || q.starts_with('/') { return; }
+        // (a long text about something else, "Last one, just reply OK: <…>", is not about the document: no text of it)
+        let names = self.kept_docs.iter().map(|k| k.doc.name.clone()).collect::<Vec<_>>().join(", ");
+        if !self.asks_about_docs(&q, &names) { return; }
         let budget = crate::attach::budget(self.max_ctx, self.req_history_tokens());
         let carry = crate::topics::follow_up(&q);
         let k = &mut self.kept_docs[i];
@@ -410,6 +421,16 @@ impl<'f> Session<'f> {
         self.set_doc_req(Some(format!("{block}\n(Only the parts of the document that the message below asks about: answer that message in a few sentences, not with a summary of the whole document.)")));
     }
 
+    /// Whether a message after the documents were attached asks about them (`names`): it names one, is a short
+    /// question or a vague one ("what is this about?"), or shares words with what they hold
+    /// (`DOC_ASK_SHARED_WORDS`). A long text about something else is not.
+    fn asks_about_docs(&self, ask: &str, names: &str) -> bool {
+        let words = |t: &str| t.split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 4).map(str::to_lowercase).collect::<std::collections::HashSet<_>>();
+        let held: String = names.split(", ").filter_map(|n| self.kept_docs.iter().rev().find(|k| k.doc.name == n)).map(|k| k.doc.text.as_str()).collect::<Vec<_>>().join("\n");
+        names.split(", ").any(|n| ask.contains(n)) || ask.split_whitespace().count() <= DOC_ASK_SHORT_WORDS || crate::attach::is_vague(ask)
+            || words(ask).intersection(&words(&held)).count() >= DOC_ASK_SHARED_WORDS
+    }
+
     /// The safety net: a turn that carried document text and got a reply saying it cannot read the document (and
     /// called no tool) is asked once more, the reply replaced, with the overview (or the same text) and one line saying
     /// the text is right there. True when it retried.
@@ -418,7 +439,21 @@ impl<'f> Session<'f> {
         if !self.tool_lines.is_empty() { return None; }
         let n = self.history.len();
         if n < 2 || self.history[n - 1].role != Role::Assistant || self.history[n - 2].role != Role::User { return None; }
-        if !crate::attach::refusal(&texts(&self.history[n - 1])) { return None; }
+        // a refusal, or a reply that asks for or denies what the documents hold (`reply_check::ignores_given`)
+        let ask = context::request_body(&self.input).to_string();
+        // (or, on the turn that attached them, one that says nothing of what they hold besides their names: "Sales and
+        // plan documents." for sales.xlsx and plan.ods)
+        let attached_now = texts(&self.history[n - 2]).contains(crate::attach::MARK);
+        let text_held: String = name.split(", ").filter_map(|n| self.kept_docs.iter().rev().find(|k| k.doc.name == n)).map(|k| k.doc.text.as_str()).collect::<Vec<_>>().join("\n");
+        let held: String = if !attached_now { String::new() } else { text_held.clone() };
+        // (a later message about something else, "Last one, just reply OK: <a long text>", is no ask about the
+        // documents: its reply stands, and Elisa gives no answer from them)
+        if !attached_now && !self.asks_about_docs(&ask, &name) { return None; }
+        // (and a word or two to a question about them that their text never says, "Visual data" about a paper on
+        // K-line data: `reply_check::few_words_of_nothing`)
+        let few = |t: &str| crate::reply_check::few_words_of_nothing(t, &ask, &text_held);
+        let refuses = |t: &str| crate::attach::refusal(t) || crate::reply_check::ignores_given(t, &ask, &block, true) || crate::reply_check::says_nothing_of(t, &ask, &name, &held) || few(t);
+        if !refuses(&texts(&self.history[n - 1])) { return None; }
         self.history.pop();
         self.fe.reply_retracted();
         self.set_doc_req(Some(format!("{block}\nThe document's text above was extracted by Elisa from the attached file: answer from it directly.")));
@@ -426,7 +461,26 @@ impl<'f> Session<'f> {
         let aid = self.acts.begin(&mut *self.fe, &phrase);
         self.acts.end_with(&mut *self.fe, aid, "the reply said it could not read it", false);
         self.debug(&format!("[retry: the reply refused {name}; asked again with its text]"));
-        Some(self.agent_loop(CheckRun::default(), true))
+        let end = self.agent_loop(CheckRun::default(), true);
+        // still refused: Elisa answers from the documents herself (`docs_answer`); a word or two again, with the
+        // sentence of the text that answers the question best (`reply_check::best_sentence`) when one does
+        let last = self.history.last().filter(|m| m.role == Role::Assistant).map(texts);
+        if matches!(end, TurnEnd::Done) && last.as_deref().is_some_and(refuses) {
+            match last.filter(|t| few(t)).and_then(|_| crate::reply_check::best_sentence(&ask, &text_held)) {
+                Some(s) => self.doc_sentence_answer(&name, s),
+                None => self.docs_answer(&name),
+            }
+        }
+        Some(end)
+    }
+
+    /// The last reply, a word or two to a question about the document `name` twice, replaced by the sentence of its
+    /// text that answers the question best.
+    fn doc_sentence_answer(&mut self, name: &str, sentence: String) {
+        self.fe.reply_retracted();
+        if self.interactive { self.fe.text_delta(&sentence); }
+        if let Some(m) = self.history.last_mut().filter(|m| m.role == Role::Assistant) { m.content = vec![Block::Text { text: sentence }]; }
+        self.debug(&format!("[the reply to a question about {name} was a word or two twice; Elisa answered with its text]"));
     }
 
     /// The safety net for a reply that says a file was saved when no write / edit succeeded this turn: one was denied
@@ -498,6 +552,9 @@ impl<'f> Session<'f> {
         }
         if values.is_empty() { return None; }
         let last = self.history.last().filter(|m| m.role == Role::Assistant && m.content.iter().all(|b| matches!(b, Block::Text { .. })))?;
+        // (a line Elisa wrote herself, "Last time you asked: … You live in Hanoi.", says the facts as the user's:
+        // never asked again, `said_own`)
+        if self.is_own_words(&texts(last)) { return None; }
         let mut claimed = context::claimed_user_facts(&texts(last), &values);
         // a value this turn's tool calls or results carry is what the tools searched, wrote or found, not the user's
         // fact taken as Elisa's own ("I found some weather information for Hanoi" after a web search for Hanoi,
@@ -547,4 +604,825 @@ impl<'f> Session<'f> {
         let root = outside::root(&self.cwd);
         outside::resolve(&root, std::path::Path::new(p)).starts_with(crate::attach::upload_dir(&root, context::run_id()))
     }
+
+    // ---------- the prompt said back, false tool claims, figures from nowhere, the held file's own words ----------
+
+    /// Elisa's own text the model saw this turn besides the user's words: her system prompt (less the project's
+    /// instructions) and her clock lines (`context::CLOCK_MARK`: the ones in the conversation's messages, and the
+    /// current one, `context::local_now`, which her time fixes write a reply's clock from on a turn whose message
+    /// carries none). Not the rest of what she put there (a picture's description, a file's content among her facts):
+    /// an answer may well say that back.
+    fn own_turn_text(&self) -> String {
+        let clock: Vec<String> = self.history.iter().filter(|m| is_request(m)).map(texts)
+            .flat_map(|t| t.lines().filter(|l| l.contains(context::CLOCK_MARK)).map(str::to_string).collect::<Vec<_>>()).collect();
+        format!("{}\n{}\n{}", context::own_prompt(&self.system, self.project.as_deref()), clock.join("\n"), context::local_now())
+    }
+
+    /// The words a reply may share with the prompt and still answer (`reply_check::paraphrases_prompt`): the user's
+    /// words of `ask`, and the names and descriptions of every tool Elisa has (an answer about what she can do).
+    fn prompt_allowed(&self, ask: &str) -> String {
+        let tools: Vec<String> = self.tools.iter().cloned().chain(tools::defs()).map(|t| format!("{} {}", t.name, t.description)).collect();
+        format!("{}\n{}", context::request_body(ask), tools.join("\n"))
+    }
+
+    /// Elisa's own names (the one her prompt gives and the model's) when `ask` is about her (`route::about_elisa`: "who
+    /// are you?"): a sentence naming her answers that. To any other question, "I am Elisa, a friendly assistant." is
+    /// her prompt said back, so no name is spared then.
+    fn own_names(&self, ask: &str) -> Vec<String> {
+        if !crate::route::about_elisa(context::request_body(ask)) { return Vec::new(); }
+        crate::reply_check::own_name(&self.system).into_iter().chain([self.client.model().to_string()]).collect()
+    }
+
+    /// Whether this turn asks the clock: `ask` asks the time, the date or the weekday (`situation::asks_clock`), or
+    /// the turn's message carries Elisa's clock line for a place ("and in Tokyo?" after the time:
+    /// `situation::has_place_lines`). Then her clock line is an answer, not an echo.
+    pub(super) fn time_asked(&self, ask: &str) -> bool {
+        crate::situation::asks_clock(context::request_body(ask))
+            || self.history.iter().rev().find(|m| is_request(m)).is_some_and(|m| crate::situation::has_place_lines(&texts(m)))
+    }
+
+    /// Whether `vis` only says Elisa's own prompt or clock line back in other words ("You are a friendly assistant who
+    /// is helping you." to "why is that funny?", her clock line to a question about the price of gold:
+    /// `reply_check::restates_prompt`): no answer.
+    pub(super) fn restates_prompt(&self, vis: &str, ask: &str) -> bool {
+        crate::reply_check::restates_prompt(vis, &self.own_turn_text(), &self.prompt_allowed(ask), &self.own_names(ask), self.time_asked(ask))
+    }
+
+    /// `t` shown in place of the reply (taken back), with `why` in the debug log; `own`: it is Elisa's own line
+    /// (`said_own`), not the model's words with parts cut.
+    fn shown_instead(&mut self, t: String, why: &str, own: bool) -> String {
+        let t = if own { self.said_own(t) } else { t };
+        self.fe.reply_retracted();
+        if self.interactive && !t.is_empty() { self.fe.text_delta(&t); }
+        self.debug(why);
+        t
+    }
+
+    /// What Elisa holds as text: the whole conversation as the model saw it (her clock and date lines, every earlier
+    /// reply and result: a figure said before is not from nowhere) and what this turn's tools returned.
+    fn held_text(&self) -> String {
+        let said = self.history.iter().map(texts).collect::<Vec<_>>().join("\n");
+        let results = self.turn_tool_text().0.into_iter().map(|(_, c)| c).collect::<Vec<_>>().join("\n");
+        format!("{said}\n{results}")
+    }
+
+    /// The last checks on a reply about to be kept, on whatever `checked_reply` hands back (a model's words or its
+    /// wording of the results), each one Elisa's own from what she holds:
+    /// - call tags written as text (`reply_check::without_call_tags`), a picture described where the chat holds none
+    ///   (`without_picture_claims`), a sentence copied from her own note (`without_own_note_copies`) and clauses
+    ///   restating an earlier turn's facts on a tool turn (`without_earlier_facts`) go; nothing left, the turn's
+    ///   results in plain words;
+    /// - sentences that only say her prompt or clock line back beside an answer go (`reply_check::without_prompt_paraphrase`);
+    /// - a claim of a tool action or result no call of this turn made is replaced by her line saying what did and did
+    ///   not happen (`false_claim_line`);
+    /// - a figure stated as today's with no web result behind it is not shown as fact: her `no_live` line, offering
+    ///   to search (`reply_check::live_number_unbacked`);
+    /// - an answer about a file she holds that misses what it says gets the file's own words (`held_file_answer`);
+    /// - a greeting where this turn's tools returned results ("Chào bạn, rất vui được giúp đỡ! Bạn có cần gì nữa
+    ///   không?" after her own web search for Iceland's population: `reply_check::greets_instead`) answers nothing:
+    ///   her own answer from the results (`own_answer_from_turn`: worded from the question and the results, else the
+    ///   results in plain words, `plain_answer_from_turn`).
+    pub(super) fn content_fixes(&mut self, vis: String, ask: &str) -> String {
+        // (a line Elisa wrote herself in place of the reply is hers, not the model's: `said_own`)
+        if self.is_own_words(&vis) { return vis; }
+        // (not when the message asks to be greeted, nor when the greeting word is what the results say: `reply_check::
+        // asks_greeting`, `reply_check::greeting_from_results`)
+        let results = self.turn_tool_text().0.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>().join("\n");
+        if !results.is_empty() && crate::reply_check::greets_instead(&vis, ask) && !crate::reply_check::asks_greeting(ask)
+            && !crate::reply_check::greeting_from_results(&vis, &results) {
+            let own = self.own_answer_from_turn().filter(|t| !crate::reply_check::greets_instead(t, ask)).or_else(|| self.plain_answer_from_turn());
+            if let Some(t) = own.filter(|t| !t.trim().is_empty()) {
+                // (her plain words are hers; the model's wording of the results is marked the model's already)
+                return self.shown_instead(t, "[the reply greeted instead of answering from the results; Elisa answered from them]", true);
+            }
+        }
+        match self.content_fixed(&vis, ask) {
+            Some((t, why, own)) => self.shown_instead(t, why, own),
+            None => vis,
+        }
+    }
+
+    /// `content_fixes`' judgement without showing it (for an answer not shown yet, `turn.rs` `answer_from_tools`,
+    /// `gate.rs`): the text to show in place of `vis`, the debug line saying why, and whether that text is Elisa's own
+    /// line (else the model's words with parts cut, which the gate still checks); None when `vis` stands.
+    pub(super) fn content_fixed(&self, vis: &str, ask: &str) -> Option<(String, &'static str, bool)> {
+        // (nothing left after a cut below: the results in plain words, Elisa's step lines, else her plain line)
+        let own_or_plain = || self.plain_answer_from_turn().unwrap_or_else(|| crate::reply_check::cant_answer_line(ask, self.client.model()));
+        let empty = |t: &str| !t.chars().any(char::is_alphanumeric);
+        // a command run on request whose output is short ("chạy lệnh echo xin-chao giúp mình"), answered with a yes or
+        // no that nothing asked for ("Có, câu "xin-chao" đã được hiển thị…"), or without reporting what it printed as
+        // its output ("Bài viết "xin-chao" là một câu chào…" speaks of the word: `turn::reports_run_output`): what it
+        // printed, in Elisa's step line, the same on any model. A reply that tells it ("It fails with boom (exit 3).")
+        // stands, without its talk beside the run ("It's nice to assist you… Have a great day!": `turn::run_talk_cut`);
+        // and any reply to a question about the run stands ("todo.txt có mấy dòng? dùng wc")
+        let body = context::request_body(ask);
+        let res = self.turn_results();
+        if crate::reply_check::about_run(body) && !body.trim_end().ends_with('?') && super::turn::short_run_output(&res) {
+            let first = vis.split_whitespace().next().unwrap_or("").trim_matches(|c: char| !c.is_alphanumeric());
+            if crate::reply_check::lone_yes_no(first) || !super::turn::reports_run_output(vis, &res) {
+                if let Some(t) = self.plain_answer_from_turn().filter(|t| t.trim() != vis.trim()) {
+                    return Some((t, "[a command's short output asked to be run: Elisa showed what it printed]", true));
+                }
+            } else if let Some(t) = super::turn::run_talk_cut(vis, body, &res) {
+                return Some(self.content_fixed(&t, ask).unwrap_or((t, "[the reply talked beside the command's output; that part was taken out]", false)));
+            }
+        }
+        // a sentence saying where in the week it is now on a day that does not fit ("a great way to start the week" on
+        // a Thursday): it goes (`situation::without_wrong_week_words`)
+        if let Some(t) = crate::situation::without_wrong_week_words(vis, body, crate::situation::now_secs()) {
+            // (and what is left gets the other checks)
+            return Some(self.content_fixed(&t, ask).unwrap_or((t, "[the reply said where in the week it is now, which the clock does not fit; that sentence was taken out]", false)));
+        }
+        // a call written in tags that reached the reply (`<function=read>…</function>`): the tags go
+        let tags = crate::reply_check::without_call_tags(vis);
+        if tags.as_deref().is_some_and(empty) { return Some((own_or_plain(), "[the reply was only a call written in tags; Elisa said what the turn did]", true)); }
+        // a picture described where the chat holds none ("Hình ảnh này hiển thị…" for a command's output): those
+        // sentences go
+        let base = tags.clone().unwrap_or_else(|| vis.to_string());
+        let pic = if self.chat_has_picture() { None } else { crate::reply_check::without_picture_claims(&base, ask) };
+        if pic.as_deref().is_some_and(empty) { return Some((own_or_plain(), "[the reply described a picture the chat does not hold; Elisa said what the turn did]", true)); }
+        // a short sentence copied from Elisa's own note ("The steps are done.") and clauses restating an earlier
+        // turn's facts with nothing of this ask or this turn's results ("North sold 120 units, …" after an echo)
+        let base = pic.clone().unwrap_or(base);
+        let notes = format!("{}\n{}", self.sent_notes, self.retry_note.as_deref().unwrap_or(""));
+        let now: String = self.turn_tool_text().0.into_iter().map(|(_, c)| c).collect::<Vec<_>>().join("\n");
+        let noted = crate::reply_check::without_own_note_copies(&base, &notes, ask, &now);
+        let base = noted.clone().unwrap_or(base);
+        let cap = self.turn_cap(&self.history).min(self.history.len());
+        let before: String = self.history[..cap].iter().map(texts).collect::<Vec<_>>().join("\n");
+        let facts = crate::reply_check::without_earlier_facts(&base, ask, &now, &before);
+        let base = facts.clone().unwrap_or(base);
+        // context markup written back ("<?xml …?><doc><name>…"): no answer; the conversation told back ("Câu hỏi của
+        // bạn là …", "Elisa answered …"), and a self-introduction or pitch beside the answer ("I'm Elisa, I'm a Phi
+        // assistant…"): those sentences go
+        // a how-to for what Elisa ran this turn, with nothing of its results ("you can try web_fetch https://…"): no
+        // answer; her own from the results
+        let (ran, got) = self.turn_calls();
+        if crate::reply_check::tells_how(&base, ask, &ran, &got) { return Some((own_or_plain(), "[the reply told how to do what Elisa already ran; Elisa answered from the results]", true)); }
+        if crate::reply_check::leaks_markup(&base, ask) { return Some((own_or_plain(), "[the reply wrote Elisa's context back as markup; Elisa said what the turn did]", true)); }
+        let own: Vec<String> = crate::reply_check::own_name(&self.system).into_iter().chain([self.client.model().to_string()]).collect();
+        let told = crate::reply_check::without_retelling(&base, &own);
+        if told.as_deref().is_some_and(empty) { return Some((own_or_plain(), "[the reply told the conversation back instead of answering; Elisa said what the turn did]", true)); }
+        let base = told.clone().unwrap_or(base);
+        let pitched = crate::reply_check::without_pitch_beside_answer(&base, ask, &own);
+        if pitched.as_deref().is_some_and(empty) { return Some((own_or_plain(), "[the reply was a self-introduction or pitch beside nothing; Elisa said what the turn did]", true)); }
+        let base = pitched.clone().unwrap_or(base);
+        // a weekday or number contradicting the file read this turn: that line from the file
+        let held: Vec<String> = self.turn_tool_text().0.into_iter().filter(|(p, _)| p.is_some()).flat_map(|(_, c)| c.lines()
+            .filter_map(|l| l.split_once('\t').filter(|(n, _)| !n.trim().is_empty() && n.trim().chars().all(|c| c.is_ascii_digit())).map(|(_, r)| r.trim().to_string()))
+            .filter(|l| !l.is_empty()).collect::<Vec<_>>()).collect();
+        let righted = crate::reply_check::held_contradictions_fixed(&base, &held);
+        let cut = righted.is_some() || pitched.is_some() || told.is_some() || facts.is_some() || noted.is_some() || pic.is_some() || tags.is_some();
+        let base = righted.unwrap_or(base);
+        let vis = base.as_str();
+        let stripped = crate::reply_check::without_prompt_paraphrase(vis, &self.own_turn_text(), &self.prompt_allowed(ask), &self.own_names(ask), self.time_asked(ask));
+        // (nothing left: the whole reply was her prompt or clock line said back, "Bây giờ là 12:00 trưa Thứ Năm…" to a
+        // translation ask, kept after the other checks' own fixes: her plain line of the ask's kind, never the echo)
+        if stripped.as_deref().is_some_and(|t| !t.chars().any(char::is_alphanumeric)) {
+            return Some((crate::reply_check::cant_answer_line(ask, self.client.model()), "[the reply only said Elisa's own prompt or clock line back; Elisa said she could not answer with this model]", true));
+        }
+        let stripped = stripped.filter(|t| !t.is_empty()).or_else(|| cut.then(|| vis.to_string()));
+        let vis = stripped.clone().unwrap_or_else(|| vis.to_string());
+        // (and a sentence of an earlier reply copied before this one's answer: `reply_check::without_earlier_reply_lines`)
+        let earlier: String = self.history[..cap].iter().filter(|m| m.role == Role::Assistant).map(texts).collect::<Vec<_>>().join("\n");
+        let stripped = match crate::reply_check::without_earlier_reply_lines(&vis, ask, &earlier, &now) { Some(t) => Some(t), None => stripped };
+        let vis = stripped.clone().unwrap_or(vis);
+        // (her line alone is hers; after the reply's other sentences, when they say more than the claim
+        // (`reply_check::claims_replaced` joins the two with a blank line), the model's words still)
+        // (a closer or a greeting answered with an earlier message of the user's said back, most of its words, "xem
+        // hàm add trong app.py có lỗi hay không." to "cảm ơn nhé": her own line of the ask's kind, `says_earlier_message`)
+        if self.tool_lines.is_empty() && crate::reply_check::plain_talk(ask) && says_earlier_message(&vis, &self.user_messages()) {
+            return Some((self.own_line(ask), "[the reply to small talk said an earlier message of the user's back; Elisa answered with her own line]", true));
+        }
+        // (a status the files read this turn do not give, "các việc đã gửi đi" for "- send report": the files' own
+        // lines as Elisa tells them, `status_unheld`)
+        if super::turn::reads_only_text(&self.turn_results()).is_some_and(|held| status_unheld(&vis, &held)) {
+            if let Some(h) = self.held_file_answer("", ask) {
+                return Some((h, "[the reply gave the file's items a status its lines do not hold; Elisa told its lines]", true));
+            }
+        }
+        // (a code a character off one the session's results hold and held by none of them, "ORCHID-422" where the
+        // search found "ORCHID-42": the held one in its place, `near_miss_codes_fixed`)
+        let results: String = self.tool_text_from(0).0.into_iter().map(|(_, c)| c).collect::<Vec<_>>().join("\n");
+        if let Some(t) = near_miss_codes_fixed(&vis, &format!("{results}\n{}", context::request_body(ask))) {
+            let t = self.content_fixed(&t, ask).map_or(t, |f| f.0);
+            return Some((t, "[the reply gave a code one character off what the results hold; Elisa put the held one in its place]", false));
+        }
+        if let Some(t) = self.false_claim_line(&vis, ask) {
+            let own = !t.contains("\n\n");
+            return Some((t, "[the reply claimed a tool action or result that no call made; Elisa said what did and did not happen]", own));
+        }
+        if let Some(t) = self.count_fix(&vis, ask) {
+            return Some((t, "[a count of a project file answered in another language or without the number; Elisa counted it herself]", true));
+        }
+        if !self.web_ran() && crate::reply_check::live_number_unbacked(&vis, ask, &self.held_text()) {
+            return Some((crate::reply_check::own_line_of("no_live", ask, ""), "[the reply gave today's figure with no result behind it; Elisa offered to search instead]", true));
+        }
+        if let Some(t) = self.held_file_answer(&vis, ask) {
+            return Some((t, "[the reply missed what the file it is about holds; Elisa answered from the file]", true));
+        }
+        stripped.map(|t| (t, "[the reply said Elisa's own prompt, clock line, a note, an earlier reply's line or fact, a picture or call tags beside its answer; those parts were taken out]", false))
+    }
+
+    /// The files read this session: each successful read-only call's result, newest last, as (the file's name, its text).
+    fn session_reads(&self) -> Vec<(String, String)> {
+        let mut paths: Vec<(String, String)> = Vec::new();
+        let mut out = Vec::new();
+        for b in self.history.iter().flat_map(|m| &m.content) {
+            match b {
+                Block::ToolUse { id, name, input } if tools::access(name) == Access::ReadOnly => {
+                    if let Some(p) = input["path"].as_str() { paths.push((id.clone(), p.rsplit('/').next().unwrap_or(p).to_string())); }
+                }
+                Block::ToolResult { tool_use_id, content, is_error: false } if !content.starts_with("[elisa: not run") => {
+                    if let Some((_, n)) = paths.iter().find(|(i, _)| i == tool_use_id) { out.push((n.clone(), content.clone())); }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Whether a web tool ran this turn (`route::tool_group`): its results back today's figures.
+    fn web_ran(&self) -> bool {
+        let cap = self.turn_cap(&self.history).min(self.history.len());
+        self.history[cap..].iter().flat_map(|m| &m.content).any(|b| matches!(b, Block::ToolUse { name, .. }
+            if crate::route::tool_group(name, self.mcp.server_of(name)) == crate::route::WEB))
+    }
+
+    /// Whether a change or a command ran or was tried this turn (a write, edit or command line among the tool lines):
+    /// then a claim of a change is the other checks' (`denied_claim_retry`, `edit_claim_retry`), and a file's content
+    /// may have changed.
+    fn change_tried(&self) -> bool {
+        self.tool_lines.iter().any(|l| ["[write ", "[edit ", "[edit_symbol ", "[bash ", "[run_code "].iter().any(|p| l.starts_with(p)))
+    }
+
+    /// Elisa's honest line for a reply that claims a tool action or result no call of this turn made
+    /// (`reply_check::tool_claims`): a file read or its content told where no read of that file this session holds it
+    /// ("Đọc file notes.txt, tôi thấy mã cuộc họp là MEETING001."; the `read_failed` line when this turn's read of it
+    /// failed, `failed_reads`), a save or an edit where no write, edit or command ran or was tried this turn ("Đã ghi
+    /// lại 'xin chào thế giới' vào file hello.txt.", "Đã đổi 'buy milk' thành 'buy bread'…"; a change the session's
+    /// records hold is a true recall, `Ledger::backs`). The reply's other sentences stay before the line when they say
+    /// more than the claim (`reply_check::claims_replaced`). None: no such claim, or a change was tried this turn (then
+    /// a claim of one is `denied_claim_retry`'s and `edit_claim_retry`'s). A saved-file claim those two retries find
+    /// themselves (`route::claims_file_saved`, `reply_check::is_done_claim_for`) is left to them: they ask the model
+    /// once more first. This catches the wordings they miss (Vietnamese, a content told of a file never read). And a
+    /// command's run or output reported ("It printed hello-elisa again." to "again") on a turn that called nothing,
+    /// where the message asks for a thing done, not about an earlier run ("what did it print?" is a recall): the
+    /// `not_run` line.
+    fn false_claim_line(&self, vis: &str, ask: &str) -> Option<String> {
+        if self.change_tried() { return None; }
+        let body = context::request_body(ask);
+        let asked_file = crate::reply_check::named_file(body);
+        let files: Vec<String> = asked_file.iter().cloned().collect();
+        let question = body.trim_end().ends_with('?') || crate::reply_check::yes_no_question(body);
+        let base = |p: &str| p.rsplit('/').next().unwrap_or(p).to_lowercase();
+        let reads = self.session_reads();
+        let read_ever: Vec<String> = reads.iter().map(|(n, _)| n.to_lowercase()).chain(self.kept_docs.iter().map(|k| k.doc.name.to_lowercase())).collect();
+        let failed = self.failed_reads();
+        // (a write or edit wording in a sentence that tells what a file Elisa read holds, "Mã cuộc họp đã ghi trong
+        // notes.txt là ORCHID-42": the file's content, not an action of hers: `reply_check::tells_held_content`)
+        // (not a sentence quoting text the file does not hold, "Đã viết `return a - b` thay cho `return a + b`", "Mình
+        // đã sửa thành `return a + b`": new text written in, a change claimed: `quotes_unheld`)
+        let tells_read = |s: &str, file: Option<&str>| file.is_some_and(|f| reads.iter().filter(|(n, _)| n.to_lowercase() == base(f))
+            .any(|(_, c)| crate::reply_check::tells_held_content(s, c, f) && !quotes_unheld(s, c)));
+        // (on a small-talk turn, or to a message telling the user's own doing, "mình vừa chạy bộ xong", nothing was
+        // asked to run: a run wording in the reply speaks of that, not of a tool: `reply_check::tells_own_doing`)
+        let talk = self.small_talk_turn || crate::reply_check::tells_own_doing(body);
+        let found: Vec<(String, String, Option<String>)> = crate::reply_check::tool_claims(vis, &["write", "edit", "read", "run", "run_result"], asked_file.is_some()).into_iter()
+            .map(|(k, s, f)| { let file = f.or_else(|| asked_file.clone()); (k, s, file) })
+            .filter(|(k, s, file)| match k.as_str() {
+                // (no file named anywhere: too vague to call false; one read before: a recall, held to its text by `held_file_answer`)
+                "read" => file.as_deref().is_some_and(|f| !read_ever.contains(&base(f))),
+                "write" => !crate::route::claims_file_saved(s) && !self.ledger.backs(s, file.as_deref()) && !tells_read(s, file.as_deref()),
+                // (a run reported on a turn that called nothing, to a message that asks for a thing done, not a question)
+                "run" => self.tool_lines.is_empty() && !question && !talk,
+                // (a result told with no run in its words, "kết quả là 120": a run claimed only to a message about a run)
+                "run_result" => self.tool_lines.is_empty() && !question && !talk && crate::reply_check::about_run(body),
+                _ => !crate::reply_check::is_done_claim_for(s, &files, body) && !self.ledger.backs(s, file.as_deref()) && !tells_read(s, file.as_deref()),
+            }).collect();
+        // (a claim in one clause of a sentence that denies in another, "I created a file named .elisa/u06.txt, but I
+        // can't write anything into it": the whole sentence is the claim, `clause_claims`)
+        let found = if found.is_empty() {
+            clause_claims(vis, &["write", "edit"], asked_file.is_some()).into_iter()
+                .map(|(k, s, c, f)| (k, s, c, f.or_else(|| asked_file.clone())))
+                .filter(|(_, _, c, file)| !crate::route::claims_file_saved(c) && !self.ledger.backs(c, file.as_deref()) && !tells_read(c, file.as_deref()))
+                .map(|(k, s, _, f)| (k, s, f)).collect()
+        } else { found };
+        let (kind, _, file) = found.first()?;
+        let line = match (kind.as_str(), file.as_deref()) {
+            ("read", Some(f)) if failed.contains(&base(f)) => crate::reply_check::own_line_of("read_failed", ask, f),
+            ("read", Some(f)) => crate::reply_check::own_line_of("not_read", ask, f),
+            ("read", None) => return None,
+            ("write", Some(f)) => crate::reply_check::own_line_of("not_written", ask, f),
+            ("write", None) => crate::reply_check::own_line_of("not_written_any", ask, ""),
+            ("run" | "run_result", _) => crate::reply_check::own_line_of("not_run", ask, ""),
+            _ => crate::reply_check::not_changed_line(ask).to_string(),
+        };
+        let drop: Vec<String> = found.iter().map(|(_, s, _)| s.clone()).collect();
+        Some(crate::reply_check::claims_replaced(vis, &drop, &line))
+    }
+
+    /// Elisa's own count for an ask that counts a project file's lines, words or characters ("đếm số dòng trong
+    /// todo.txt bằng wc", "how many lines does todo.txt have?": `turn::asked_counts`), from the file itself, in the
+    /// ask's language (`turn::count_text`: "todo.txt có 2 dòng."), when the reply gives the count in another language
+    /// (a line of it in the other language: "todo.txt: 2 lines" under a Vietnamese sentence) or without the number.
+    /// None: no count ask, no such file in the project (or a large one), or the reply gives it in the ask's language.
+    pub(super) fn count_fix(&self, vis: &str, ask: &str) -> Option<String> {
+        let body = context::request_body(ask);
+        let units = super::turn::asked_counts(body);
+        if units.is_empty() { return None; }
+        let name = crate::reply_check::named_file(body)?;
+        let path = self.cwd.join(&name);
+        std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= COUNT_FILE_MAX_BYTES)?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        let want = crate::reply_lang::detect(body);
+        let line = super::turn::count_text(&name, &text, &units, want == Some(crate::reply_lang::Lang::Vi));
+        let runs = |t: &str| t.split(|c: char| !c.is_ascii_digit()).filter(|d| !d.is_empty()).map(str::to_string).collect::<Vec<_>>();
+        let have = runs(vis);
+        let numbers_given = runs(&line).iter().all(|n| have.contains(n));
+        // (every line of the reply in the ask's language: "todo.txt: 2 lines" under a Vietnamese sentence is not; a
+        // bare number, "8", is in any language, and Vietnamese is told by its marks, so to an English ask only a
+        // Vietnamese line is foreign)
+        let lines: Vec<&str> = vis.lines().filter(|l| l.chars().any(char::is_alphabetic)).collect();
+        let same_lang = match want {
+            None => true,
+            Some(crate::reply_lang::Lang::Vi) => lines.iter().all(|l| crate::reply_lang::detect(l) == want),
+            Some(crate::reply_lang::Lang::En) => lines.iter().all(|l| crate::reply_lang::detect(l) != Some(crate::reply_lang::Lang::Vi)),
+        };
+        (!numbers_given || !same_lang).then_some(line)
+    }
+
+    /// The files (their names, lowercase) a read-only call of this turn failed on (the file is not there, or unreadable):
+    /// their content told in the reply is from nowhere.
+    fn failed_reads(&self) -> Vec<String> {
+        let cap = self.turn_cap(&self.history).min(self.history.len());
+        let mut paths: Vec<(String, String)> = Vec::new();
+        let mut out = Vec::new();
+        for b in self.history[cap..].iter().flat_map(|m| &m.content) {
+            match b {
+                Block::ToolUse { id, name, input } if tools::access(name) == Access::ReadOnly => {
+                    if let Some(p) = input["path"].as_str() { paths.push((id.clone(), p.rsplit('/').next().unwrap_or(p).to_lowercase())); }
+                }
+                Block::ToolResult { tool_use_id, is_error: true, .. } => {
+                    if let Some((_, n)) = paths.iter().find(|(i, _)| i == tool_use_id) { out.push(n.clone()); }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The index of the held line that answers `body`, by a tiny question to the user's own model: the numbered lines
+    /// and the ask, a reply of the line number only (`reply_check::pick_held_line`), asked once in the file's order
+    /// and once in the reverse order. Taken only when both name the same line: a small model that answers by place
+    /// ("2", "1") rather than by meaning names another line the second time. None when they differ, a reply gives no
+    /// valid number, or a call fails.
+    fn line_by_model(&self, body: &str, lines: &[String]) -> Option<usize> {
+        if CANCEL.load(Ordering::SeqCst) { return None; }
+        let no_tools: [ToolDef; 0] = [];
+        let ask_model = |q: &str| {
+            let msgs = [Message::user_text(q.to_string())];
+            let req = Request { system: HELD_PICK_SYSTEM, tools: &no_tools, messages: &msgs, max_tokens: HELD_PICK_TOKENS };
+            let r = self.client.send(&req, &CANCEL, &mut |_| {}).ok().filter(|r| r.stop_reason != "cancelled")?;
+            Some(context::split_state(&texts(&Message::new(Role::Assistant, r.content))).0.trim().to_string())
+        };
+        if let Some(i) = pick_in_both_orders(body, lines, ask_model) { return Some(i); }
+        // (no line numbered alike both ways, as small models often do: the thing asked said by the same model in
+        // the language of the file's labels, "mã cuộc họp" → "meeting code", then found by the labels, or by meaning
+        // when no label has its words: one line only)
+        if CANCEL.load(Ordering::SeqCst) { return None; }
+        let labels: Vec<&str> = lines.iter().filter_map(|l| l.split_once([':', '=']).map(|(a, _)| a.trim())).filter(|a| !a.is_empty()).collect();
+        let msgs = [Message::user_text(format!("Question: {body}\nLabels: {}", labels.join("; ")))];
+        let req = Request { system: HELD_RESTATE_SYSTEM, tools: &no_tools, messages: &msgs, max_tokens: HELD_PICK_TOKENS };
+        let r = self.client.send(&req, &CANCEL, &mut |_| {}).ok().filter(|r| r.stop_reason != "cancelled")?;
+        let said = context::split_state(&texts(&Message::new(Role::Assistant, r.content))).0.trim().to_string();
+        // (an answer giving a line's value is no restatement of the ask: the model picked, unchecked)
+        if lines.iter().any(|l| crate::reply_check::gives_line(&said, l)) { return None; }
+        pick_by_restated(&said, lines).or_else(|| {
+            (crate::reply_check::words_of(&said).len() <= HELD_RESTATE_WORDS).then(|| self.line_by_meaning(&said, lines)).flatten().and_then(|l| lines.iter().position(|x| x == l))
+        })
+    }
+
+    /// The file's line nearest in meaning to the ask (all-MiniLM-L6-v2, `route::meaning_scores` on the lines' labels),
+    /// when it is near enough and clearly nearer than the next ("mã cuộc họp" → "Meeting code: …"); None without
+    /// the embedding model or a clear pick.
+    fn line_by_meaning<'a>(&self, body: &str, lines: &'a [String]) -> Option<&'a String> {
+        let labelled: Vec<(&String, String)> = lines.iter().filter_map(|l| l.split_once([':', '=']).map(|(a, _)| (l, a.trim().to_string()))).filter(|(_, a)| !a.is_empty()).collect();
+        if labelled.len() < 2 { return None; }
+        let labels: Vec<&str> = labelled.iter().map(|(_, a)| a.as_str()).collect();
+        let scores = crate::route::meaning_scores(body, &labels)?;
+        let mut ranked: Vec<(f32, usize)> = scores.iter().enumerate().map(|(i, s)| (*s, i)).collect();
+        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let (top, second) = (ranked[0], ranked[1]);
+        (top.0 >= HELD_MEANING_MIN && top.0 - second.0 >= HELD_MEANING_LEAD).then(|| labelled[top.1].0)
+    }
+
+    /// Elisa's answer from an earlier exchange of this conversation to a question it asks again, on a turn with no
+    /// tools (`earlier_answer_of`): the history before this turn and the notes' digest of folded turns, so a resumed
+    /// or folded chat still has what was found then. None otherwise.
+    pub(super) fn earlier_answer(&self, ask: &str) -> Option<String> {
+        if !self.tool_lines.is_empty() { return None; }
+        let cap = self.turn_cap(&self.history).min(self.history.len());
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for m in &self.history[..cap] {
+            if super::memory::is_request(m) {
+                let q = context::request_body(&texts(m)).trim().to_string();
+                if !q.is_empty() { pairs.push((q, String::new())); }
+            } else if m.role == Role::Assistant {
+                let t = context::split_state(&texts(m)).0.trim().to_string();
+                if let (Some(p), false) = (pairs.last_mut(), t.is_empty()) { p.1 = t; }
+            }
+        }
+        earlier_answer_of(ask, &exchanges(self.notes.as_deref().unwrap_or(""), &pairs), self.client.model())
+    }
+
+    /// Elisa's answer from a small file she holds (a `read` of it this session: its line-numbered text) when `vis`
+    /// misses what the ask asks of it: the ask names the file, or says "that file" / asks what else there is
+    /// (`reply_check::asks_what_else`) after a turn about one ("that file" is the file the reply or the question
+    /// before named when one is named there, else the one whose labels the question before asked by name, else the
+    /// one read now, else the last one read). The asked lines are
+    /// those whose label shares a word with the ask (`reply_check::asked_lines`), else the line nearest in meaning
+    /// (`line_by_meaning`), else the lines the reply itself speaks of by their label without their value
+    /// (`reply_check::named_lines`: "…một mã c hộp và một code meeting."), else, where the ask is for the content
+    /// (`reply_check::asks_content`: "what's in it?", "nội dung", not "did it ask you to do anything?" or a bare "read
+    /// a.txt") or for a value out of the file read this turn (`reply_check::asks_value`: "đọc file notes.txt và cho
+    /// mình biết mã cuộc họp"), the whole file; for a "what else" ask, the lines earlier replies did not give. A reply
+    /// that misses them (`reply_check::gives_line`: "contains a meeting code and a project name", "MEETING001",
+    /// garbled text; one line of a file of HELD_WHOLE_LINES lines or fewer told whole, "ORCHID-42" for "what's in
+    /// notes.txt?") gets the lines themselves (`reply_check::answer_from`); nothing left to tell gets the
+    /// `nothing_else` line. None: the reply gives them (one of them, to a value ask), the turn changed or ran things,
+    /// counted something, a reply saying the file lacks a thing no line was asked for by name (it may be right), or
+    /// "that file" naming one Elisa does not hold (never another file's lines in its place).
+    pub(super) fn held_file_answer(&self, vis: &str, ask: &str) -> Option<String> {
+        if self.doc_req.is_some() || self.change_tried() { return None; }
+        let body = context::request_body(ask);
+        if !crate::mcp_reason::count_units(body).is_empty() { return None; }
+        let reads = self.session_reads();
+        let base = |p: &str| p.rsplit('/').next().unwrap_or(p).to_lowercase();
+        let named = crate::reply_check::named_file(body).map(|f| base(&f));
+        let more = crate::reply_check::asks_what_else(ask);
+        let cap = self.turn_cap(&self.history).min(self.history.len());
+        let read_now = self.turn_tool_text().0.iter().rev().find_map(|(p, _)| p.as_deref().map(base));
+        let prev_reply = self.history[..cap].iter().rev().find(|m| m.role == Role::Assistant).map(texts).unwrap_or_default();
+        let prev_ask = self.history[..cap].iter().rev().find(|m| is_request(m)).map(|m| context::request_body(&texts(m)).to_string()).unwrap_or_default();
+        // (named there, else the file read this session whose labels the question before asked by name: "which file in
+        // this folder mentions a meeting code?" → the one with "Meeting code: …", whatever the reply to it said)
+        let prev_about = || reads.iter().rev().find(|(_, c)| {
+            let ls: Vec<String> = c.lines().filter_map(|l| l.split_once('\t').map(|(_, r)| r.trim().to_string())).collect();
+            !crate::reply_check::asked_lines(&ls, &crate::reply_check::words_of(&prev_ask)).is_empty()
+        }).map(|(n, _)| n.to_lowercase());
+        let prev_named = crate::reply_check::named_file(&prev_reply).or_else(|| crate::reply_check::named_file(&prev_ask)).map(|f| base(&f)).or_else(prev_about);
+        let target = match named {
+            Some(f) => f,
+            None if more || crate::reply_check::names_file_word(body) => match prev_named {
+                Some(f) => f,
+                // (the question before asked which file holds a thing no file read holds, "which file mentions a
+                // meeting code?" with only todo.txt read: "that file" is one Elisa has not read, never the last read)
+                None if prev_ask.trim_end().ends_with('?') && crate::reply_check::names_file_word(&prev_ask) && {
+                    let asked: Vec<String> = crate::topics::words(&prev_ask).into_iter().filter(|w| !crate::reply_check::names_file_word(w)).collect();
+                    !asked.is_empty() && !reads.iter().any(|(_, c)| { let have = crate::reply_check::words_of(c); asked.iter().any(|w| have.contains(w)) })
+                } => return None,
+                None => read_now.clone().or_else(|| more.then(|| reads.last().map(|(n, _)| n.to_lowercase())).flatten())?,
+            },
+            None => return None,
+        };
+        let (name, content) = reads.iter().rev().find(|(n, _)| n.to_lowercase() == target)?;
+        // (a `read` result: every line numbered "N<tab>…"; an outline or a search result is not the file's text)
+        let numbered = |l: &str| l.split_once('\t').filter(|(n, _)| !n.trim().is_empty() && n.trim().chars().all(|c| c.is_ascii_digit())).map(|(_, rest)| rest.trim().to_string());
+        let body_lines: Vec<&str> = content.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("<untrusted") && !l.starts_with("</untrusted") && !l.starts_with("[elisa:")).collect();
+        let lines: Vec<String> = body_lines.iter().filter_map(|l| numbered(l)).filter(|l| !l.is_empty()).collect();
+        if body_lines.iter().any(|l| numbered(l).is_none()) || lines.is_empty() || lines.len() > HELD_LINES_MAX || lines.iter().any(|l| l.chars().count() > HELD_LINE_CHARS) { return None; }
+        let own: std::collections::HashSet<String> = crate::reply_check::words_of(name);
+        let asked: std::collections::HashSet<String> = crate::reply_check::words_of(body).into_iter().filter(|w| !own.contains(w)).collect();
+        let by_words: Vec<&String> = crate::reply_check::asked_lines(&lines, &asked);
+        // (never by meaning for a "what else" ask: it names no line, so the line nearest in meaning to "what else is in
+        // it?" is no line asked; the lines not yet told are)
+        // (nor for an ask for the file's content that asks no value and names no line, "hmm I wonder what's in
+        // notes.txt": the whole file is asked, never the line nearest in meaning to its words or the one the reply
+        // names)
+        let content_only = crate::reply_check::asks_content(ask) && !crate::reply_check::asks_value(ask);
+        let by_meaning = if by_words.is_empty() && !more && !content_only { self.line_by_meaning(body, &lines) } else { None };
+        // (a value asked in another language than the file's labelled lines, where meaning finds none (all-MiniLM is
+        // English-only): the line the user's own model numbers, `line_by_model`; no valid number and a file of a few
+        // lines, all of them. Never on an ask in the file's own language: words and meaning judge that one, and a
+        // reply that gives a line stands without another request)
+        let labelled = lines.iter().filter(|l| l.split_once([':', '=']).is_some_and(|(a, _)| !a.trim().is_empty())).count();
+        let cross = by_words.is_empty() && by_meaning.is_none() && !more && labelled >= 2 && crate::reply_check::asks_value(ask)
+            && crate::reply_check::lang_mismatch(body, &lines.join("\n"));
+        let by_meaning = if cross { self.line_by_model(body, &lines).map(|i| &lines[i]) } else { by_meaning };
+        let all_few = cross && by_meaning.is_none() && lines.len() <= crate::reply_check::held_whole_lines();
+        // (a reply that gives none of the file's lines and speaks of one by its label is about that line; not a reply
+        // that denies a thing, which may be right)
+        let none_given = lines.iter().all(|l| !crate::reply_check::gives_line(vis, l));
+        // (never for a "what else" ask or a content ask: the reply naming a line is no ask for it)
+        let by_reply: Vec<&String> = if by_words.is_empty() && by_meaning.is_none() && !more && !content_only && none_given && !crate::reply_check::says_not(vis) {
+            crate::reply_check::named_lines(&lines, vis) } else { Vec::new() };
+        let specific = !by_words.is_empty() || by_meaning.is_some() || !by_reply.is_empty();
+        // (a value asked of the file read this turn on that ask: a reply giving none of its lines missed it)
+        let value = read_now.as_deref() == Some(target.as_str()) && crate::reply_check::asks_value(ask);
+        let whole = more || crate::reply_check::asks_content(ask) || (value && none_given) || all_few;
+        // (no line asked for by name: the whole file is the answer only to an ask for its content, for a value out of
+        // it, or for what else it holds)
+        if !specific && !whole { return None; }
+        // (no line found for a value asked across languages: every line of the few, never a line guessed from the
+        // reply's words)
+        let picked: Vec<&String> = if !by_words.is_empty() { by_words } else if let Some(l) = by_meaning { vec![l] }
+            else if !by_reply.is_empty() && !all_few { by_reply } else { lines.iter().collect() };
+        // (for a "what else" ask, what was said is what every reply of the conversation shown so far gave, Elisa's own
+        // short follow-up answers among them ("and the project?" → "Project: …."), however many exchanges ago: a line
+        // told is never given again as more; the history holds each reply as it was finally shown)
+        let said: String = self.history[..cap].iter().filter(|m| m.role == Role::Assistant).map(texts).collect::<Vec<_>>().join("\n");
+        // (a line a reply since named by its label, "The file notes.txt mentions a meeting code.", was told too, so
+        // "what else" asks for the others; when no other is left, the named ones are still untold)
+        let remaining: Vec<&String> = if more {
+            let untold: Vec<&String> = picked.into_iter().filter(|l| !crate::reply_check::gives_line(&said, l)).collect();
+            let named = crate::reply_check::named_lines(&lines, &said);
+            let unnamed: Vec<&String> = untold.iter().copied().filter(|l| !named.contains(l)).collect();
+            if unnamed.is_empty() { untold } else { unnamed }
+        } else { picked };
+        // (every line told already: Elisa says so, in the ask's language, with the lines told — `all_told`, never one
+        // of them given again as if it were more)
+        if remaining.is_empty() {
+            return more.then(|| crate::reply_check::own_line_of("all_told", ask, name).replace("{lines}", &lines.join("; ")));
+        }
+        let given = remaining.iter().filter(|l| crate::reply_check::gives_line(vis, l)).count();
+        // (lines asked for by name, and all of a file this short, must each be given; of a longer file told whole, one)
+        let each = (specific && !more) || remaining.len() <= HELD_WHOLE_LINES;
+        // (the ask said back round the value, "Check giúp mình cái file notes.txt,-meeting code: ORCHID-42.": every word
+        // of the reply the ask's or the lines', most of the ask's in it; the file's line, in Elisa's words, instead)
+        // (or a line asked by name given among things the file never says, "What needs to be done next? - Confirm the
+        // meeting code ORCHID-42 … Next step: Confirm meeting details with the team.": the line itself, plainly)
+        let invented = specific && !more && crate::reply_check::asks_value(ask) && invented_beside(vis, ask, &lines);
+        let echoed = invented || crate::reply_check::says_ask_round_value(vis, ask, &remaining);
+        if echoed { return Some(held_value_answer(ask, name, &lines, &remaining)).filter(|t| !t.is_empty() && t.trim() != vis.trim()); }
+        // (what else there is, answered with the lines not yet told and again those told, "The file contains the
+        // meeting code ORCHID-42 and … the Lotus launch on Friday." after the meeting code was told: the untold ones)
+        if more && given == remaining.len() && lines.iter().any(|l| !remaining.contains(&l) && crate::reply_check::gives_line(&said, l) && crate::reply_check::gives_line(vis, l)) {
+            return Some(held_value_answer(ask, name, &lines, &remaining)).filter(|t| !t.is_empty() && t.trim() != vis.trim());
+        }
+        // (a line asked by name answered with a list of the file's lines, "File notes.txt có nội dung: 1 Meeting code:
+        // ORCHID-42 2 Project: …", "region,units\nNorth,120": the asked line or row in a sentence, `held_value_answer`)
+        if specific && !more && given >= 1 && lists_lines(vis, ask, name, &lines, &remaining) {
+            return Some(held_value_answer(ask, name, &lines, &remaining)).filter(|t| !t.is_empty() && t.trim() != vis.trim());
+        }
+        if given == remaining.len() || (!each && given >= 1) { return None; }
+        // (a reply saying the file lacks a thing is left be when it speaks of the file or the ask, "todo.txt không có
+        // gì cả"; a "không" in words about neither, "Tudo ngon không?", denies nothing of it)
+        let about = { let have = crate::topics::words(vis); crate::topics::words(body).iter().chain(crate::topics::words(name).iter()).any(|w| have.contains(w)) };
+        if !specific && !more && about && crate::reply_check::says_not(vis) { return None; }
+        // (a sheet's rows in sentences, "North: 120 units.", never a fragment of its cells, "North,120")
+        Some(held_value_answer(ask, name, &lines, &remaining)).filter(|t| !t.is_empty())
+    }
 }
+
+/// Whether `reply` says a status (`data/status_words.txt`: "done", "sent", "đã gửi") that `held`, the text of the
+/// files it speaks of, does not hold: a status the files do not give ("Todo.txt bây giờ có những việc đã đọc và gửi
+/// đi" for "- buy bread" / "- send report").
+pub(super) fn status_unheld(reply: &str, held: &str) -> bool {
+    static W: std::sync::OnceLock<Vec<Vec<String>>> = std::sync::OnceLock::new();
+    let split = |t: &str| t.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<String>>();
+    let words = W.get_or_init(|| include_str!("../../data/status_words.txt").lines().map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('[')).map(&split).collect());
+    let (r, h) = (split(reply), split(held));
+    let has = |t: &[String], p: &[String]| t.windows(p.len()).any(|x| x == p);
+    words.iter().any(|p| !p.is_empty() && has(&r, p) && !has(&h, p))
+}
+
+/// content words (`topics::words`) an ask must share with an earlier one for that one's answer to stand for it
+/// (`earlier_answer`)
+const EARLIER_ASK_SHARED: usize = 2;
+
+/// The exchanges of the conversation before this turn, oldest first: (the user's message, Elisa's reply to it), from
+/// the notes' digest of folded turns (`context::digest`: its "User: …" and "Elisa: …" lines) and then the history.
+pub(super) fn exchanges(notes: &str, history: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut asked: Option<String> = None;
+    for l in notes.lines().map(|l| l.trim().trim_start_matches("- ")) {
+        if let Some(u) = l.strip_prefix(context::USER_LABEL) { asked = Some(u.trim().to_string()); }
+        else if let Some(e) = l.strip_prefix(context::ELISA_LABEL) { if let Some(u) = asked.take() { out.push((u, e.trim().to_string())); } }
+    }
+    out.extend(history.iter().cloned());
+    out
+}
+
+/// The answer an earlier exchange gave (`exchanges`) to the question `ask` asks again: the newest one whose message
+/// holds every content word of the question (`topics::words`, the back-pointing words of `data/recall_words.txt`
+/// aside), EARLIER_ASK_SHARED of them at least, and every name, path, number or code the question gives ("what was
+/// the meeting code you found?" after "read notes.txt and tell me the meeting code" answered "ORCHID-42"), its reply a
+/// real one, never one of Elisa's own lines (`from_own_lines`: no answer, not written, not read), in her line saying
+/// when it was given (`earlier_answer` in `data/no_answer_lines.txt`).
+pub(super) fn earlier_answer_of(ask: &str, past: &[(String, String)], model: &str) -> Option<String> {
+    static R: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    let recall = R.get_or_init(|| include_str!("../../data/recall_words.txt").lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_string).collect());
+    let body = context::request_body(ask);
+    let want: HashSet<String> = crate::topics::words(body).into_iter().filter(|w| !recall.contains(w)).collect();
+    if want.len() < EARLIER_ASK_SHARED { return None; }
+    // (a name, path, number or code of the question: a token with a digit, a dot inside, a slash or a capital
+    // after its first letter, "/tmp/x.txt", "ORCHID-42", "app.py")
+    let names: Vec<String> = body.split_whitespace().map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '.').trim_end_matches('.'))
+        .filter(|t| t.chars().any(|c| c.is_ascii_digit()) || t.contains('/') || t.trim_matches('.').contains('.') || t.chars().skip(1).any(char::is_uppercase))
+        .map(str::to_lowercase).collect();
+    let (q, a) = past.iter().rev().find(|(q, a)| {
+        let a = a.trim();
+        let low = q.to_lowercase();
+        a.chars().any(char::is_alphanumeric) && q.trim() != body.trim()
+            && a != crate::reply_check::cant_answer_line(q, model) && a != crate::reply_check::no_answer_line(q) && !from_own_lines(a)
+            && want.is_subset(&crate::topics::words(q)) && names.iter().all(|n| low.contains(n.as_str()))
+    })?;
+    Some(crate::reply_check::own_line_of("earlier_answer", ask, "").replace("{ask}", &context::one_line(q, 120)).replace("{reply}", &context::one_line(a, 300)))
+}
+
+/// The claims (`reply_check::tool_claims` of `kinds`) made in one clause of a sentence of `reply` (its parts between
+/// commas, colons, semicolons and dashes), where the whole sentence makes none, as it also denies ("I created a file
+/// named .elisa/u06.txt, but I can't write anything into it"): (kind, the whole sentence, the clause, the file named).
+pub(super) fn clause_claims(reply: &str, kinds: &[&str], about_file: bool) -> Vec<(String, String, String, Option<String>)> {
+    let mut out = Vec::new();
+    for s in super::turn::sentence_pieces(reply).into_iter().map(str::trim).filter(|s| !s.is_empty()) {
+        if !crate::reply_check::tool_claims(s, kinds, about_file).is_empty() { continue; }
+        for c in s.split([',', ':', ';', '—']).map(str::trim).filter(|c| !c.is_empty()) {
+            if let Some((k, _, f)) = crate::reply_check::tool_claims(c, kinds, about_file).into_iter().next() {
+                out.push((k, s.to_string(), c.to_string(), f));
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// shortest fixed start of one of Elisa's own lines (`from_own_lines`) that marks a reply as hers
+const OWN_LINE_START_CHARS: usize = 12;
+
+/// Whether `reply` holds one of Elisa's own lines of `data/no_answer_lines.txt` (no answer, not written, not read, not
+/// run…): the fixed words of a line up to its first placeholder, OWN_LINE_START_CHARS characters or more.
+fn from_own_lines(reply: &str) -> bool {
+    include_str!("../../data/no_answer_lines.txt").lines().map(str::trim).filter(|l| !l.starts_with('#') && !l.starts_with('['))
+        .filter_map(|l| l.split_once(':').map(|(_, v)| v.trim()))
+        .map(|v| v.split('{').next().unwrap_or("").trim())
+        .any(|start| start.chars().count() >= OWN_LINE_START_CHARS && reply.contains(start))
+}
+
+/// fewest words a reply has to be judged a saying-back of an earlier message (`says_earlier_message`), and the share
+/// of them, in quarters, that must be that message's
+const EARLIER_SAID_MIN_WORDS: usize = 4;
+const EARLIER_SAID_QUARTERS: usize = 3;
+
+/// Whether `reply` is mostly one of the user's earlier messages (`earlier`) said back, in any order: EARLIER_SAID_MIN_WORDS
+/// words or more, three quarters of them or more that message's ("xem hàm add trong app.py có lỗi hay không." after
+/// "file app.py có lỗi gì không? xem hàm add").
+pub(super) fn says_earlier_message(reply: &str, earlier: &[String]) -> bool {
+    let r: Vec<String> = reply.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+    if r.len() < EARLIER_SAID_MIN_WORDS { return false; }
+    earlier.iter().any(|m| {
+        let have = crate::reply_check::words_of(context::request_body(m));
+        r.iter().filter(|w| have.contains(*w)).count() * 4 >= r.len() * EARLIER_SAID_QUARTERS
+    })
+}
+
+/// shortest code (`code_tokens`) judged for a near miss
+const CODE_MIN_CHARS: usize = 4;
+
+/// The codes of a text: its words of CODE_MIN_CHARS characters or more with both a letter and a digit ("ORCHID-42",
+/// "A7X9", "v2.3.1"), the marks round them left off.
+fn code_tokens(t: &str) -> Vec<String> {
+    t.split(|c: char| c.is_whitespace() || ",;:()[]{}<>\"'`*|".contains(c)).map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| w.chars().count() >= CODE_MIN_CHARS && w.chars().any(|c| c.is_alphabetic()) && w.chars().any(|c| c.is_ascii_digit()))
+        .map(str::to_string).collect()
+}
+
+/// Whether `a` and `b` differ by one character added, dropped or changed (case aside).
+fn one_off(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.to_lowercase().chars().collect(), b.to_lowercase().chars().collect());
+    if a == b || a.len().abs_diff(b.len()) > 1 { return false; }
+    let (mut i, mut j, mut edits) = (0, 0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i] == b[j] { i += 1; j += 1; continue; }
+        edits += 1;
+        if edits > 1 { return false; }
+        match a.len().cmp(&b.len()) { std::cmp::Ordering::Greater => i += 1, std::cmp::Ordering::Less => j += 1, std::cmp::Ordering::Equal => { i += 1; j += 1; } }
+    }
+    edits + (a.len() - i) + (b.len() - j) == 1
+}
+
+/// `reply` with each code (`code_tokens`) that `held` (what the results returned, and the user's words) does not hold
+/// but holds one a character off ("ORCHID-422" beside "ORCHID-42") put right, as held. None: no such code.
+pub(super) fn near_miss_codes_fixed(reply: &str, held: &str) -> Option<String> {
+    let have = code_tokens(held);
+    let known = |w: &str| have.iter().any(|h| h.eq_ignore_ascii_case(w));
+    let mut out = reply.to_string();
+    let mut fixed = false;
+    for w in code_tokens(reply) {
+        if known(&w) { continue; }
+        let near: Vec<&String> = have.iter().filter(|h| one_off(h, &w)).collect();
+        let Some(h) = near.first().filter(|_| near.iter().all(|x| x.eq_ignore_ascii_case(near[0]))) else { continue };
+        out = out.replace(&w, h);
+        fixed = true;
+    }
+    fixed.then_some(out)
+}
+
+/// Whether sentence `s` quotes a piece of code or text (between backticks or double quotes) that the file's read text
+/// `held` (its numbered lines) does not hold, spaces aside: text it says was written in, not text the file has.
+pub(super) fn quotes_unheld(s: &str, held: &str) -> bool {
+    let flat = |t: &str| t.split_whitespace().collect::<String>();
+    let have = flat(&held.lines().map(|l| l.split_once('\t').filter(|(n, _)| n.trim().chars().all(|c| c.is_ascii_digit())).map_or(l, |(_, r)| r)).collect::<Vec<_>>().join("\n"));
+    ['`', '"'].iter().any(|q| s.split(*q).skip(1).step_by(2).map(flat).any(|p| !p.is_empty() && !have.contains(&p)))
+}
+
+/// words a reply that lists a held file's lines has at most besides them, the file's name and the ask's words: its
+/// lead-in ("File notes.txt có nội dung:") and list marks (`lists_lines`)
+const LIST_LEAD_WORDS: usize = 5;
+
+/// Whether `reply`, to a question (`ask`) about held file `name` that asks for some of its `lines` (`asked`), only
+/// lists the file's lines: one beside the asked ones copied whole, and no more than LIST_LEAD_WORDS other words
+/// (numbers and list marks aside) once every copied line, the file's name and the ask's words are taken out.
+pub(super) fn lists_lines(reply: &str, ask: &str, name: &str, lines: &[String], asked: &[&String]) -> bool {
+    let flat = |t: &str| t.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut rest = flat(reply);
+    let copied: Vec<&String> = lines.iter().filter(|l| { let f = flat(l); !f.is_empty() && rest.contains(&f) }).collect();
+    if !copied.iter().any(|l| !asked.contains(l)) { return false; }
+    for l in &copied { rest = rest.replace(&flat(l), " "); }
+    let skip: std::collections::HashSet<String> = crate::reply_check::words_of(name).into_iter().chain(crate::reply_check::words_of(context::request_body(ask))).collect();
+    let own = crate::reply_check::words_of(&rest).into_iter().filter(|w| !skip.contains(w) && !w.chars().all(|c| c.is_ascii_digit())).count();
+    own <= LIST_LEAD_WORDS
+}
+
+/// The asked lines of held file `name` in a sentence: a sheet's rows by their label and their cells with the
+/// header's names ("North: 120 units."), any other file's lines as `reply_check::answer_from` gives them
+/// ("notes.txt says: Meeting code: ORCHID-42").
+pub(super) fn held_value_answer(ask: &str, name: &str, lines: &[String], asked: &[&String]) -> String {
+    if crate::mcp_docs::is_sheet(std::path::Path::new(name)) {
+        let rows = super::turn::held_rows(name, &lines.join("\n"));
+        let said: Vec<String> = asked.iter().filter_map(|l| {
+            let key = l.split([',', '\t', ';']).next().unwrap_or("").trim();
+            rows.iter().find(|(k, _)| k == key).map(|(k, rest)| if rest.is_empty() { format!("{k}.") } else { format!("{k}: {rest}.") })
+        }).collect();
+        if said.len() == asked.len() { return said.join("\n"); }
+    }
+    crate::reply_check::answer_from(ask, name, &asked.iter().map(|l| l.as_str()).collect::<Vec<_>>().join("\n"))
+}
+
+/// content words a reply's sentence needs to be judged by `invented_beside`
+const INVENTED_MIN_WORDS: usize = 3;
+/// sentences of a reply whose words are mostly the model's own that make it a dump beside the answer
+const INVENTED_SENTENCES_MIN: usize = 2;
+
+/// Whether `reply`, to `ask` about a held file's `lines`, says things the file never does beside its answer: two
+/// sentences or list items or more of INVENTED_MIN_WORDS content words or more (`topics::words`) of which fewer than
+/// half are the file's or the ask's ("Next step: Confirm meeting details with the team.", "Ensure any necessary
+/// documents are ready."). A reply that only words the file's lines in its own way has few such sentences. Never for
+/// a reply in another language than the file's (its words are not the file's anyway).
+pub(super) fn invented_beside(reply: &str, ask: &str, lines: &[String]) -> bool {
+    if crate::reply_check::lang_mismatch(reply, &lines.join("\n")) { return false; }
+    let known: std::collections::HashSet<String> = lines.iter().flat_map(|l| crate::topics::words(l)).chain(crate::topics::words(ask)).collect();
+    reply.split(['.', '?', '!', '\n']).filter(|s| {
+        let w = crate::topics::words(s);
+        w.len() >= INVENTED_MIN_WORDS && w.iter().filter(|x| known.contains(*x)).count() * 2 < w.len()
+    }).count() >= INVENTED_SENTENCES_MIN
+}
+
+/// The held line `ask_model` numbers for `body` both with `lines` in the file's order and reversed
+/// (`reply_check::pick_held_line`): its index when the two name the same line, else None (`line_by_model`).
+pub(super) fn pick_in_both_orders(body: &str, lines: &[String], ask_model: impl Fn(&str) -> Option<String>) -> Option<usize> {
+    let first = crate::reply_check::pick_held_line(body, lines, &ask_model)?;
+    let reversed: Vec<String> = lines.iter().rev().cloned().collect();
+    let second = crate::reply_check::pick_held_line(body, &reversed, &ask_model)?;
+    (lines.len() - 1 - second == first).then_some(first)
+}
+
+/// The one held line whose label holds every content word (`topics::words`) of `restated` (the thing an ask asks for,
+/// said in the file's language by the user's model: "meeting code" → "Meeting code: ORCHID-42"): its index. None
+/// when no line or more than one has them, or `restated` is longer than HELD_RESTATE_WORDS words (no such phrase).
+pub(super) fn pick_by_restated(restated: &str, lines: &[String]) -> Option<usize> {
+    let want = crate::topics::words(restated);
+    if want.is_empty() || crate::reply_check::words_of(restated).len() > HELD_RESTATE_WORDS { return None; }
+    let hits: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.split_once([':', '=']).is_some_and(|(label, _)| {
+        let have = crate::topics::words(label);
+        want.iter().all(|w| have.contains(w))
+    })).map(|(i, _)| i).collect();
+    match hits.as_slice() { [i] => Some(*i), _ => None }
+}
+
+/// bytes a project file may have at most for Elisa to count its lines, words or characters herself (`count_fix`)
+const COUNT_FILE_MAX_BYTES: u64 = 1 << 20;
+/// lines a held file may have, and chars a line of it, for Elisa to answer from it line by line (`held_file_answer`)
+const HELD_LINES_MAX: usize = 12;
+const HELD_LINE_CHARS: usize = 160;
+/// lines a held file has at most to be told whole: an answer about it that misses one of them gets the file's own
+/// words ("ORCHID-42" alone for "what's in notes.txt?" with two lines in it)
+const HELD_WHOLE_LINES: usize = 4;
+/// the similarity (all-MiniLM-L6-v2) from which a held file's label is what an ask in other words asks for, and how
+/// much nearer than the next label it must be (`line_by_meaning`)
+const HELD_MEANING_MIN: f32 = 0.3;
+/// the system line and output budget of Elisa's question for the held line's number (`line_by_model`)
+const HELD_PICK_SYSTEM: &str = "You pick the line that answers a question. Reply with its number only.";
+const HELD_PICK_TOKENS: usize = 16;
+/// the system line of Elisa's question for the thing an ask asks for, said in the language of the file's labels
+/// (`line_by_model`), and the most words that answer may have
+const HELD_RESTATE_SYSTEM: &str = "Say what thing the question asks for, in at most five words, in the language of the labels given. Reply with those words only.";
+const HELD_RESTATE_WORDS: usize = 5;
+const HELD_MEANING_LEAD: f32 = 0.08;
+
+/// a message of at most this many words after documents were attached may be a follow-up about them (`asks_about_docs`)
+const DOC_ASK_SHORT_WORDS: usize = 12;
+/// words (4 letters or more) a longer message must share with the documents to be about them (`asks_about_docs`)
+const DOC_ASK_SHARED_WORDS: usize = 2;

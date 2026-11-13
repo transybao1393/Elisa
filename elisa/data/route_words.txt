@@ -1,0 +1,194 @@
+# Words that route a turn to a tool group by themselves (`route::signals`), English and Vietnamese, one word or
+# phrase per line, matched as whole words. A Vietnamese line is written with its marks; a message typed without them
+# ("gia vang hom nay") matches it too when the message reads as Vietnamese (`route::vietnamese`), so an English word
+# that is a Vietnamese word without its marks ("ham") never counts. Fix a missed wording by adding it here, not in
+# code. (The English web, code and time word lists that came first still live in `route.rs`.)
+#
+#   web       a question about today's facts: the weather, a price or exchange rate, the news, a score
+#   files     the user's files, folders or code: the file tools go with the turn (a question about them that names
+#             no file still goes to the model as chat, as in English)
+#   command   the word before a program's name ("how much disk space is free here? use df", "đếm bằng wc"): a
+#             program of that name on this machine that is no dictionary word makes the turn a shell turn
+#             (`route::named_command`)
+#   here      the user's own folder or project ("which file in this folder mentions a meeting code?", "how many files
+#             are here?", "thư mục này"): a question with a files word and one of these is a files turn
+#   that_file a file the conversation already has ("what else is in that file?", "file đó"): a question naming one is
+#             a files turn (it follows a file turn), and such words name a file for `route::names_files`
+#   change    a word that asks for a change to a file ("fix", "sửa", "đổi", "lưu"): a question with none of these only
+#             asks or checks, so its files turn gets the file tools read-only (`route::check_only`). A bare "add" is
+#             no change word ("xem hàm add" names a function), so only "add a", "add the", … are.
+#   request   a word that makes a message an ask, not something the user tells ("tìm", "giúp", "đọc", "muốn"): a
+#             Vietnamese message with one of these is no plain statement (`route::plain_statement`)
+[web]
+thời tiết
+dự báo
+nhiệt độ hôm nay
+tin tức
+tin mới
+mới nhất
+giá vàng
+giá xăng
+giá đô
+giá usd
+tỷ giá
+tỉ giá
+giá cổ phiếu
+chứng khoán
+giá bitcoin
+giá coin
+tỉ số
+tỷ số
+kết quả trận
+bầu cử
+[files]
+file
+files
+file name
+filename
+folder
+folders
+directory
+source code
+tệp
+tập tin
+thư mục
+mã nguồn
+đoạn mã
+dòng code
+[here]
+in this folder
+in this directory
+in this project
+in this repo
+in the folder
+in the project
+trong thư mục này
+trong dự án này
+this folder
+this directory
+this project
+this repo
+the folder
+the directory
+the project
+the repo
+in here
+here
+thư mục này
+dự án này
+repo này
+trong này
+ở đây
+[that_file]
+that file
+this file
+the file
+the same file
+those files
+these files
+that folder
+file đó
+tệp đó
+file này
+tệp này
+file đấy
+file kia
+tệp kia
+file ấy
+thư mục đó
+các file đó
+những file đó
+[command]
+use
+using
+with
+via
+run
+try
+dùng
+dung
+bằng
+bang
+chạy
+chay
+thử
+thu
+lệnh
+lenh
+[request]
+giúp
+giùm
+hộ
+nhờ
+hãy
+làm ơn
+tìm
+kiếm
+tra
+xem
+đọc
+mở
+lưu
+ghi
+chạy
+viết
+sửa
+xóa
+xoá
+dịch
+tính
+kiểm tra
+liệt kê
+tóm tắt
+giải thích
+cho mình
+cho tôi
+cho em
+muốn
+cần
+[change]
+fix
+fixes
+change
+modify
+edit
+update
+rewrite
+replace
+rename
+remove
+delete
+create
+write
+save
+refactor
+correct
+patch
+insert
+append
+move
+make
+implement
+add a
+add an
+add the
+add to
+add it
+add this
+add that
+put
+sửa
+chữa
+đổi
+thay
+thêm
+xóa
+xoá
+bỏ
+viết
+tạo
+lưu
+ghi
+chỉnh
+cập nhật
+đặt tên

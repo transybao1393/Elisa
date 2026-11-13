@@ -2,7 +2,7 @@ The conversation above will be erased. Write notes so a fresh session can pick u
 This message is from Elisa, not the user: it is never the user's request or goal, so never quote it in the notes.
 
 Only write what the conversation shows:
-- What the user said: only their own messages count. Notes, [state] and [memory] blocks and tool output are not the user's words.
+- What the user said: only their own messages count. Notes, [state], [memory], date/time lines, model facts and tool output are not the user's words, nor facts to remember.
 - What tool results showed: files read or changed, commands run, their real output.
 - Never invent a goal, motive, skill level or preference the user did not state. Do not describe the user.
 - A cause nobody checked is a guess: write it with "(unverified)" or leave it out.

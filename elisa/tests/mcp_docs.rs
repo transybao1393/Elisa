@@ -3,15 +3,13 @@
 //! Paths outside `--root` are refused; output stays under `--max-chars`.
 use elisa::mcp_host::{Host, ServerCfg};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("elisa-mcp-docs-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+mod common;
+use common::TempDir;
+
+fn tmp(tag: &str) -> TempDir { TempDir::new(&format!("mcp-docs-{tag}")) }
 
 /// a minimal PDF, one Helvetica text line per page
 fn pdf(pages: &[&str]) -> Vec<u8> {
@@ -159,5 +157,4 @@ fn docs_is_on_by_default_and_a_project_can_only_switch_it_off() {
     let s = elisa::mcp_host::builtin_docs(&proj, 4000);
     assert_eq!(s.name, "docs");
     assert_eq!(s.command[1..], ["--mcp-serve".to_string(), "docs".into(), "--root".into(), proj.display().to_string(), "--max-chars".into(), "4000".into()]);
-    let _ = std::fs::remove_dir_all(&d);
 }

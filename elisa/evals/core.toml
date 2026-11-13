@@ -38,6 +38,9 @@ send = "run it"
 [[case.checks]]
 type = "stopped_by_loop_guard"
 [[case.checks]]
+type = "info_not_contains"
+text = "loop guard"
+[[case.checks]]
 type = "max_steps"
 n = 5
 [[case.checks]]
@@ -47,8 +50,7 @@ text = "fails with boom"
 type = "request_contains"
 text = "No more tool calls"
 [[case.checks]]
-type = "tool_result_contains"
-name = "bash"
+type = "request_contains"
 text = "this exact call already ran 2 times"
 [[case.checks]]
 type = "audit_has"
@@ -93,8 +95,8 @@ text = "done"
 [[case.turns]]
 send = "look around"
 [[case.checks]]
-type = "info_contains"
-text = "[loop guard: you are repeating the same 2 calls"
+type = "request_contains"
+text = "you are repeating the same 2 calls"
 [[case.checks]]
 type = "stopped_by_loop_guard"
 [[case.checks]]
@@ -135,9 +137,6 @@ text = "You're welcome! What next?\n<state>\ngoal: none\ndone: none\nnext: none\
 [[case.turns]]
 send = "thanks"
 [[case.checks]]
-type = "info_contains"
-text = "asking the model once more"
-[[case.checks]]
 type = "reply_contains"
 text = "You're welcome"
 [[case.checks]]
@@ -158,9 +157,12 @@ tool = { name = "read", input = { path = "main.py" } }
 [[case.script]]
 text = "main.py prints hi."
 [[case.turns]]
-send = "read main.py"
+send = "explain what main.py does"
 [[case.checks]]
-type = "info_contains"
+type = "request_contains"
+text = "wrote a tool call in a form that could not be read"
+[[case.checks]]
+type = "info_not_contains"
 text = "wrote a tool call as text"
 [[case.checks]]
 type = "tool_called"
@@ -476,7 +478,7 @@ send = "hey"
 send = "chào"
 [[case.checks]]
 type = "reply_contains"
-text = "Hi! What would you like to do next?"
+text = "Hi! What can I do for you?"
 turn = 1
 [[case.checks]]
 type = "reply_contains"
@@ -575,12 +577,187 @@ text = "(Follow-up: the user is back after a break. Talking to them directly, te
 turn = 4
 [[case.checks]]
 type = "info_contains"
-text = "[continued your last session: summarise page 12 of the report"
+text = "Picked up your last chat (\"summarise page 12 of the report\")"
 turn = 4
 [[case.checks]]
 type = "reply_contains"
 text = "page 13"
 turn = 4
+
+[[case]]
+id = "core.chat_resume_bare_list"
+description = "\"continue our last conversation\" in a new session answered with a bare list of values (\"[Linh, Hanoi]\"): no usable answer, so Elisa's own resume line"
+[[case.script]]
+text = "Noted."
+[[case.script]]
+text = "[Linh, Hanoi]"
+[[case.script]]
+text = "[Linh, Hanoi]"
+[[case.script]]
+text = "[Linh, Hanoi]"
+[[case.turns]]
+send = "My name is Linh and I live in Hanoi."
+[[case.turns]]
+send = "continue our last conversation"
+restart = true
+[[case.checks]]
+type = "reply_contains"
+text = "Last time you asked"
+turn = 2
+[[case.checks]]
+type = "reply_not_contains"
+text = "[Linh"
+turn = 2
+
+[[case]]
+id = "core.chat_resume_own_line_kept_vi"
+description = "\"tiếp tục cuộc trò chuyện trước nhé\" in a new session answered twice with a copy of the earlier reply: Elisa's own resume line, kept whole (its \"bạn đã hỏi\" and the noted facts are her words, never cut as the model's retelling or note copy), and never asked again after it"
+[[case.script]]
+text = "Chào Linh, mình đã nhớ là bạn sống ở Hà Nội."
+[[case.script]]
+text = "Chào Linh, mình đã nhớ là bạn sống ở Hà Nội."
+[[case.script]]
+text = "Chào Linh, mình đã nhớ là bạn sống ở Hà Nội."
+[[case.script]]
+text = "Chào Linh, mình đã nhớ là bạn sống ở Hà Nội."
+[[case.turns]]
+send = "Mình tên là Linh và mình sống ở Hà Nội."
+[[case.turns]]
+send = "tiếp tục cuộc trò chuyện trước nhé"
+restart = true
+[[case.checks]]
+type = "reply_contains"
+text = "Lần trước bạn đã hỏi"
+turn = 2
+[[case.checks]]
+type = "reply_contains"
+text = "Bạn muốn tiếp tục không?"
+turn = 2
+
+[[case]]
+id = "core.held_file_what_else_gives_untold_lines"
+description = "\"what else is in that file?\" after one line of a small file was told, answered \"Nothing else.\": Elisa gives the held lines not told yet"
+[[case.files]]
+path = "facts.txt"
+content = "Wifi password: tulip77\nRoom: B12\nOwner: Mai\n"
+[[case.script]]
+text = "The wifi password is tulip77."
+[[case.script]]
+text = "Nothing else."
+[[case.script]]
+text = "Nothing else."
+[[case.script]]
+text = "Nothing else."
+[[case.turns]]
+send = "read facts.txt and tell me the wifi password"
+[[case.turns]]
+send = "what else is in that file?"
+[[case.checks]]
+type = "reply_contains"
+text = "B12"
+turn = 2
+[[case.checks]]
+type = "reply_contains"
+text = "Mai"
+turn = 2
+
+[[case]]
+id = "core.held_file_line_named_in_another_language"
+description = "a Vietnamese ask for a value of an English file answered with another line: no line near in meaning and no valid line number from the model, so a file this short is shown whole"
+[[case.files]]
+path = "plan.txt"
+content = "Budget: 4,000\nProject: Sun launch on Monday.\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "plan.txt" } }]
+[[case.script]]
+text = "Project: Sun launch on Monday."
+[[case.script]]
+text = "Project: Sun launch on Monday."
+[[case.script]]
+text = "Project: Sun launch on Monday."
+[[case.script]]
+text = "Project: Sun launch on Monday."
+[[case.turns]]
+send = "đọc file plan.txt và cho mình biết ngân sách"
+[[case.checks]]
+type = "reply_contains"
+text = "4,000"
+turn = 1
+
+[[case]]
+id = "core.right_answer_in_another_language_kept_vi"
+description = "a right answer about code that stays in English to a Vietnamese ask: the same answer said in Vietnamese, never a verdict of Elisa's own in its place"
+[[case.files]]
+path = "calc.py"
+content = "def mul(a, b):\n    return a + b\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "calc.py" } }]
+[[case.script]]
+text = "mul returns a + b, so it is wrong: it should return a * b."
+[[case.script]]
+text = "mul returns a + b, so it is wrong: it should return a * b."
+[[case.script]]
+text = "Hàm mul trả về a + b nên bị sai: đúng ra phải trả về a * b."
+[[case.turns]]
+send = "file calc.py có lỗi gì không? xem hàm mul"
+[[case.checks]]
+type = "reply_contains"
+text = "a * b"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "không có lỗi"
+turn = 1
+
+[[case]]
+id = "core.right_answer_in_another_language_shown_with_note"
+description = "a right answer that stays in English to a Vietnamese ask, and again when asked to say it in Vietnamese: never shown in English and never a note about the model; Elisa's own honest line with the code"
+[[case.files]]
+path = "shapes.py"
+content = "def area(w, h):\n    return w + h\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "shapes.py" } }]
+[[case.script]]
+text = "area adds w and h; it should multiply them: return w * h."
+[[case.script]]
+text = "area adds w and h; it should multiply them: return w * h."
+[[case.script]]
+text = "area adds w and h; it should multiply them: return w * h."
+[[case.turns]]
+send = "hàm area trong shapes.py có đúng không?"
+[[case.checks]]
+type = "reply_not_contains"
+text = "multiply"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "Mô hình"
+turn = 1
+[[case.checks]]
+type = "reply_contains"
+text = "w + h"
+turn = 1
+
+[[case]]
+id = "core.count_asked_of_a_command_is_said_in_words_vi"
+description = "\"list.txt có mấy dòng? dùng wc\" whose reply only says the message back: Elisa's own answer gives the count in words from the file, never the command's raw line"
+[[case.files]]
+path = "list.txt"
+content = "táo\ncam\nchuối\n"
+[[case.script]]
+tools = [{ name = "bash", input = { command = "wc list.txt" } }]
+[[case.script]]
+text = "list.txt có mấy dòng? dùng wc"
+[[case.script]]
+text = "list.txt có mấy dòng? dùng wc"
+[[case.script]]
+text = "list.txt có mấy dòng? dùng wc"
+[[case.turns]]
+send = "list.txt có mấy dòng? dùng wc"
+[[case.checks]]
+type = "reply_contains"
+text = "3 dòng"
+turn = 1
 
 [[case]]
 id = "core.chat_continue_skips_dead_session"
@@ -714,3 +891,508 @@ turn = 3
 [[case.checks]]
 type = "tool_not_called"
 name = "*"
+
+[[case]]
+id = "core.held_file_content_ask_gets_the_whole_file"
+description = "\"hmm I wonder what's in notes.txt\" answered with one of its two lines: an ask for the content is answered with every line, never the one nearest in meaning"
+[[case.files]]
+path = "notes.txt"
+content = "Meeting code: ORCHID-42\nProject: Lotus launch on Friday.\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "notes.txt" } }]
+[[case.script]]
+text = "notes.txt is about the project."
+[[case.script]]
+text = "notes.txt is about the project."
+[[case.script]]
+text = "notes.txt is about the project."
+[[case.turns]]
+send = "hmm I wonder what's in notes.txt"
+[[case.checks]]
+type = "reply_contains"
+text = "ORCHID-42"
+turn = 1
+[[case.checks]]
+type = "reply_contains"
+text = "Lotus"
+turn = 1
+
+[[case]]
+id = "core.held_file_what_else_skips_the_line_named"
+description = "\"what else is in that file?\" after a reply that named the meeting code line by its label, and a reply naming it again: the other line, never the named one"
+[[case.files]]
+path = "notes.txt"
+content = "Meeting code: ORCHID-42\nProject: Lotus launch on Friday.\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "notes.txt" } }]
+[[case.script]]
+text = "Yes, notes.txt mentions a meeting code."
+[[case.script]]
+text = "It also has the meeting code."
+[[case.script]]
+text = "It also has the meeting code."
+[[case.turns]]
+send = "does notes.txt mention a meeting code?"
+[[case.turns]]
+send = "what else is in that file?"
+[[case.checks]]
+type = "reply_contains"
+text = "Lotus"
+turn = 2
+
+[[case]]
+id = "core.held_file_lines_listed_to_a_value_ask_vi"
+description = "\"meeting code là gì?\" answered with the file's lines listed: the asked line alone"
+[[case.files]]
+path = "notes.txt"
+content = "Meeting code: ORCHID-42\nProject: Lotus launch on Friday.\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "notes.txt" } }]
+[[case.script]]
+text = "File notes.txt có nội dung:\n1 Meeting code: ORCHID-42\n2 Project: Lotus launch on Friday."
+[[case.turns]]
+send = "check giúp mình cái file notes.txt, meeting code là gì?"
+[[case.checks]]
+type = "reply_contains"
+text = "ORCHID-42"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "Lotus"
+turn = 1
+
+[[case]]
+id = "core.sheet_rows_listed_to_a_value_ask"
+description = "\"how many units did North sell according to sales.csv?\" answered with the header and the row: the row's cells in a sentence"
+[[case.files]]
+path = "sales.csv"
+content = "region,units\nNorth,120\nSouth,340\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "sales.csv" } }]
+[[case.script]]
+text = "region,units\nNorth,120"
+[[case.turns]]
+send = "how many units did North sell according to sales.csv?"
+[[case.checks]]
+type = "reply_contains"
+text = "North: 120 units"
+turn = 1
+
+[[case]]
+id = "core.plain_answer_gives_the_line_asked_vi"
+description = "a Vietnamese ask for one value of a file whose replies only say the message back: Elisa's plain answer from the read is the file's lines in her own words, never \"Đây là kết quả: Đã đọc …\""
+[[case.files]]
+path = "notes.txt"
+content = "Meeting code: ORCHID-42\nProject: Lotus launch on Friday.\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "notes.txt" } }]
+[[case.script]]
+text = "đọc file notes.txt và cho mình biết mã cuộc họp"
+[[case.script]]
+text = "đọc file notes.txt và cho mình biết mã cuộc họp"
+[[case.script]]
+text = "đọc file notes.txt và cho mình biết mã cuộc họp"
+[[case.script]]
+text = "đọc file notes.txt và cho mình biết mã cuộc họp"
+[[case.script]]
+text = "đọc file notes.txt và cho mình biết mã cuộc họp"
+[[case.turns]]
+send = "đọc file notes.txt và cho mình biết mã cuộc họp"
+[[case.checks]]
+type = "reply_contains"
+text = "ORCHID-42"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "Đây là kết quả"
+turn = 1
+
+[[case]]
+id = "core.plain_answer_tells_a_files_lines_once_vi"
+description = "a file read whole and then its function read, whose replies only say the message back: Elisa's plain answer tells the lines once, never the function's lines again"
+[[case.files]]
+path = "app.py"
+content = "def add(a, b):\n    return a - b\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "app.py" } }, { name = "read_symbol", input = { path = "app.py", name = "add" } }]
+[[case.script]]
+text = "xem hàm add: add"
+[[case.script]]
+text = "xem hàm add: add"
+[[case.script]]
+text = "xem hàm add: add"
+[[case.script]]
+text = "xem hàm add: add"
+[[case.script]]
+text = "xem hàm add: add"
+[[case.turns]]
+send = "file app.py có lỗi gì không? xem hàm add"
+[[case.checks]]
+type = "reply_contains"
+text = "a - b"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "app.py:1-2"
+turn = 1
+
+[[case]]
+id = "core.held_file_what_else_leaves_out_lines_told"
+description = "\"what else is in that file?\" answered with the untold line and again the one told: the untold line alone"
+[[case.files]]
+path = "notes.txt"
+content = "Meeting code: ORCHID-42\nProject: Lotus launch on Friday.\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "notes.txt" } }]
+[[case.script]]
+text = "The meeting code is ORCHID-42."
+[[case.script]]
+text = "The file contains the meeting code ORCHID-42 and information about the Lotus launch on Friday."
+[[case.script]]
+text = "The file contains the meeting code ORCHID-42 and information about the Lotus launch on Friday."
+[[case.turns]]
+send = "read notes.txt and tell me the meeting code"
+[[case.turns]]
+send = "what else is in that file?"
+[[case.checks]]
+type = "reply_contains"
+text = "Lotus"
+turn = 2
+[[case.checks]]
+type = "reply_not_contains"
+text = "ORCHID-42"
+turn = 2
+
+[[case]]
+id = "core.plain_answer_gives_a_computed_sheet_fact_vi"
+description = "\"không biết trong sales.csv vùng nào bán nhiều nhất nhỉ\" whose replies only say the message back: Elisa's plain answer is the fact she computed, never the sheet's rows"
+[[case.files]]
+path = "sales.csv"
+content = "region,units\nNorth,120\nSouth,340\nEast,95\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "sales.csv" } }]
+[[case.script]]
+text = "không biết trong sales.csv vùng nào bán nhiều nhất nhỉ"
+[[case.script]]
+text = "không biết trong sales.csv vùng nào bán nhiều nhất nhỉ"
+[[case.script]]
+text = "không biết trong sales.csv vùng nào bán nhiều nhất nhỉ"
+[[case.script]]
+text = "không biết trong sales.csv vùng nào bán nhiều nhất nhỉ"
+[[case.turns]]
+send = "không biết trong sales.csv vùng nào bán nhiều nhất nhỉ"
+[[case.checks]]
+type = "reply_contains"
+text = "South có units cao nhất trong sales.csv (340)"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "Đây là kết quả"
+turn = 1
+
+[[case]]
+id = "core.held_file_what_else_after_every_line_was_told"
+description = "\"what else is in that file?\" after the meeting code and then the project were told in turns before, answered with the project again: Elisa says the file holds nothing more than what was told"
+[[case.files]]
+path = "notes.txt"
+content = "Meeting code: ORCHID-42\nProject: Lotus launch on Friday.\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "notes.txt" } }]
+[[case.script]]
+text = "The meeting code is ORCHID-42."
+[[case.script]]
+tools = [{ name = "read", input = { path = "notes.txt" } }]
+[[case.script]]
+text = "The other content in notes.txt is: Project: Lotus launch on Friday."
+[[case.script]]
+text = "The other content in notes.txt is: Project: Lotus launch on Friday."
+[[case.script]]
+text = "The other content in notes.txt is: Project: Lotus launch on Friday."
+[[case.turns]]
+send = "read notes.txt and tell me the meeting code"
+[[case.turns]]
+send = "and the project?"
+[[case.turns]]
+send = "what else is in that file?"
+[[case.checks]]
+type = "reply_contains"
+text = "Lotus"
+turn = 2
+[[case.checks]]
+type = "reply_contains"
+text = "nothing more in notes.txt"
+turn = 3
+
+[[case]]
+id = "core.held_file_what_else_with_no_read_after_every_line_was_told"
+description = "\"what else is in that file?\" with no read this turn, after both lines were told, answered with a told line said again: Elisa says the file holds nothing more, never every line again"
+[[case.files]]
+path = "notes.txt"
+content = "Meeting code: ORCHID-42\nProject: Lotus launch on Friday.\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "notes.txt" } }]
+[[case.script]]
+text = "The meeting code is ORCHID-42."
+[[case.script]]
+text = "Project: Lotus launch on Friday."
+[[case.script]]
+text = "Project: Lotus launch on Friday."
+[[case.script]]
+text = "Project: Lotus launch on Friday."
+[[case.turns]]
+send = "read notes.txt and tell me the meeting code"
+[[case.turns]]
+send = "and the project?"
+[[case.turns]]
+send = "what else is in that file?"
+[[case.checks]]
+type = "reply_contains"
+text = "nothing more in notes.txt"
+turn = 3
+
+[[case]]
+id = "core.sheet_row_asked_and_missed_is_said_in_a_sentence"
+description = "\"how many units did North sell according to sales.csv?\" answered without the row: Elisa's answer from the sheet is the row in a sentence, never its cells as they stand"
+[[case.files]]
+path = "sales.csv"
+content = "region,units\nNorth,120\nSouth,340\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "sales.csv" } }]
+[[case.script]]
+text = "The file lists sales by region."
+[[case.turns]]
+send = "how many units did North sell according to sales.csv?"
+[[case.checks]]
+type = "reply_contains"
+text = "North: 120 units"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "North,120"
+turn = 1
+
+[[case]]
+id = "core.read_ask_answered_with_none_of_the_file_vi"
+description = "\"todo.txt giờ có gì?\" answered with words of no language that hold nothing of the file and a \"không\": never kept, Elisa answers with the file's lines"
+[[case.files]]
+path = "todo.txt"
+content = "- buy bread\n- send report\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "todo.txt" } }]
+[[case.script]]
+text = "Tudo ngon không?"
+[[case.script]]
+text = "Tudo ngon không?"
+[[case.script]]
+text = "Tudo ngon không?"
+[[case.turns]]
+send = "todo.txt giờ có gì?"
+[[case.checks]]
+type = "reply_contains"
+text = "buy bread"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "Tudo"
+turn = 1
+
+[[case]]
+id = "core.saved_summary_leaves_out_the_models_bracketed_asides_vi"
+description = "a one-line summary of notes.txt saved to a file, written by the model with bracketed asides of its own: the saved line and the reply never hold them"
+[[case.files]]
+path = "notes.txt"
+content = "Meeting code: ORCHID-42\nProject: Lotus launch on Friday.\n"
+[[case.script]]
+text = "Meeting code: ORCHID-42\nProject: Lotus launch on Friday.\n[This meeting is scheduled for Friday to launch the Lotus project.]\n[Agenda: Review progress, assign tasks]"
+[[case.script]]
+text = "Đã lưu tóm tắt vào tomtat.md."
+[[case.turns]]
+send = "lưu một dòng tóm tắt notes.txt vào file tomtat.md"
+approvals = ["yes"]
+[[case.checks]]
+type = "reply_not_contains"
+text = "scheduled"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "Agenda"
+turn = 1
+[[case.checks]]
+type = "file_not_contains"
+path = "tomtat.md"
+text = "scheduled"
+[[case.checks]]
+type = "file_contains"
+path = "tomtat.md"
+text = "ORCHID-42"
+
+[[case]]
+id = "core.code_one_character_off_the_read_one_is_put_right_vi"
+description = "the model reads a file and gives back its key with one character added: the reply holds the key the file holds, never the near miss"
+[[case.files]]
+path = "ledger.txt"
+content = "Room key: TULIP-7\nFloor: third.\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "ledger.txt" } }]
+[[case.script]]
+text = "Trong ledger.txt có: Room key: TULIP-77"
+[[case.turns]]
+send = "khóa phòng ghi trong ledger.txt là gì?"
+[[case.checks]]
+type = "reply_contains"
+text = "TULIP-7"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "TULIP-77"
+turn = 1
+
+[[case]]
+id = "core.one_line_save_takes_bold_marks_out_as_pairs_vi"
+description = "a one-line summary saved from fenced markdown the model wrote (a heading, bold names): the saved line and the reply hold no dangling bold mark, no fence"
+[[case.files]]
+path = "plan.txt"
+content = "Gate code: KESTREL-9\nOwner: Mai Tran, Monday.\n"
+[[case.script]]
+text = "```\n# Harbor Plan - KESTREL-9\n**Gate Code:** KESTREL-9\n**Owner:** Mai Tran - Monday\n```"
+[[case.script]]
+text = "Đã lưu."
+[[case.turns]]
+send = "ghi tóm tắt một dòng của plan.txt vào file gon.md"
+approvals = ["yes"]
+[[case.checks]]
+type = "reply_not_contains"
+text = "**"
+turn = 1
+[[case.checks]]
+type = "reply_contains"
+text = "KESTREL-9"
+turn = 1
+[[case.checks]]
+type = "file_not_contains"
+path = "gon.md"
+text = "**"
+[[case.checks]]
+type = "file_not_contains"
+path = "gon.md"
+text = "```"
+[[case.checks]]
+type = "file_contains"
+path = "gon.md"
+text = "Gate Code: KESTREL-9"
+
+[[case]]
+id = "core.a_status_the_read_file_does_not_give_falls_to_its_lines_vi"
+description = "a list file read, and the reply says its items are done and sent: the file only lists them, so Elisa's own telling of its lines stands"
+[[case.files]]
+path = "chores.txt"
+content = "- water plants\n- post letter\n"
+[[case.script]]
+tools = [{ name = "read", input = { path = "chores.txt" } }]
+[[case.script]]
+text = "chores.txt có những việc đã xong và đã gửi đi: tưới cây và gửi thư."
+[[case.turns]]
+send = "chores.txt hiện ghi những gì?"
+[[case.checks]]
+type = "reply_contains"
+text = "water plants"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "đã xong"
+turn = 1
+
+[[case]]
+id = "core.a_listing_command_elisa_ran_is_the_answer"
+description = "a list-the-files ask naming ls: Elisa runs it herself, and a reply that only explains how to use ls gives way to the listing"
+[[case.files]]
+path = "alpha.md"
+content = "a\n"
+[[case.files]]
+path = "beta.csv"
+content = "b\n"
+[[case.files]]
+path = "gamma.txt"
+content = "x\n"
+[[case.files]]
+path = "delta.py"
+content = "x\n"
+[[case.files]]
+path = "eps.json"
+content = "x\n"
+[[case.files]]
+path = "zeta.toml"
+content = "x\n"
+[[case.files]]
+path = "eta.log"
+content = "x\n"
+[[case.files]]
+path = "theta.ini"
+content = "x\n"
+[[case.script]]
+text = "You can use the following command to list the files in the current directory:\n\nls\n\nThis will show every file and folder."
+[[case.turns]]
+send = "show me the files in this folder with ls"
+approvals = ["yes"]
+[[case.checks]]
+type = "reply_contains"
+text = "alpha.md"
+turn = 1
+[[case.checks]]
+type = "reply_contains"
+text = "beta.csv"
+turn = 1
+[[case.checks]]
+type = "reply_contains"
+text = "theta.ini"
+turn = 1
+
+[[case]]
+id = "core.a_write_claim_beside_a_denial_goes_whole"
+description = "no write ran, and the reply claims a file was made in one clause while denying in another: the whole sentence goes, and Elisa's not-written line stands alone"
+[[case.script]]
+text = "I created a note named notes/b9.txt, but I can't put anything into it: nothing went in during this message. Let's try again."
+[[case.turns]]
+send = "via the shell, put the word hi inside notes/b9.txt"
+[[case.checks]]
+type = "reply_not_contains"
+text = "created a note"
+turn = 1
+[[case.checks]]
+type = "reply_not_contains"
+text = "try again"
+turn = 1
+[[case.checks]]
+type = "reply_contains"
+text = "haven't written"
+turn = 1
+
+[[case]]
+id = "core.one_line_save_leaves_out_the_models_planning_vi"
+description = "a one-line summary saved from a read, where the model's words also plan the task (\"The task is to create a file named …\", \"It should include …\") and stop mid-sentence: only the read's lines are saved and shown"
+[[case.files]]
+path = "plan.txt"
+content = "Gate code: KESTREL-9\nOwner: Mai Tran, Monday.\n"
+[[case.script]]
+text = "```\nGate code: KESTREL-9\nOwner: Mai Tran, Monday.\nThe task is to create a file named gon.md with a summary of plan.txt. It should include the gate code, the owner, and a short\n```"
+[[case.script]]
+text = "Đã lưu."
+[[case.turns]]
+send = "ghi tóm tắt một dòng của plan.txt vào file gon.md"
+approvals = ["yes"]
+[[case.checks]]
+type = "file_not_contains"
+path = "gon.md"
+text = "should include"
+[[case.checks]]
+type = "file_not_contains"
+path = "gon.md"
+text = "task is"
+[[case.checks]]
+type = "file_contains"
+path = "gon.md"
+text = "KESTREL-9"
+[[case.checks]]
+type = "reply_not_contains"
+text = "should include"
+turn = 1

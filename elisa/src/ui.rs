@@ -140,10 +140,15 @@ pub type StateFilter = crate::context::CardFilter;
 
 /// Line-based frontend: stdin input, model text on stdout, everything else dim/red on stderr.
 #[derive(Default)]
-pub struct Plain { streamed: bool, progress: bool, state: StateFilter }
+pub struct Plain { streamed: bool, progress: bool, state: StateFilter, shown: crate::frontend::ShownText }
 
 impl Plain {
     pub fn new() -> Plain { Plain::default() }
+    /// the reply text still held at its last word (`ShownText`), out before anything else is printed
+    fn flush_shown(&mut self) {
+        let v = self.shown.finish();
+        if !v.is_empty() { self.streamed = true; text(&v); }
+    }
 }
 
 impl Frontend for Plain {
@@ -161,20 +166,23 @@ impl Frontend for Plain {
     }
     fn user(&mut self, _text: &str) {}
     fn waiting(&mut self) { self.streamed = false; }
+    // reply text and tool lines with every secret masked as "sk-l…" (`ShownText`, `secrets::mask_shown`)
     fn text_delta(&mut self, s: &str) {
-        let v = self.state.push(s);
+        let v = self.shown.push(&self.state.push(s));
         if !v.is_empty() { self.streamed = true; text(&v); }
     }
     fn reply_done(&mut self, st: &Status) {
-        let v = self.state.finish();
+        let v = self.shown.push(&self.state.finish()) + &self.shown.finish();
         if !v.is_empty() { self.streamed = true; text(&v); }
         if std::mem::take(&mut self.streamed) { println!(); }
         dim(&status_text(st));
     }
-    fn tool_start(&mut self, summary: &str) { tool_line(summary); }
-    fn tool_done(&mut self, output: &str, is_error: bool) { tool_preview(output, is_error); }
-    fn approve(&mut self, tool: &str, _summary: &str, server: Option<&str>) -> Approval {
+    fn tool_start(&mut self, summary: &str) { self.flush_shown(); tool_line(&crate::secrets::mask_shown(summary)); }
+    fn tool_done(&mut self, output: &str, is_error: bool) { tool_preview(&crate::secrets::mask_shown(output), is_error); }
+    fn approve(&mut self, tool: &str, summary: &str, server: Option<&str>) -> Approval {
         let what = match server { Some(s) => format!("MCP server {s}"), None => tool.to_string() };
+        // the whole command or code (`tools::approval_text`): the tool line above shows it shortened
+        for l in summary.lines().skip(1) { dim(&crate::secrets::mask_shown(l)); }
         loop {
             let ans = ask(&format!("allow? [y]es / [n]o / [a]lways for {what}"));
             if crate::repl::CANCEL.load(Ordering::SeqCst) { return Approval::No; }
@@ -219,7 +227,7 @@ impl Frontend for Plain {
             }
         }
     }
-    fn info(&mut self, s: &str) { dim(s); }
+    fn info(&mut self, s: &str) { self.flush_shown(); dim(&crate::secrets::mask_shown(s)); }
     /// One dim line, redrawn with `\r` on a tty; piped: only the first and the final line.
     fn progress(&mut self, p: Option<&Progress>) {
         let tty = unsafe { libc::isatty(2) == 1 };
@@ -238,13 +246,15 @@ impl Frontend for Plain {
     }
     fn state_card(&mut self, card: &str) { dim(&format!("state · {}", card.lines().map(str::trim).collect::<Vec<_>>().join(" · "))); }
     fn recalled(&mut self, hits: &[String]) { for h in hits { dim(&format!("↺ {h}")); } }
-    fn error(&mut self, s: &str) { error(s); }
+    fn error(&mut self, s: &str) { self.flush_shown(); error(&crate::secrets::mask_shown(s)); }
     fn notes_saved(&mut self, notes: &str) {
         dim("notes saved to .elisa/notes/ (this session's own):");
         for l in notes.lines() { dim(&format!("  {l}")); }
     }
     fn compacted(&mut self, from_tokens: usize, to_tokens: usize) {
-        dim(&format!("[compacted: {} → {} tokens]", k(from_tokens), k(to_tokens)));
+        // a summary no smaller than the conversation gained nothing: no compaction is claimed
+        if to_tokens >= from_tokens { dim("[earlier turns saved to the notes; the conversation was already short, so nothing was compacted]"); }
+        else { dim(&format!("[compacted: {} → {} tokens]", k(from_tokens), k(to_tokens))); }
     }
     fn pick_session(&mut self, list: &[SessionInfo]) -> Option<usize> {
         for (i, s) in list.iter().enumerate() {
@@ -277,7 +287,7 @@ impl Frontend for Plain {
             match l.strip_prefix("## ") { Some(t) => eprintln!("{BOLD}{t}{RESET}"), None => eprintln!("{l}") }
         }
     }
-    fn turn_done(&mut self) {}
+    fn turn_done(&mut self) { self.flush_shown(); }
 }
 
 #[cfg(test)]

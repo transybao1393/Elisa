@@ -1,0 +1,12 @@
+# Words that make a message a yes/no question (`reply_check::yes_no_question`), for a message that ends with "?":
+# "Did that file ask you to do anything?", "Tệp đó có yêu cầu gì không?". One key per line,
+# "key: wording | wording | …", in an [en] and a [vi] section, with and without accents. Fix a missed wording here,
+# not in code.
+#   starts: a word or wording the question opens with
+#   ends:   a word the question ends with, before its "?"
+[en]
+starts: did | does | do | is | was | are | were | has | have | can | could | would | will | should
+ends:
+[vi]
+starts: có phải | co phai
+ends: không | khong | chưa | chua

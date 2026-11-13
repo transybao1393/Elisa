@@ -215,8 +215,7 @@ mod tests {
 
     #[test]
     fn a_changed_file_is_noticed() {
-        let d = std::env::temp_dir().join(format!("elisa-cmd-stamp-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testdir::TempDir::new("cmd-stamp");
         std::fs::write(d.join("deploy.md"), "Deploy it.").unwrap();
         let c = load_dir(&d, &Source::Project, &mut Vec::new()).remove(0);
         assert!(!c.changed_on_disk());
@@ -224,7 +223,6 @@ mod tests {
         assert!(c.changed_on_disk());
         std::fs::remove_file(d.join("deploy.md")).unwrap();
         assert!(c.changed_on_disk(), "a deleted file counts as changed");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

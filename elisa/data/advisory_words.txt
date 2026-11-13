@@ -1,0 +1,22 @@
+# Wordings a reply uses for the advisories a dependency check found ("flask has three known vulnerabilities",
+# "requests có 4 lỗ hổng"): a number up to three words before one of these, said of a package, is that package's
+# count, and a count other than the check's is put right (`repl/turn.rs` `fix_counts`). One wording per line,
+# lowercase, matched as whole words; add a language's wording here, not in code.
+vulnerability
+vulnerabilities
+advisory
+advisories
+cve
+cves
+flaw
+flaws
+security issue
+security issues
+security problem
+security problems
+lỗ hổng
+lo hong
+cảnh báo
+canh bao
+lỗi bảo mật
+loi bao mat

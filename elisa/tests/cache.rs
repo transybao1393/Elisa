@@ -10,16 +10,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod common;
+use common::TempDir;
+
 /// the process-wide cache is one per process: tests that configure it take turns
 static GLOBAL: Mutex<()> = Mutex::new(());
 
-fn tmp(tag: &str) -> PathBuf {
-    static N: AtomicUsize = AtomicUsize::new(0);
-    let d = std::env::temp_dir().join(format!("elisa-cache-it-{}-{tag}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d.canonicalize().unwrap()
-}
+fn tmp(tag: &str) -> TempDir { TempDir::real(&format!("cache-it-{tag}")) }
 
 /// A tiny HTTP server: every request counted; `/slow` answers after 600 ms, `/nostore` with Cache-Control:
 /// no-store, `/err` with HTTP 500, anything else with a small page.

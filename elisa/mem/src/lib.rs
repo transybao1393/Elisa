@@ -468,6 +468,8 @@ pub struct Memory {
     /// per project: (cards so far, newest card, newest milestone)
     cards: HashMap<u32, (u32, u32, u32)>,
     torn: bool,
+    /// a write of the hot postings / edges that failed (a full disk): the `put` that made it returns it
+    write_err: Option<io::Error>,
     model: Option<PathBuf>, vhot: Option<File>, vec_last: Option<u32>,
     progress: Option<Box<dyn FnMut(&str, Option<f32>) + Send>>,
     /// embed pending memories at end_session (default true; needs the embedding model)
@@ -529,7 +531,7 @@ impl Memory {
             hpost: private_file(dir, "hot-post")?, hadj: private_file(dir, "hot-adj")?,
             view: Default::default(), segs: vec![], seg_len: 0,
             projects: HashMap::new(), fact_keys: HashMap::new(), alias: Aliases::default(), last_turn: HashMap::new(), last_note: HashMap::new(), cards: HashMap::new(),
-            torn: false, compact_every: 10, model: embed::model_dir(), vhot: None, vec_last: None, progress: None,
+            torn: false, write_err: None, compact_every: 10, model: embed::model_dir(), vhot: None, vec_last: None, progress: None,
             auto_index: true, use_vectors: true, use_worker: true, worker_exe: std::env::current_exe().ok(), worker_peak: Default::default() };
         // projects and the latest fact per key come from the index (few, small)
         let mut cache = Cache::new();
@@ -541,6 +543,7 @@ impl Memory {
         }
         drop(cache);
         if let Some(ix) = &m.idx { let a = ix.b()[ix.oal..ix.oal + ix.nal].to_vec(); m.alias.decode(&a) }
+        check_vector_version(dir)?;
         m.open_vectors()?;
         for n in seg_nums(dir)? {
             let f = OpenOptions::new().read(true).append(true).open(m.seg_path(n))?;
@@ -663,6 +666,8 @@ impl Memory {
         let loc = self.append(kind, id, a, role, ids, text)?;
         self.apply(kind, id, a, role, ids, text, loc);
         self.settle();
+        // (a full disk: an error for the caller, never a panic; the memory itself is in the log already)
+        if let Some(e) = self.write_err.take() { return Err(e); }
         Ok(id)
     }
 
@@ -670,7 +675,7 @@ impl Memory {
     fn edge(&mut self, a: u32, k: u8, b: u32) {
         let mut r = [0u8; 9];
         r[..4].copy_from_slice(&a.to_le_bytes()); r[4] = k; r[5..].copy_from_slice(&b.to_le_bytes());
-        (&self.hadj).write_all(&r).expect("elisa-mem: hot.adj write");
+        if let Err(e) = (&self.hadj).write_all(&r) { self.write_err.get_or_insert(e); }
         *self.view.get_mut() = None;
     }
     /// transient view of the hot postings/edges for the current call (dropped by `settle`)
@@ -705,7 +710,7 @@ impl Memory {
                 let tb = &t.as_bytes()[..t.len().min(u16::MAX as usize)];
                 r.extend(id.to_le_bytes()); r.extend(c.to_le_bytes()); r.extend((tb.len() as u16).to_le_bytes()); r.extend_from_slice(tb);
             }
-            (&self.hpost).write_all(&r).expect("elisa-mem: hot.post write");
+            if let Err(e) = (&self.hpost).write_all(&r) { self.write_err.get_or_insert(e); }
             *self.view.get_mut() = None;
         }
         self.hot.metas.push(m); self.hot.locs.push(loc);
@@ -1486,6 +1491,24 @@ pub(crate) fn trim_heap() {
 }
 
 fn vec_paths(dir: &Path) -> (PathBuf, PathBuf) { (dir.join("vectors.mg"), dir.join("vectors.hot")) }
+/// the text normalisation of the embedder (`embed::TEXT_NORM_VERSION`) the store's vectors were made under
+const VEC_VER: &str = "vectors.ver";
+/// Vectors made under another text normalisation of the embedder than this build's are dropped (both vector files,
+/// and the vocabulary table built beside them) and `VEC_VER` set to this build's, so the next `index_pending` embeds
+/// every memory again: a query embedded one way, scored against vectors embedded another, would rank by noise. A
+/// store without the note is from before it (normalisation 1). Runs at every load, under the store's lock.
+fn check_vector_version(dir: &Path) -> io::Result<()> {
+    let vp = dir.join(VEC_VER);
+    let have: u32 = fs::read_to_string(&vp).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(1);
+    if have == embed::TEXT_NORM_VERSION { return Ok(()) }
+    let (cp, hp) = vec_paths(dir);
+    for p in [cp, hp, dir.join("vocab.bin")] {
+        if let Err(e) = fs::remove_file(&p) { if e.kind() != io::ErrorKind::NotFound { return Err(e) } }
+    }
+    let tmp = dir.join(format!("{VEC_VER}.{}.tmp", std::process::id()));
+    fs::write(&tmp, format!("{}\n", embed::TEXT_NORM_VERSION))?;
+    fs::rename(&tmp, &vp)
+}
 /// top `k` (id, cosine) over all stored vectors of the store in `dir`: mmap scan of both segments, int8 dot products
 fn vsearch(dir: &Path, q: &[f32; embed::DIM], k: usize) -> Vec<(u32, f32)> {
     let qs = q.iter().fold(0f32, |m, x| m.max(x.abs())) / 127.0;
@@ -1725,6 +1748,33 @@ mod unicode_recall_tests {
         assert!(r.recall("alpha after compaction", "/a", 3, true).iter().any(|h| h.text == "alpha after compaction"));
         assert!(r.recall("beta after compaction", "/b", 3, true).iter().any(|h| h.text == "beta after compaction"));
         drop(r);
+        let _ = fs::remove_dir_all(d);
+    }
+
+    /// Vectors from another text normalisation of the embedder (no `vectors.ver`, or another number) are dropped on
+    /// open, with the vocabulary table, and the note set to this build's; vectors made under it stay.
+    #[test]
+    fn vectors_of_another_text_normalisation_are_dropped_on_open() {
+        let (d, m) = store("vecver");
+        drop(m);
+        let rec = vrec(5, &[0.25; embed::DIM]);
+        fs::write(d.join("vectors.hot"), &rec).unwrap();
+        fs::write(d.join("vocab.bin"), b"x").unwrap();
+        // made under the current normalisation (the note a new store gets): kept
+        let m = Memory::open(&d).unwrap();
+        assert_eq!(m.vec_last, Some(5));
+        assert!(d.join("vocab.bin").exists());
+        drop(m);
+        for note in [None, Some("1\n")] {
+            fs::write(d.join("vectors.hot"), &rec).unwrap();
+            fs::write(d.join("vocab.bin"), b"x").unwrap();
+            match note { Some(n) => fs::write(d.join(VEC_VER), n).unwrap(), None => fs::remove_file(d.join(VEC_VER)).unwrap() }
+            let m = Memory::open(&d).unwrap();
+            assert_eq!(m.vec_last, None, "{note:?}");
+            assert!(!d.join("vocab.bin").exists(), "{note:?}");
+            assert_eq!(fs::read_to_string(d.join(VEC_VER)).unwrap().trim(), embed::TEXT_NORM_VERSION.to_string());
+            drop(m);
+        }
         let _ = fs::remove_dir_all(d);
     }
 

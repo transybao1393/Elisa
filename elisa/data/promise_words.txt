@@ -1,0 +1,18 @@
+# Words for a reply's closing promise of work still to come (`reply_check::promises_work`): "I will now review the
+# changes…", "The next step is to check…", "Mình sẽ kiểm tra…", "Bước tiếp theo là…". One key per line,
+# "key: wording | wording | …", in an [en] and a [vi] section, with and without accents. Fix a missed wording here,
+# not in code.
+#   openers:  words a promise may open with ("Next, I'll…")
+#   starts:   wordings a promise starts with, after any openers
+#   fillers:  words that may follow a start before its verb ("I will now…")
+#   not_work: a word right after a start that makes it a pleasantry, not work ("I'll be glad to…", "let me know")
+[en]
+openers: next | now | then | so | and
+starts: i will | i ll | let me | i am going to | i m going to | the next step is
+fillers: now | then | also | next
+not_work: be | know
+[vi]
+openers: tiếp theo | tiep theo | bây giờ | bay gio | sau đó | sau do | giờ | gio | và | va
+starts: mình sẽ | minh se | tôi sẽ | toi se | để mình | de minh | bước tiếp theo là | buoc tiep theo la
+fillers: tiếp | tiep | ngay | cũng | cung
+not_work: rất | rat | biết | biet

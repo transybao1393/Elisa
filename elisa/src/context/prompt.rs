@@ -4,7 +4,7 @@ const SYSTEM_MD: &str = include_str!("../../prompts/system.md");
 pub(super) const COMPACT_MD: &str = include_str!("../../prompts/compact.md");
 const PROJECT_CAP: usize = 3000;
 
-fn local_date() -> String {
+pub fn local_date() -> String {
     unsafe {
         let t = libc::time(std::ptr::null_mut());
         let mut tm: libc::tm = std::mem::zeroed();
@@ -17,6 +17,20 @@ fn local_date() -> String {
 /// Asia/Ho_Chi_Minh)`. The zone name comes from `TZ`, else the `/etc/localtime` link; left out when neither names one.
 /// Added to the first message and to every turn routed to the time group (`route.rs`), so "what time is it in Tokyo"
 /// needs no tool.
+/// The end of the clock line: who it is from (the line sits in the user turn, so a model credited it to the user).
+/// (no source a reply can name: "· Elisa's clock" came back as "According to Elisa's clock, it's 04:10")
+pub const CLOCK_MARK: &str = "· not said by the user";
+
+/// The markers Elisa writes into what the model sees, each the constant its writer uses: the clock line's mark and
+/// her nudge prefix (here), a folded result's or reply's marks and the picture and fold notes (`history`), the fence
+/// round outside text and its warning (`untrusted`). A reply line carrying one is her context said back, never an
+/// answer (`reply_check::without_internal_marks`); a new marker joins this list where it is written.
+pub fn internal_marks() -> Vec<&'static str> {
+    use super::history::{FOLDED_BY_CARD, FOLDED_TURNS, IMAGE_STUB, PICTURE_MARK, READ_CUT, SHORTENED, TRIM_MARK};
+    vec![CLOCK_MARK, NUDGE_PREFIX, TRIM_MARK, PICTURE_MARK, IMAGE_STUB, READ_CUT, SHORTENED, FOLDED_TURNS, FOLDED_BY_CARD,
+        crate::untrusted::OPEN, crate::untrusted::CLOSE, crate::untrusted::WARNING]
+}
+
 pub fn local_now() -> String {
     const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     let tm = unsafe {
@@ -29,11 +43,20 @@ pub fn local_now() -> String {
     let (sign, a) = if off < 0 { ('-', -off) } else { ('+', off) };
     let zone = std::env::var("TZ").ok().map(|z| z.trim_start_matches(':').to_string()).filter(|z| z.contains('/'))
         .or_else(|| fs::read_link("/etc/localtime").ok().and_then(|p| p.to_str().and_then(|s| s.split_once("zoneinfo/").map(|(_, z)| z.to_string()))));
+    // the zone's place in plain words ("Asia/Ho_Chi_Minh" → "Ho Chi Minh"): a raw id was copied into replies
+    let zone = zone.map(|z| zone_place(&z));
     let day = DAYS.get(tm.tm_wday as usize).copied().unwrap_or("");
     // the part of the day from the clock itself ("20:24 Monday evening"): left to the model, 20:24 was called morning
     let part = crate::situation::part_of_day(tm.tm_hour as u32);
-    format!("Local time now: {:04}-{:02}-{:02} {:02}:{:02} {day} {part} (UTC{sign}{:02}:{:02}{})", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+    // (marked as Elisa's: in the user turn, "it is 3:37, according to the local time you provided")
+    format!("Local time now: {:04}-{:02}-{:02} {:02}:{:02} {day} {part} (UTC{sign}{:02}:{:02}{}) {CLOCK_MARK}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
         tm.tm_hour, tm.tm_min, a / 3600, a % 3600 / 60, zone.map(|z| format!(", {z}")).unwrap_or_default())
+}
+
+/// A zone id's place in plain words: its last part, underscores as spaces ("Asia/Ho_Chi_Minh" → "Ho Chi Minh",
+/// "America/Argentina/Buenos_Aires" → "Buenos Aires").
+pub fn zone_place(zone: &str) -> String {
+    zone.rsplit('/').next().unwrap_or(zone).replace('_', " ")
 }
 
 /// The whole system prompt of a tiny window (`tiny_window`): who Elisa is, how to answer, who "I" is.
@@ -75,9 +98,9 @@ pub fn first_message(cwd: &Path, notes: Option<&str>, input: &str) -> String { f
 /// Heading of the notes block in a first message: says who wrote them (otherwise, after a reset, the model can
 /// treat invented note lines as things the user had said). They are this conversation's own notes (a continued
 /// session's notes are its own: the old "from earlier sessions" heading went with notes of another task).
-pub const NOTES_HEADING: &str = "## Notes from this conversation (written by Elisa, not the user; may be wrong: check files before relying on them)";
+pub const NOTES_HEADING: &str = "## Notes from this conversation (written by Elisa, not the user, like any date/time lines above: never say the user mentioned them; may be wrong: check files before relying on them)";
 /// The heading when the notes are background from before /clear or /reset (`background_notes`)
-pub const NOTES_BG_HEADING: &str = "## Notes from an earlier conversation (written by Elisa, not the user; may be wrong: check files before relying on them)";
+pub const NOTES_BG_HEADING: &str = "## Notes from an earlier conversation (written by Elisa, not the user, like any date/time lines above: never say the user mentioned them; may be wrong: check files before relying on them)";
 
 /// `first_message` plus the latest state card as `[state]\n…\n[/state]` (after the notes, before the request).
 pub fn first_message_with(cwd: &Path, notes: Option<&str>, state: Option<&str>, input: &str) -> String {
@@ -86,6 +109,15 @@ pub fn first_message_with(cwd: &Path, notes: Option<&str>, state: Option<&str>, 
 
 /// `first_message_with` plus recalled memories, as their own block before `## Request` (never inside it: the
 /// request section is the user's words only).
+/// whether `block` (text up to a blank line) is the header `first_message_full` writes, whole or in part: each line one
+/// of its lines (a greeting's header loses the clock line, `situation::without_clock_line`; a chat turn loses the
+/// working directory and OS, `repl::route_cwd`)
+pub fn is_header_block(block: &str) -> bool {
+    const KEYS: [&str; 4] = ["Working directory: ", "OS: ", "Date: ", "Local time now: "];
+    let mut lines = block.lines().peekable();
+    lines.peek().is_some() && lines.all(|l| KEYS.iter().any(|k| l.starts_with(k)))
+}
+
 pub fn first_message_full(cwd: &Path, notes: Option<&str>, state: Option<&str>, memory: &[String], input: &str) -> String {
     let s = format!("Working directory: {}\nOS: {}\nDate: {}\n{}\n\n", cwd.display(), std::env::consts::OS, local_date(), local_now());
     s + &first_message_bare(notes, state, memory, input)
@@ -111,7 +143,9 @@ pub fn first_message_bare(notes: Option<&str>, state: Option<&str>, memory: &[St
 /// A reply that writes a tool call as plain text instead of calling the tool (e.g. after a reset:
 /// `<tool><tool_name>read_file</tool_name><path>…</path></tool>`, so nothing ran). Markup only, any language:
 /// tool-call-like XML tags (`<tool>`, `<tool_call>`, `<tool_name>`, `<function=…>`, `<invoke …>`, `<parameter=…>`)
-/// or a JSON `{"name": …, "arguments"|"input"|"parameters": …}` object, outside fenced code blocks.
+/// or a JSON `{"name": …, "arguments"|"input"|"parameters": …}` object, outside fenced code blocks; or such a JSON
+/// object opening the reply inside a fence or inline backticks (a model with no tool calling writes its call so, then
+/// apologises: that is the reply's call, not a quote).
 pub fn looks_like_text_tool_call(text: &str) -> bool {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| regex::Regex::new(concat!(
@@ -119,6 +153,9 @@ pub fn looks_like_text_tool_call(text: &str) -> bool {
         r"|<(?:function|parameter)=[^>\n]*>",
         r#"|\{\s*"(?:name|tool|tool_name)"\s*:\s*"[^"\n]+"\s*,\s*"(?:arguments|input|parameters|args)"\s*:"#,
     )).unwrap());
+    let head = text.trim_start();
+    let head = head.strip_prefix("```").map(|r| r.trim_start_matches(|c: char| c.is_ascii_alphanumeric()).trim_start()).or_else(|| head.strip_prefix('`')).unwrap_or("");
+    if head.starts_with('{') && re.find(head).is_some_and(|m| m.start() == 0) { return true; }
     let mut fenced = false;
     let mut outside = String::new();
     for l in text.lines() {
@@ -137,8 +174,11 @@ pub const NUDGE_PREFIX: &str = "[elisa] ";
 
 /// The one-time correction after a reply wrote a tool call as text.
 pub fn tool_text_nudge(tool_names: &[&str]) -> String {
-    format!("{NUDGE_PREFIX}Your last reply wrote a tool call as plain text, so nothing ran. Call the tool through the \
-        tool-calling interface instead (tools: {}), or answer without tools.", tool_names.join(", "))
+    // (a server without native tools reads only the one-line form: "use the interface" alone left such a model with no
+    // way to call, and it made the answer up)
+    format!("{NUDGE_PREFIX}Your last reply wrote a tool call in a form that could not be read, so nothing ran and you \
+        have no result yet. Call the tool (tools: {}) through the tool-calling interface, or write exactly one line: \
+        <tool_call>{{\"name\": \"TOOL\", \"arguments\": {{…}}}}</tool_call>. Never write a result you did not get.", tool_names.join(", "))
 }
 
 /// The one-time correction after a tool call was cut off by the output limit.
@@ -247,4 +287,14 @@ pub(super) fn without_greeting(input: &str) -> &str {
 pub fn is_small_talk(input: &str) -> bool {
     let w: Vec<String> = input.split(|c: char| !(c.is_alphanumeric() || c == '\'')).filter(|x| !x.is_empty()).map(str::to_lowercase).collect();
     !w.is_empty() && w.len() <= 12 && w.iter().all(|x| SMALL_TALK.contains(&x.as_str()))
+}
+
+#[cfg(test)]
+mod zone_tests {
+    #[test]
+    fn a_zone_reads_as_its_place() {
+        assert_eq!(super::zone_place("Asia/Ho_Chi_Minh"), "Ho Chi Minh");
+        assert_eq!(super::zone_place("America/Argentina/Buenos_Aires"), "Buenos Aires");
+        assert!(!super::local_now().contains('_'), "{}", super::local_now());
+    }
 }

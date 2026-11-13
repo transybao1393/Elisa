@@ -3,6 +3,9 @@
 use elisa::eval::{load_cases, report, run_cases, select, table, Options};
 use std::path::PathBuf;
 
+mod common;
+use common::TempDir;
+
 #[test]
 fn every_deterministic_eval_case_passes() {
     let all = load_cases(None).expect("the built-in cases parse");
@@ -37,12 +40,12 @@ fn the_case_files_on_disk_are_the_embedded_ones() {
 #[cfg(unix)]
 #[test]
 fn a_stopped_run_leaves_no_session_or_folder() {
-    let tmp = std::env::temp_dir().join(format!("elisa-eval-stop-{}", std::process::id()));
+    let tmp = TempDir::new("eval-stop");
     let home = tmp.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_elisa"))
         .args(["eval", "--suite", "fake", "--jobs", "2", "--no-history"])
-        .env("HOME", &home).env("TMPDIR", &tmp)
+        .env("HOME", &home).env("TMPDIR", tmp.path())
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
     // wait until a case folder exists (a session is starting or running)
     let t0 = std::time::Instant::now();
@@ -57,7 +60,7 @@ fn a_stopped_run_leaves_no_session_or_folder() {
     // no `elisa --serve-jsonl --cwd <tmp>/…` still running
     std::thread::sleep(std::time::Duration::from_millis(200));
     let ps = std::process::Command::new("ps").args(["-Ao", "args"]).output().unwrap();
-    let left: Vec<String> = String::from_utf8_lossy(&ps.stdout).lines().filter(|l| l.contains("--serve-jsonl") && l.contains(&format!("elisa-eval-stop-{}/", std::process::id()))).map(String::from).collect();
+    let under = format!("{}/", tmp.file_name().unwrap().to_string_lossy());
+    let left: Vec<String> = String::from_utf8_lossy(&ps.stdout).lines().filter(|l| l.contains("--serve-jsonl") && l.contains(&under)).map(String::from).collect();
     assert!(left.is_empty(), "sessions left running: {left:?}");
-    let _ = std::fs::remove_dir_all(&tmp);
 }

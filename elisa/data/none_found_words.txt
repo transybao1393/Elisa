@@ -1,0 +1,29 @@
+# Wordings that say a check found no (other) problems ("No other known vulnerabilities were found", "không có lỗ hổng
+# nào"): in a dependency check's reply, a sentence with one of these, when the check found advisories, goes
+# (`repl/turn.rs` `drop_wrong_status`). One wording per line, lowercase, matched as whole words; add a language's
+# wording here, not in code.
+no other known vulnerabilities
+no other vulnerabilities
+no known vulnerabilities
+no vulnerabilities
+no other known advisories
+no other advisories
+no known advisories
+no advisories
+no other known issues
+no other security issues
+no known security issues
+no security issues
+no other known security problems
+no known security problems
+no security problems
+not vulnerable
+không có lỗ hổng
+khong co lo hong
+không tìm thấy lỗ hổng
+khong tim thay lo hong
+không có cảnh báo
+khong co canh bao
+không có lỗi bảo mật
+khong co loi bao mat
+không bị lỗ hổng

@@ -555,6 +555,7 @@ pub fn run_case(c: &Case, opts: &Options, idx: usize) -> CaseResult {
         Ok((turns, fake_reqs, left)) => {
             let ctx = Ctx { case: c, root: &root, vars: &vars, turns: &turns, fake: fake_reqs.as_deref() };
             metrics(&turns, &mut r.metrics);
+            r.metrics.loop_guard_stops = r.metrics.loop_guard_stops.max(loop_stops(&root));
             if let Some(n) = left.filter(|&n| n > 0) { r.notes.push(format!("{n} scripted replies not used")); }
             for ch in &c.checks { r.checks.push(evaluate(ch, &ctx)); }
             let failed: Vec<&CheckResult> = r.checks.iter().filter(|x| !x.pass).collect();
@@ -715,6 +716,18 @@ fn metrics(turns: &[TurnLog], m: &mut Metrics) {
             }
         }
     }
+}
+
+/// The loop-guard stops a case's run recorded in its own audit log (`loop_stop`: the turn's tool loop ended by the
+/// guard or the same-result repeat check), whatever the screen showed.
+fn loop_stops(root: &Path) -> usize {
+    audit_entries(root).iter().filter(|l| l["event"] == "loop_stop").count()
+}
+
+/// Every audit entry a case's run wrote in its temp home.
+fn audit_entries(root: &Path) -> Vec<Value> {
+    std::fs::read_dir(root.join("home/.elisa/audit")).into_iter().flatten().flatten()
+        .flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect::<Vec<_>>()).collect()
 }
 
 /// an info line saying the loop guard (or the same-result repeat check) stopped the turn's tool loop: the turn's stop,
@@ -915,9 +928,7 @@ fn evaluate(ch: &Check, cx: &Ctx) -> CheckResult {
             ok(k, bad.is_empty() && !files.is_empty(), if bad.is_empty() { format!("{} values, {} files checked", vals.len(), files.len()) } else { bad.join("; ") })
         }
         "audit_has" => {
-            let dir = cx.root.join("home/.elisa/audit");
-            let lines: Vec<Value> = std::fs::read_dir(&dir).into_iter().flatten().flatten()
-                .flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect::<Vec<_>>()).collect();
+            let lines = audit_entries(cx.root);
             let want = |l: &&Value| ch.event.as_deref().is_none_or(|e| l["event"] == e) && ch.reason.as_deref().is_none_or(|r| l["reason"] == r)
                 && ch.tool.as_deref().is_none_or(|t| l["tool"].as_str().is_some_and(|x| name_is(x, t)));
             let n = lines.iter().filter(want).count();
@@ -937,7 +948,9 @@ fn evaluate(ch: &Check, cx: &Ctx) -> CheckResult {
             ok(k, p, format!("{n} approval(s) (min {:?}, max {:?})", ch.min, ch.max))
         }
         "stopped_by_loop_guard" => {
-            let hit = cx.events(ch).iter().filter(|e| e["type"] == "info").filter_map(|e| e["text"].as_str()).find(|t| loop_stop(t)).map(String::from);
+            // the run's own record (the stop that asks the model for an answer shows no line), else a shown stop line
+            let rec = audit_entries(cx.root).into_iter().find(|l| l["event"] == "loop_stop").map(|l| format!("audit loop_stop: {}", l["reason"].as_str().unwrap_or("")));
+            let hit = rec.or_else(|| cx.events(ch).iter().filter(|e| e["type"] == "info").filter_map(|e| e["text"].as_str()).find(|t| loop_stop(t)).map(String::from));
             ok(k, hit.is_some(), hit.map_or("no loop-guard stop".to_string(), |h| short(&h)))
         }
         "info_contains" | "info_not_contains" => {
@@ -1247,7 +1260,7 @@ mod tests {
     #[test]
     fn builtin_cases_parse_and_have_unique_ids() {
         let all = load_cases(None).unwrap();
-        assert!((20..=100).contains(&all.len()), "{} cases", all.len());
+        assert!((20..=200).contains(&all.len()), "{} cases", all.len());
         assert!(all.iter().any(|c| c.kind == "model") && all.iter().any(|c| c.kind == "fake"));
         assert_eq!(select(&all, "model", None).unwrap().iter().filter(|c| c.kind != "model").count(), 0);
         assert!(select(&all, "nope", None).is_err());
@@ -1306,21 +1319,21 @@ mod tests {
 
     #[test]
     fn chosen_model_follows_provider_and_base_url() {
-        let home = std::env::temp_dir().join(format!("elisa-eval-choose-{}", std::process::id()));
+        let dir = crate::testdir::TempDir::new("eval-choose");
+        let home = dir.path();
         std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
-        std::fs::write(crate::provider::path_in(&home), "active = \"a\"\n[providers.a]\ntype = \"openai\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"ma\"\nmax_ctx = 8192\n[providers.b]\ntype = \"openai\"\nbase_url = \"https://b.example/v1\"\nmodel = \"mb\"\nmax_ctx = 8192\n").unwrap();
+        std::fs::write(crate::provider::path_in(home), "active = \"a\"\n[providers.a]\ntype = \"openai\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"ma\"\nmax_ctx = 8192\n[providers.b]\ntype = \"openai\"\nbase_url = \"https://b.example/v1\"\nmodel = \"mb\"\nmax_ctx = 8192\n").unwrap();
         let o = |s: &str| parse_cli(&args(s)).unwrap().0;
-        let m = chosen_model(Some(&home), &o("--provider b")).unwrap().unwrap();
+        let m = chosen_model(Some(home), &o("--provider b")).unwrap().unwrap();
         assert_eq!((m.name.as_str(), m.connection.as_str(), m.base_url.as_str()), ("mb", "b", "https://b.example/v1"));
-        let m = chosen_model(Some(&home), &o("--provider b --model x")).unwrap().unwrap();
+        let m = chosen_model(Some(home), &o("--provider b --model x")).unwrap().unwrap();
         assert_eq!((m.name.as_str(), m.connection.as_str()), ("x", "b"));
-        assert!(chosen_model(Some(&home), &o("--provider nope")).unwrap_err().contains("nope"));
+        assert!(chosen_model(Some(home), &o("--provider nope")).unwrap_err().contains("nope"));
         // an unsaved server: no connection, and no model unless one is given
-        let m = chosen_model(Some(&home), &o("--base-url http://127.0.0.1:11434/v1/ --type openai --model q")).unwrap().unwrap();
+        let m = chosen_model(Some(home), &o("--base-url http://127.0.0.1:11434/v1/ --type openai --model q")).unwrap().unwrap();
         assert_eq!((m.name.as_str(), m.connection.as_str(), m.base_url.as_str()), ("q", "", "http://127.0.0.1:11434/v1"));
-        assert!(chosen_model(Some(&home), &o("--base-url http://127.0.0.1:11434/v1 --type openai")).unwrap().is_none());
-        assert!(chosen_model(Some(&home), &o("--provider none")).unwrap().is_none());
-        let _ = std::fs::remove_dir_all(&home);
+        assert!(chosen_model(Some(home), &o("--base-url http://127.0.0.1:11434/v1 --type openai")).unwrap().is_none());
+        assert!(chosen_model(Some(home), &o("--provider none")).unwrap().is_none());
     }
 
     #[test]

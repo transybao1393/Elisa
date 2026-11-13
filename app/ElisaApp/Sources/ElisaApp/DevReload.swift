@@ -29,7 +29,8 @@ final class DevReload {
     func watch(_ m: AppModel) {
         guard Self.enabled, timer == nil else { return }
         stamp = mtime()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self, weak m] _ in
+        // the timer fires on the main run loop: the closure runs on the main actor
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self, weak m] _ in MainActor.assumeIsolated {
             guard let self, let m else { return }
             // any sign of use resets the idle clock
             let seen = (m.blocks.count, m.input)
@@ -41,7 +42,7 @@ final class DevReload {
                   Date().timeIntervalSince(self.lastActivity) > Self.idleFor else { return }
             self.pending = false
             m.devReload()
-        }
+        } }
     }
 }
 

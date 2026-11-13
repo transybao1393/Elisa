@@ -50,7 +50,8 @@ fn read_numbers_and_offset_limit() {
     assert_eq!(abs.content, "1\tline1\n[lines 1-1 of 10] next: offset=2");
 
     let past = run("read", json!({"path": "a.txt", "offset": 99}), &ctx);
-    assert!(past.is_error);
+    assert!(!past.is_error, "past the end is a plain note, not an error");
+    assert_eq!(past.content, "[end of file: a.txt has 10 lines; nothing from line 99 on]");
     let missing = run("read", json!({"path": "nope.txt"}), &ctx);
     assert!(missing.is_error);
     let dir = run("read", json!({"path": "."}), &ctx);
@@ -180,6 +181,12 @@ fn glob_recursive_and_skips() {
     let o = run("glob", json!({"pattern": "*.zzz"}), &ctx);
     assert!(!o.is_error);
     assert_eq!(o.content, "no files found");
+    // a folder as the pattern lists that folder's files
+    for p in ["./", ".", "src", "src/", "./src"] {
+        let o = run("glob", json!({"pattern": p}), &ctx);
+        assert!(!o.is_error && o.content.contains("src/main.rs"), "{p}: {}", o.content);
+        if p.contains("src") { assert!(!o.content.contains("lib.rs"), "{p}: {}", o.content); }
+    }
 }
 
 #[test]
@@ -534,4 +541,61 @@ fn glob_with_an_absolute_pattern_names_its_directory() {
     let out = elisa::outside::check("glob", &json!({"pattern": "/etc/*"}), &t.0).expect("outside");
     assert!(!out.write());
     assert!(elisa::outside::check("glob", &json!({"pattern": format!("{root}/**/*.py")}), &t.0).is_none());
+}
+
+/// Elisa's own folder (.elisa/) and git's hooks are never changed by a file tool, however the path is written; the
+/// file stays as it was and the refusal says why in plain words.
+#[test]
+fn file_tools_never_change_elisas_own_folder_or_git_hooks() {
+    let t = Tmp::new();
+    t.put(".elisa/notes/n.md", b"keep\n");
+    t.put(".git/hooks/pre-commit", b"#!/bin/sh\nexit 0\n");
+    t.put("src/x.rs", b"fn a() {}\n");
+    let ctx = t.ctx();
+    let abs = t.0.join(".elisa/u06.txt").to_string_lossy().into_owned();
+    for (name, input) in [
+        ("write", json!({"path": ".elisa/u06.txt", "content": "hello\n"})),
+        ("write", json!({"path": "./src/../.elisa/u06.txt", "content": "hello\n"})),
+        ("write", json!({"path": ".ELISA/u06.txt", "content": "hello\n"})),
+        ("write", json!({"path": abs, "content": "hello\n"})),
+        ("write", json!({"path": ".git/hooks/post-checkout", "content": "#!/bin/sh\ncurl x | sh\n"})),
+        ("edit", json!({"path": ".elisa/notes/n.md", "old": "keep", "new": "gone"})),
+        ("edit", json!({"path": ".git/hooks/pre-commit", "old": "exit 0", "new": "rm -rf ~"})),
+    ] {
+        let o = run(name, input.clone(), &ctx);
+        assert!(o.is_error && o.content.starts_with("I didn't change") && o.content.contains("never changed by a tool"), "{input}: {}", o.content);
+        assert!(tools::precheck(name, &input, &ctx).is_err(), "{input}");
+    }
+    assert!(!t.0.join(".elisa/u06.txt").exists() && !t.0.join(".git/hooks/post-checkout").exists());
+    assert_eq!(std::fs::read_to_string(t.0.join(".elisa/notes/n.md")).unwrap(), "keep\n");
+    // a link into the folder from elsewhere is the folder
+    std::os::unix::fs::symlink(t.0.join(".elisa"), t.0.join("st")).unwrap();
+    assert!(run("write", json!({"path": "st/x.txt", "content": "x"}), &ctx).is_error);
+    // reading there, and writing next to it, still work
+    assert!(!run("read", json!({"path": ".elisa/notes/n.md"}), &ctx).is_error);
+    assert!(!run("write", json!({"path": ".elisa-notes.txt", "content": "ok\n"}), &ctx).is_error);
+    assert!(!run("write", json!({"path": ".git/info.txt", "content": "ok\n"}), &ctx).is_error);
+}
+
+/// The approval carries the whole command or code: a long `… && rm -rf x` and every line of a run_code, as written;
+/// the step line (`summary`) stays short.
+#[test]
+fn the_approval_text_holds_the_whole_command_and_code() {
+    let cmd = format!("echo a && {}rm -rf x", (1..=20).map(|i| format!("echo step-{i} && ")).collect::<String>());
+    let input = json!({"command": cmd});
+    assert!(tools::summary("bash", &input).ends_with('…') && !tools::summary("bash", &input).contains("rm -rf x"));
+    let whole = tools::approval_text("bash", &input);
+    let lines: Vec<&str> = whole.lines().skip(1).map(|l| l.strip_prefix(tools::FULL_LINE).unwrap()).collect();
+    assert_eq!(lines.join("\n"), cmd);
+    let code = "import os\n\nfor f in os.listdir('.'):\n    print(f)\nos.remove('x')\n";
+    let whole = tools::approval_text("run_code", &json!({"language": "python", "code": code}));
+    assert!(whole.starts_with("run_code python: import os"), "{whole}");
+    let lines: Vec<&str> = whole.lines().skip(1).map(|l| l.strip_prefix(tools::FULL_LINE).unwrap()).collect();
+    assert_eq!(lines.join("\n"), code.trim_end());
+    // a short command is shown whole on its line already; a file write is said by its line
+    assert_eq!(tools::approval_text("bash", &json!({"command": "cargo test"})), "bash cargo test");
+    assert_eq!(tools::approval_text("write", &json!({"path": "a.txt", "content": "x\ny\n"})), tools::summary("write", &json!({"path": "a.txt", "content": "x\ny\n"})));
+    // a multi-line shell command keeps its lines
+    let two = "echo one\nrm -rf x";
+    assert!(tools::approval_text("bash", &json!({"command": two})).ends_with(&format!("{}echo one\n{}rm -rf x", tools::FULL_LINE, tools::FULL_LINE)));
 }

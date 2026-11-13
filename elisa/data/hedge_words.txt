@@ -1,0 +1,31 @@
+# Words that make a sentence a guess or a hedge ("The meeting is likely about the launch.", "Further details are
+# needed.", "Có lẽ là …"): in a summary Elisa saves of files she read, such a sentence is not from the files, so it is
+# left out (`repl/turn.rs` `from_read`). One wording per line, lowercase, matched as whole words; add a language's
+# wording here, not in code.
+likely
+unlikely
+probably
+perhaps
+maybe
+may
+might
+possibly
+presumably
+seems
+seem
+appears
+apparently
+suggests
+needed
+unclear
+unknown
+có lẽ
+co le
+có thể
+co the
+hình như
+hinh nhu
+chắc là
+chac la
+dường như
+duong nhu

@@ -1,0 +1,158 @@
+# A clock time plus or minus a duration, worked out by Elisa herself (`situation` `clock_sum`): "a train leaves at
+# 3:20 pm and the trip takes 2 hours 55 minutes. when does it arrive?" is 6:15 pm (moondream:1.8b said 7:55 pm). The
+# start time and the duration are read from the user's words with these wordings; a reply's time that is not the
+# result (nor the start, the duration or a step on the way) is put right. One wording per line as "key: wording",
+# lowercase, matched as whole words; add a language's wording here, not in code.
+#   hours, minutes   the units of a duration ("2 hours 55 minutes", "2 tiếng 55 phút", "90 min")
+#   join             what may stand between a duration's hours and minutes ("2 hours and 55 minutes")
+#   oclock           what follows the hour of a time said with it ("lúc 3 giờ 20 chiều", "at 3 o'clock"): in the
+#                    user's words such a time counts only right after an `at` word (else "2 giờ" is a duration)
+#   at               a word right before a start time said with `oclock`
+#   am, pm           the 12-hour marks ("3:20 pm", "9 am"): the result is said the same way
+#   am part, pm part the parts of the day said after a time instead ("15:20", "3:20 chiều"): the result is said
+#                    as a 24-hour time
+#   later            a word that makes the duration come after the start ("after", "2 hours later", "sau")
+#   later right before   a later word only when it comes right before the duration ("in 2 hours")
+#   earlier          a word that makes it come before ("before", "ago", "when should I leave", "trước")
+#   span             a word that says the duration is how long something takes ("takes", "lasts", "mất"): after
+#                    the start, unless an `earlier` word says otherwise
+#   asks             the words that ask for the time (besides a question mark)
+#   working.<lang>   Elisa's working, added to a reply that states no time: {start} {sign} {duration} = {result}
+#   hm.<lang>, h.<lang>, m.<lang>   a duration as said in that working ({h} hours, {m} minutes)
+#   next day.<lang>, day before.<lang>   said after a result past midnight
+hours: hours
+hours: hour
+hours: hrs
+hours: hr
+hours: h
+hours: tiếng
+hours: tieng
+hours: giờ
+hours: gio
+hours: tiếng đồng hồ
+minutes: minutes
+minutes: minute
+minutes: mins
+minutes: min
+minutes: m
+minutes: phút
+minutes: phut
+join: and
+join: và
+join: va
+oclock: o'clock
+oclock: giờ
+oclock: gio
+at: at
+at: from
+at: lúc
+at: luc
+at: từ
+at: tu
+am: am
+am: a.m.
+am: a.m
+pm: pm
+pm: p.m.
+pm: p.m
+am part: sáng
+am part: sang
+pm part: chiều
+pm part: chieu
+pm part: tối
+pm part: toi
+later: after
+later: later
+later: from now
+later: plus
+later: sau
+later: thêm
+later right before: in
+later right before: trong
+earlier: before
+earlier: ago
+earlier: earlier
+earlier: prior
+earlier: minus
+earlier: should i leave
+earlier: should we leave
+earlier: do i need to leave
+earlier: do we need to leave
+earlier: when to leave
+earlier: leave by
+earlier: should i be there
+earlier: should we be there
+earlier: should i be at
+earlier: should i arrive
+earlier: should we arrive
+earlier: need to arrive
+earlier: arrive by
+earlier: be there by
+earlier: get there by
+earlier: should i start
+earlier: when to start
+earlier: trước
+earlier: truoc
+earlier: sớm hơn
+earlier: som hon
+earlier: phải đi lúc
+earlier: phai di luc
+earlier: cần đi lúc
+earlier: can di luc
+earlier: xuất phát lúc mấy
+earlier: xuat phat luc may
+span: takes
+span: take
+span: took
+span: lasts
+span: last
+span: lasting
+span: trip
+span: journey
+span: flight
+span: drive
+span: ride
+span: long
+span: arrive
+span: arrives
+span: arrival
+span: end
+span: ends
+span: finish
+span: finishes
+span: đến nơi
+span: den noi
+span: kết thúc
+span: ket thuc
+span: xong
+span: mất
+span: mat
+span: kéo dài
+span: keo dai
+span: đi
+asks: when
+asks: what time
+asks: which time
+asks: what hour
+asks: how late
+asks: how early
+asks: mấy giờ
+asks: may gio
+asks: lúc nào
+asks: luc nao
+asks: khi nào
+asks: khi nao
+asks: mấy h
+asks: may h
+working.en: {start} {sign} {duration} = {result}
+working.vi: {start} {sign} {duration} = {result}
+hm.en: {h} h {m} min
+hm.vi: {h} giờ {m} phút
+h.en: {h} h
+h.vi: {h} giờ
+m.en: {m} min
+m.vi: {m} phút
+next day.en: (the next day)
+next day.vi: (hôm sau)
+day before.en: (the day before)
+day before.vi: (hôm trước)

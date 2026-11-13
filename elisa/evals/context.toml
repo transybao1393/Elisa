@@ -36,7 +36,7 @@ text = "BLUE HERON"
 [[case.checks]]
 type = "file_contains"
 path = ".elisa/notes/*.md"
-text = "## Files changed (Elisa's own edit records)\n- hello.txt: written (new file)"
+text = "## Files changed\n- hello.txt: written (new file)"
 [[case.checks]]
 type = "file_not_contains"
 path = ".elisa/notes/*.md"
@@ -84,7 +84,7 @@ text = "Codename BLUE HERON, owner Mira Tanaka."
 [[case.checks]]
 type = "file_contains"
 path = ".elisa/notes/*.md"
-text = "## Files changed (Elisa's own edit records)\n- hello.txt: written (new file)"
+text = "## Files changed\n- hello.txt: written (new file)"
 [[case.checks]]
 type = "file_contains"
 path = ".elisa/notes/*.md"
@@ -120,8 +120,8 @@ send = "/clear"
 [[case.turns]]
 send = "next one"
 [[case.checks]]
-type = "info_contains"
-text = "[cleared:"
+type = "info_not_contains"
+text = "[cleared"
 turn = 2
 [[case.checks]]
 type = "event"
@@ -178,7 +178,7 @@ text = "continuing your last conversation"
 turn = 2
 [[case.checks]]
 type = "info_contains"
-text = "no state card yet"
+text = "No running facts for this chat yet."
 turn = 3
 [[case.checks]]
 type = "info_contains"
@@ -186,7 +186,7 @@ text = "continuing your last conversation"
 turn = 4
 [[case.checks]]
 type = "info_contains"
-text = "no state card yet"
+text = "No running facts for this chat yet."
 turn = 4
 [[case.checks]]
 type = "info_not_contains"
@@ -209,7 +209,7 @@ interrupt = true
 send = "again"
 [[case.checks]]
 type = "info_contains"
-text = "[cancelled]"
+text = "Stopped."
 turn = 1
 [[case.checks]]
 type = "max_seconds"

@@ -399,6 +399,8 @@ dependencies = [
  "crc32fast",
  "libc",
  "lz4_flex",
+ "unicode-normalization",
+ "unicode-properties",
 ]
 
 [[package]]

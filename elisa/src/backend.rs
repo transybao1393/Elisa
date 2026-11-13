@@ -398,6 +398,27 @@ pub fn ollama_show(root: &str, model: &str, key: &str, ms: u64) -> Option<(Vec<S
     parse_ollama_show(&serde_json::from_str(&r.body_mut().read_to_string().ok()?).ok()?)
 }
 
+/// The marks a model writes that Ollama never shows: the one-character punctuation tokens its vocabulary types as
+/// control (token type 3), such as a Qwen2 build's token 0 "!", from `/api/show` with `verbose`. Empty when it has none
+/// or the server does not say.
+pub fn ollama_hidden_marks(root: &str, model: &str, ms: u64) -> Vec<char> {
+    let rq = agent(ms.max(3000)).post(format!("{}/api/show", root.trim_end_matches('/'))).header("content-type", "application/json");
+    let Ok(mut r) = rq.send(json!({"model": model, "verbose": true}).to_string()) else { return Vec::new() };
+    if !r.status().is_success() { return Vec::new(); }
+    let Ok(v) = serde_json::from_str::<Value>(&r.body_mut().read_to_string().unwrap_or_default()) else { return Vec::new() };
+    hidden_marks(&v["model_info"])
+}
+
+/// `ollama_hidden_marks` from a `/api/show` `model_info`.
+pub fn hidden_marks(info: &Value) -> Vec<char> {
+    let (Some(tokens), Some(types)) = (info["tokenizer.ggml.tokens"].as_array(), info["tokenizer.ggml.token_type"].as_array()) else { return Vec::new() };
+    tokens.iter().zip(types).filter(|(_, ty)| ty.as_u64() == Some(3)).filter_map(|(t, _)| {
+        let mut c = t.as_str()?.chars();
+        let ch = c.next()?;
+        (c.next().is_none() && ch.is_ascii_punctuation()).then_some(ch)
+    }).collect()
+}
+
 /// The restore of a file that does not exist: a server without `--slot-save-path` answers 501 "not supported"; one
 /// with it fails on the missing file (and touches no slot).
 fn slot_save_supported(a: &ureq::Agent, root: &str, key: &str) -> bool {
@@ -461,27 +482,194 @@ pub fn text_tools_prompt(tools: &[ToolDef]) -> String {
     s
 }
 
-/// Tool calls written as text (`<tool_call>{…}</tool_call>`, or a bare `{"name": …, "arguments": …}` line) for tools
-/// that exist: the text without them, and the calls. A name that is not a tool stays text.
+/// Tool calls written as text for tools that exist: the text without them, and the calls. Shapes read:
+/// `<tool_call>{"name": …, "arguments": …}</tool_call>` (the closing tag optional: a model often stops at its own
+/// stop token before it), a tag named after the tool (`<web_search>{"query": …}</web_search>`), a line that is
+/// only a `{"name": …, "arguments": …}` object, and such an object opening the reply, bare, fenced or in inline
+/// backticks, with words after it (a model with no tool calling writes its call and then apologises: the words stay
+/// text, `leading_wrapped_call`). The JSON is read up to the end of its object, so nested arguments work. A name that
+/// is not a tool, or JSON that does not parse, stays text.
 pub fn text_calls(text: &str, tools: &[ToolDef]) -> (String, Vec<(String, Value)>) {
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(r"(?ms)<tool_call>\s*(\{.*?\})\s*</tool_call>|^[ \t]*(\{[ \t]*\x22name\x22[ \t]*:[^\n]*\})[ \t]*$").unwrap());
     let known = |n: &str| tools.iter().any(|t| t.name == n);
+    let args_of = |v: &Value| match v.get("arguments").or_else(|| v.get("input")).or_else(|| v.get("parameters")) {
+        Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(json!({})),
+        Some(a) => a.clone(),
+        None => json!({}),
+    };
     let mut calls = Vec::new();
     let mut rest = String::new();
-    let mut last = 0;
-    for m in re.captures_iter(text) {
-        let whole = m.get(0).unwrap();
-        let js = m.get(1).or(m.get(2)).map_or("", |x| x.as_str());
-        let Ok(v) = serde_json::from_str::<Value>(js) else { continue };
-        let Some(name) = v["name"].as_str().filter(|n| known(n)) else { continue };
-        let args = match &v["arguments"] { Value::Object(_) => v["arguments"].clone(), Value::String(s) => serde_json::from_str(s).unwrap_or(json!({})), _ => v.get("input").cloned().unwrap_or(json!({})) };
-        rest.push_str(&text[last..whole.start()]);
-        last = whole.end();
-        calls.push((name.to_string(), args));
+    let (mut i, mut last) = (0, 0);
+    if let Some((end, call)) = leading_wrapped_call(text, &known, &args_of) {
+        calls.push(call);
+        (last, i) = (end, end);
+    }
+    while i < text.len() {
+        let s = &text[i..];
+        let step = s.chars().next().map_or(1, char::len_utf8);
+        // the opener at i: its length and the tag a closing one would name (None: a bare JSON line)
+        let tag_name = s.strip_prefix('<').and_then(|t| t.split_once('>')).map(|(n, _)| n)
+            .filter(|n| n == &"tool_call" || known(n));
+        let line_start = text[..i].rsplit('\n').next().is_some_and(|l| l.trim().is_empty());
+        let opener = match tag_name {
+            Some(n) => Some((n.len() + 2, Some(n))),
+            None if line_start && s.starts_with('{') && s[1..].trim_start().starts_with("\"name\"") => Some((0, None)),
+            None => None,
+        };
+        // the XML shape some templates use: `<function=NAME><parameter=KEY>value</parameter>…</function>`, inside a
+        // `<tool_call>` or not
+        if let Some((name, args, len)) = s.starts_with("<function=").then(|| function_call(s)).flatten().filter(|c| known(&c.0)) {
+            let before = text[last..i].trim_end();
+            let start = if before.ends_with("<tool_call>") { last + before.len() - "<tool_call>".len() } else { i };
+            let mut end = i + len;
+            let tail = &text[end..];
+            let tws = tail.len() - tail.trim_start().len();
+            if tail[tws..].starts_with("</tool_call>") { end += tws + "</tool_call>".len(); }
+            rest.push_str(&text[last..start]);
+            (last, i) = (end, end);
+            calls.push((name, args));
+            continue;
+        }
+        let Some((olen, tag)) = opener else { i += step; continue };
+        let after = &s[olen..];
+        let ws = after.len() - after.trim_start().len();
+        let mut de = serde_json::Deserializer::from_str(&after[ws..]).into_iter::<Value>();
+        let Some(Ok(v)) = de.next() else { i += step; continue };
+        let mut end = i + olen + ws + de.byte_offset();
+        let call = match tag {
+            Some(t) if t != "tool_call" => Some((t.to_string(), if v["name"] == t { args_of(&v) } else { v.clone() })),
+            _ => v["name"].as_str().filter(|n| known(n)).map(|n| (n.to_string(), args_of(&v))),
+        };
+        let Some(call) = call.filter(|c| c.1.is_object()) else { i += step; continue };
+        let tail = &text[end..];
+        let tws = tail.len() - tail.trim_start().len();
+        match tag {
+            Some(t) => { let close = format!("</{t}>"); if tail[tws..].starts_with(&close) { end += tws + close.len(); } }
+            // a bare JSON call is a line of its own, unless it opens the reply (words after it are the model's apology)
+            None if !text[..i].trim().is_empty() && !tail.split('\n').next().unwrap_or("").trim().is_empty() => { i += step; continue }
+            None => {}
+        }
+        rest.push_str(&text[last..i]);
+        (last, i) = (end, end);
+        calls.push(call);
     }
     rest.push_str(&text[last..]);
     (rest.trim().to_string(), calls)
+}
+
+/// A call written as JSON at the very start of `text` inside a fence (```` ```json {"name": …, "arguments": {…}} ``` ````)
+/// or inline backticks, for a tool `known`: where the wrapped call ends (the closing fence or backtick included) and
+/// the call. None for anything else, a fence with words before it included: that is a quote, not the reply's call.
+fn leading_wrapped_call(text: &str, known: &dyn Fn(&str) -> bool, args_of: &dyn Fn(&Value) -> Value) -> Option<(usize, (String, Value))> {
+    let t = text.trim_start();
+    let off = text.len() - t.len();
+    let (at, close) = if let Some(r) = t.strip_prefix("```") {
+        // (the fence's language label, "json", skipped)
+        let inner = r.trim_start_matches(|c: char| c.is_ascii_alphanumeric()).trim_start();
+        (t.len() - inner.len(), "```")
+    } else if t.starts_with('`') { (1, "`") } else { return None };
+    let after = &t[at..];
+    if !after.starts_with('{') { return None; }
+    let mut de = serde_json::Deserializer::from_str(after).into_iter::<Value>();
+    let Some(Ok(v)) = de.next() else { return None };
+    let name = v["name"].as_str().filter(|n| known(n))?.to_string();
+    let args = args_of(&v);
+    if !args.is_object() { return None; }
+    let mut end = at + de.byte_offset();
+    let tail = &t[end..];
+    let ws = tail.len() - tail.trim_start().len();
+    if tail[ws..].starts_with(close) { end += ws + close.len(); }
+    Some((off + end, (name, args)))
+}
+
+/// `<function=NAME><parameter=KEY>value</parameter>…</function>` at the start of `s`: (name, arguments, length). A
+/// value that reads as a JSON number, true/false, list or object is that; any other is the text (one newline at each
+/// end dropped). The closing `</function>` may be missing at the end of the text.
+fn function_call(s: &str) -> Option<(String, Value, usize)> {
+    let head = s.strip_prefix("<function=")?;
+    let (name, mut rest) = head.split_once('>')?;
+    let name = name.trim().trim_matches('"');
+    if name.is_empty() || name.contains(char::is_whitespace) { return None; }
+    let mut used = "<function=".len() + head.len() - rest.len();
+    let mut args = serde_json::Map::new();
+    loop {
+        let ws = rest.len() - rest.trim_start().len();
+        let r = &rest[ws..];
+        if let Some(p) = r.strip_prefix("<parameter=") {
+            let (key, after) = p.split_once('>')?;
+            let (val, after_val) = match after.find("</parameter>") {
+                Some(e) => (&after[..e], &after[e + "</parameter>".len()..]),
+                None => (after.split("</function>").next().unwrap_or(after), ""),
+            };
+            let v = val.strip_prefix('\n').unwrap_or(val);
+            let v = v.strip_suffix('\n').unwrap_or(v);
+            let parsed = serde_json::from_str::<Value>(v.trim()).ok().filter(|x| !x.is_string() && !x.is_null());
+            args.insert(key.trim().trim_matches('"').to_string(), parsed.unwrap_or_else(|| json!(v)));
+            used += ws + (r.len() - after_val.len());
+            rest = after_val;
+            if rest.is_empty() { break; }
+        } else if let Some(after) = r.strip_prefix("</function>") {
+            used += ws + (r.len() - after.len());
+            break;
+        } else if r.is_empty() { break; } else { return None; }
+    }
+    Some((name.to_string(), Value::Object(args), used))
+}
+
+/// A text that ends in the same block of lines three times running (a model looping: one paragraph written
+/// dozens of times): where its first copy ends. A block is 1 to 8 non-empty lines of at least 20 characters in all.
+pub fn repeated_tail(text: &str) -> Option<usize> {
+    // the non-empty lines (trimmed) and where each ends
+    let mut lines: Vec<(&str, usize)> = Vec::new();
+    let mut at = 0;
+    for l in text.split_inclusive('\n') {
+        at += l.len();
+        if !l.trim().is_empty() { lines.push((l.trim(), at)); }
+    }
+    let n = lines.len();
+    (1..=8usize).filter(|k| 3 * k <= n).find_map(|k| {
+        let block = &lines[n - k..];
+        if block.iter().map(|l| l.0.chars().count()).sum::<usize>() < 20 { return None; }
+        let same = (1..3).all(|c| (0..k).all(|j| lines[n - k * (c + 1) + j].0 == block[j].0));
+        same.then(|| lines[n - 3 * k + k - 1].1)
+    })
+}
+
+/// Streamed reply text with tool-call markup held back: from the first opener (`<tool_call`, a tag named after a
+/// tool, `{"name"` …) on, nothing more is shown while the reply streams, so raw call markup never reaches the user.
+/// `finish` gives back the held text when it turned out not to be a call.
+pub struct CallHold { openers: Vec<String>, buf: String, held: bool }
+
+impl CallHold {
+    pub fn new(tools: &[ToolDef]) -> CallHold {
+        // (a JSON call in a fence or inline backticks: held from the fence on, so no bare "```json" line shows)
+        let mut openers: Vec<String> = ["<tool_call", "<tool_use", "<tool>", "<function", "<invoke", "{\"name\"", "```json\n{\"name\"", "```\n{\"name\"", "`{\"name\""].iter().map(|s| s.to_string()).collect();
+        openers.extend(tools.iter().map(|t| format!("<{}>", t.name)));
+        CallHold { openers, buf: String::new(), held: false }
+    }
+
+    /// The part of `t` (with what was kept back before it) that can be shown now.
+    pub fn push(&mut self, t: &str) -> String {
+        self.buf.push_str(t);
+        if self.held { return String::new(); }
+        if let Some(i) = self.openers.iter().filter_map(|o| self.buf.find(o.as_str())).min() {
+            self.held = true;
+            let shown = self.buf[..i].to_string();
+            self.buf.drain(..i);
+            return shown;
+        }
+        // a tail that may be the start of an opener waits for the next piece
+        let keep = self.buf.char_indices().map(|(k, _)| k)
+            .find(|&k| self.openers.iter().any(|o| o.starts_with(&self.buf[k..]))).unwrap_or(self.buf.len());
+        let shown = self.buf[..keep].to_string();
+        self.buf.drain(..keep);
+        shown
+    }
+
+    /// What is still held at the end: shown unless it reads as a tool call.
+    pub fn finish(&mut self) -> String {
+        let rest = std::mem::take(&mut self.buf);
+        if self.held && crate::context::looks_like_text_tool_call(&rest) { String::new() } else { rest }
+    }
 }
 
 /// History for a server without native tools: a call becomes its `<tool_call>` text, a result a user message.
@@ -494,6 +682,39 @@ pub fn textify(msgs: &[Message]) -> Vec<Message> {
         }).collect();
         Message { role: m.role, content, id: m.id.clone(), model: m.model.clone() }
     }).collect()
+}
+
+/// History for a request with no tools in a window too small for them: each of Elisa's own steps (calls with ids
+/// `elisa_…`, then their results) goes into the user message before it as text, after the user's words ("notes.txt:"
+/// and the file's lines without their numbers), where a small model reads it as data for the question; any other
+/// call or result as `textify` writes it.
+pub fn fold_own_steps(msgs: &[Message]) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::new();
+    let mut i = 0;
+    while i < msgs.len() {
+        let m = &msgs[i];
+        let own = m.role == crate::types::Role::Assistant && !m.content.is_empty()
+            && m.content.iter().all(|b| matches!(b, Block::ToolUse { id, .. } if id.starts_with("elisa_")));
+        let next = msgs.get(i + 1).filter(|n| n.content.iter().all(|b| matches!(b, Block::ToolResult { .. })));
+        let host = out.last_mut().filter(|p| p.role == crate::types::Role::User && p.content.iter().any(|b| matches!(b, Block::Text { .. })));
+        if let (true, Some(res), Some(host)) = (own, next, host) {
+            let mut add = String::new();
+            for b in &res.content {
+                let Block::ToolResult { tool_use_id, content, is_error } = b else { continue };
+                let call = m.content.iter().find_map(|u| match u { Block::ToolUse { id, name, input } if id == tool_use_id => Some((name.as_str(), input)), _ => None });
+                let label = call.map_or_else(String::new, |(n, inp)| inp["path"].as_str().map_or_else(|| crate::tools::summary(n, inp), str::to_string));
+                let body: String = content.lines().map(|l| l.trim_start().split_once('\t').filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).map_or(l, |(_, t)| t))
+                    .collect::<Vec<_>>().join("\n");
+                add.push_str(&if *is_error { format!("\n\n{label}: {}", body.trim()) } else { format!("\n\n{label}:\n{}", body.trim_end()) });
+            }
+            if let Some(Block::Text { text }) = host.content.iter_mut().rev().find(|b| matches!(b, Block::Text { .. })) { text.push_str(&add); }
+            i += 2;
+            continue;
+        }
+        out.extend(textify(std::slice::from_ref(m)));
+        i += 1;
+    }
+    out
 }
 
 // ---------- Mistral ----------
@@ -721,6 +942,85 @@ mod tests {
         assert!(text_tools_prompt(&tools).contains("- read: Read a file"));
         let h = textify(&[Message::new(Role::Assistant, vec![Block::ToolUse { id: "1".into(), name: "read".into(), input: json!({"path": "a"}) }])]);
         assert_eq!(h[0].content, vec![Block::Text { text: "<tool_call>{\"name\":\"read\",\"arguments\":{\"path\":\"a\"}}</tool_call>".into() }]);
+    }
+
+    #[test]
+    fn text_calls_without_closing_tag_or_named_after_the_tool_are_read() {
+        let tools = [ToolDef { name: "read".into(), description: "Read a file".into(), input_schema: json!({"type": "object"}) },
+            ToolDef { name: "web_search".into(), description: "Search the web".into(), input_schema: json!({"type": "object"}) }];
+        let (rest, calls) = text_calls("<tool_call>{\"name\": \"read\", \"arguments\": {\"path\": \"a.txt\"}}", &tools);
+        assert_eq!((rest.as_str(), calls), ("", vec![("read".to_string(), json!({"path": "a.txt"}))]), "no closing tag");
+        let (rest, calls) = text_calls("Looking.\n<web_search>{\"query\": \"population of Vietnam\"}</web_search>", &tools);
+        assert_eq!((rest.as_str(), calls), ("Looking.", vec![("web_search".to_string(), json!({"query": "population of Vietnam"}))]));
+        let (rest, calls) = text_calls("<tool_call>{\"name\": \"read\", \"arguments\": {\"path\": \"x\"}}</tool_call>\n<tool_call>{\"name\": \"read\", \"arguments\": {\"path\": \"y\"}}</tool_call>", &tools);
+        assert_eq!((rest.as_str(), calls.len()), ("", 2));
+        let (rest, calls) = text_calls("I use {\"name\": \"read\"} in prose and <b>bold</b>.", &tools);
+        assert!(calls.is_empty() && rest.contains("<b>bold</b>"));
+    }
+
+    /// a model with no tool calling writes its call as JSON, bare, fenced or in backticks, and apologises after it:
+    /// the call runs, the words stay text, and a call quoted after words stays a quote
+    #[test]
+    fn a_json_call_opening_the_reply_is_read_fenced_bare_or_inline() {
+        let tools = [ToolDef { name: "bash".into(), description: "Run a zsh command".into(), input_schema: json!({"type": "object"}) }];
+        let call = ("bash".to_string(), json!({"command": "df"}));
+        let sorry = "I'm sorry, I cannot run commands here.";
+        for t in [format!("{{\"name\":\"bash\",\"arguments\":{{\"command\":\"df\"}}}} {sorry}"), format!("```json\n{{\"name\":\"bash\",\"arguments\":{{\"command\":\"df\"}}}}\n```\n{sorry}"),
+            format!("`{{\"name\": \"bash\", \"arguments\": {{\"command\": \"df\"}}}}` {sorry}"), format!("```\n{{\"name\":\"bash\",\"arguments\":{{\"command\":\"df\"}}}}\n```{sorry}")] {
+            let (rest, calls) = text_calls(&t, &tools);
+            assert_eq!((rest.as_str(), &calls), (sorry, &vec![call.clone()]), "{t:?}");
+            assert!(crate::context::looks_like_text_tool_call(&t), "{t:?}");
+            let mut hold = CallHold::new(&tools);
+            let shown = hold.push(&t);
+            assert!(!shown.contains("name") && !shown.contains("```"), "{t:?}: shown {shown:?}");
+        }
+        // words before a fenced call: not the shape of a reply that is a call (a line of its own in it is still read
+        // as one when tools are offered, as before)
+        let t = "A call looks like this:\n```json\n{\"name\":\"bash\",\"arguments\":{\"command\":\"df\"}}\n```";
+        assert!(!crate::context::looks_like_text_tool_call(t));
+        let (rest, calls) = text_calls("Here is how:\n`{\"name\":\"bash\",\"arguments\":{\"command\":\"df\"}}` and so on", &tools);
+        assert!(calls.is_empty() && rest.contains("and so on"), "an inline call after words is a quote");
+        // a bare call later in the text still needs a line of its own
+        let (_, calls) = text_calls("Sure. {\"name\":\"bash\",\"arguments\":{\"command\":\"df\"}} done", &tools);
+        assert!(calls.is_empty());
+        // an unknown tool in a fence is no call
+        let (_, calls) = text_calls("```json\n{\"name\":\"rm\",\"arguments\":{\"path\":\"a\"}}\n```", &tools);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn the_function_parameter_xml_shape_is_read() {
+        let tools = [ToolDef { name: "write".into(), description: "Create a file".into(), input_schema: json!({"type": "object"}) }];
+        let t = "Saving.\n<tool_call>\n<function=write>\n<parameter=path>\nsummary.md\n</parameter>\n<parameter=content>\nOne line.\nTwo lines.\n</parameter>\n</function>\n</tool_call>";
+        let (rest, calls) = text_calls(t, &tools);
+        assert_eq!(rest, "Saving.");
+        assert_eq!(calls, vec![("write".to_string(), json!({"path": "summary.md", "content": "One line.\nTwo lines."}))]);
+        let (_, calls) = text_calls("<function=write><parameter=path>a.md</parameter><parameter=content>x", &tools);
+        assert_eq!(calls, vec![("write".to_string(), json!({"path": "a.md", "content": "x"}))], "unclosed at the end");
+        let (rest, calls) = text_calls("<function=rm><parameter=path>a</parameter></function>", &tools);
+        assert!(calls.is_empty() && rest.contains("function=rm"));
+    }
+
+    #[test]
+    fn a_looping_reply_is_found_at_its_third_copy() {
+        let para = "Define the main function and its parameters.\nThen call it.\n";
+        let t = format!("Intro line here.\n{para}{para}{para}");
+        assert_eq!(repeated_tail(&t), Some("Intro line here.\n".len() + para.len()));
+        assert_eq!(repeated_tail(&format!("Intro.\n{para}{para}")), None, "two copies may be meant");
+        assert_eq!(repeated_tail("ok\nok\nok\n"), None, "too short to tell");
+        assert_eq!(repeated_tail("- a\n- b\n- c\n"), None);
+    }
+
+    #[test]
+    fn streamed_call_markup_is_held_back() {
+        let tools = [ToolDef { name: "read".into(), description: "Read a file".into(), input_schema: json!({"type": "object"}) }];
+        let mut h = CallHold::new(&tools);
+        let shown: String = ["Let me look. <to", "ol_call>{\"name\": \"read\", ", "\"arguments\": {\"path\": \"a\"}}"].iter().map(|p| h.push(p)).collect();
+        assert_eq!(shown, "Let me look. ");
+        assert_eq!(h.finish(), "", "a call is never shown");
+        let mut h = CallHold::new(&tools);
+        let shown: String = ["a < b and ", "<", "b>x</b>"].iter().map(|p| h.push(p)).collect();
+        assert_eq!(format!("{shown}{}", h.finish()), "a < b and <b>x</b>", "other text all comes through");
     }
 
     #[test]

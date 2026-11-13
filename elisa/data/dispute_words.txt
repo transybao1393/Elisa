@@ -1,0 +1,25 @@
+# Wordings that call a result wrong or give another one as the right one ("However, the correct result is …", "made
+# an error", "kết quả đúng là …"): a reply that says them of a sum Elisa computed herself disputes her exact result,
+# so Elisa's own working is the answer (`situation/own_facts.rs` `ReplyFacts::disputed`). One wording per line,
+# lowercase, matched as whole words; add a language's wording here, not in code.
+error
+mistake
+mistaken
+incorrect
+wrong
+miscalculated
+miscalculation
+correct result
+correct answer
+right answer
+actual result
+actually
+should be
+sai
+nhầm
+lỗi
+kết quả đúng
+đáp án đúng
+tính sai
+tính nhầm
+phải là

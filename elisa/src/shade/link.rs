@@ -227,12 +227,11 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
 
-    fn tmp_sock(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("elisa-link-{}-{tag}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+    /// a socket path in a folder of the test's own (the folder goes with the returned guard)
+    fn tmp_sock(tag: &str) -> (crate::testdir::TempDir, PathBuf) {
+        let d = crate::testdir::TempDir::new(&format!("link-{tag}"));
         let p = d.join("c.sock");
-        let _ = std::fs::remove_file(&p);
-        p
+        (d, p)
     }
 
     fn frame(st: St) -> Frame { Frame { state: st, verb: super::super::verb(st).into(), target: "split.rs".into(), tone: Tone::Accent, pop: st.pops(), light: false, fidget: false } }
@@ -285,7 +284,7 @@ mod tests {
 
     #[test]
     fn not_running_is_silent_and_fast() {
-        let p = tmp_sock("absent");
+        let (_d, p) = tmp_sock("absent");
         let mut l = Link::new(&p);
         let mut c = Companion::new(0, None);
         let t = Instant::now();
@@ -300,7 +299,7 @@ mod tests {
 
     #[test]
     fn talks_to_a_companion_and_reconnects() {
-        let p = tmp_sock("live");
+        let (_d, p) = tmp_sock("live");
         let srv = UnixListener::bind(&p).unwrap();
         let mut l = Link::new(&p);
         let mut c = Companion::new(0, None);
@@ -339,12 +338,11 @@ mod tests {
         // bye on drop
         drop(l);
         assert!(lines(&mut r2, 1)[0].contains("\"type\":\"bye\""));
-        let _ = std::fs::remove_file(&p);
     }
 
     #[test]
     fn a_stalled_companion_never_blocks() {
-        let p = tmp_sock("stall");
+        let (_d, p) = tmp_sock("stall");
         let srv = UnixListener::bind(&p).unwrap();
         let mut l = Link::new(&p);
         l.sync(None);

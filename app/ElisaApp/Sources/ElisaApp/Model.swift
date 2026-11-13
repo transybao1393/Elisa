@@ -292,15 +292,19 @@ final class AppModel: ObservableObject {
 
     // MARK: - lifecycle
 
-    func start() {
+    /// A new session in this window. `keepModel`: a new chat (or a chat reopened after closing it) stays on the model
+    /// this window is on, not on whatever model another window saved to the shared config since; a restart that is
+    /// meant to pick up the saved connection (`reconnect`, after `/model` or Model Connections) passes false.
+    func start(keepModel: Bool = true) {
         welcome = false
+        let pinned = keepModel && !model.isEmpty && !extraArgs.contains("--model") ? ["--model", model] : []
         attachments = []; sentImages = []; vision = false; documents = []; sentDocs = []
         blocks = []; edits = []; editIdx = 0; stat = nil; sumIn = 0; sumOut = 0; turn = 0; cur = nil; queued = 0
         approval = nil; picker = nil; liveAct = nil; nextAct = nil; watchLine = nil; auditLine = nil; job = nil; compactLine = nil; lastCompacted = nil; cardNo = nil; expanded = []
         scrollHeld = false; heldLines = 0; heldNew = false
         PluginStore.shared.sessionEnded()
         setPhase(.starting)
-        do { try elisa.start(cwd: folder, extra: extraArgs + ["--theme", dark ? "dark" : "light"]) }
+        do { try elisa.start(cwd: folder, extra: extraArgs + pinned + ["--theme", dark ? "dark" : "light"]) }
         catch { blocks.append(Block(kind: .info(error.localizedDescription, .err))); setPhase(.exited) }
         // a launch's --continue is for the first session only: a later new session (another folder, a restart after
         // exit) starts clean, as the person expects; reconnect() adds it back for its own restart
@@ -312,14 +316,21 @@ final class AppModel: ObservableObject {
     var elisaRunning: Bool { elisa.running }
 
     /// a saved Model Connections change: Elisa reads its connection at start, so restart it on this project's session
-    func reconnect() {
+    func reconnect(to chosen: String? = nil) {
         // on the welcome screen there is no session yet: the next folder opened uses the new connection
         guard !welcome else { return }
         let extra = extraArgs
         // the conversation open now, whatever was said in it (a short chat too, never skipped as not worth continuing)
         extraArgs.removeAll { $0 == "--continue" }
         extraArgs.append("--continue-open")
-        start()
+        if let chosen {
+            // the model this window just chose, pinned: another window saving the shared config meanwhile can't swap it
+            if let k = extraArgs.firstIndex(of: "--model") { extraArgs.removeSubrange(k...min(k + 1, extraArgs.count - 1)) }
+            model = chosen
+            start(keepModel: true)
+        } else {
+            start(keepModel: false)
+        }
         extraArgs = extra
     }
 
@@ -338,8 +349,13 @@ final class AppModel: ObservableObject {
                 let model = j["model"] as? String ?? name
                 if j["ok"] as? Bool == true {
                     let changed = j["changed"] as? Bool == true
-                    if changed && !self.welcome { self.reconnect() }
-                    else if changed { self.blocks.append(Block(kind: .info("\(model) is saved: the next folder opened uses it", .ok))) }
+                    // the saved file may already name it (another window chose it) while this window still runs another
+                    if (changed || model != self.model) && !self.welcome { self.reconnect(to: model) }
+                    else if changed {
+                        // the next session in this window starts on the model just chosen (`start` keeps the window's)
+                        self.model = model
+                        self.blocks.append(Block(kind: .info("\(model) is saved: the next folder opened uses it", .ok)))
+                    }
                     else { self.blocks.append(Block(kind: .info("Already on \(model).", .plain))) }
                     return
                 }
@@ -775,7 +791,11 @@ final class AppModel: ObservableObject {
             // larger size and ends at the new one
             var from = n(e, "from")
             if let lc = lastCompacted, compactLine == lc.id || (compactLine == nil && isNewest(lc.id)) { compactLine = lc.id; from = max(from, lc.from) }
-            setCompactLine("✓ compacted the conversation: \(k(from)) → \(k(n(e, "to"))) tokens · earlier turns are in the notes (/notes)")
+            // a summary no smaller than the conversation (a short one) gained nothing: no compaction is claimed
+            let to = n(e, "to")
+            setCompactLine(to < from
+                ? "✓ compacted the conversation: \(k(from)) → \(k(to)) tokens · earlier turns are in the notes (/notes)"
+                : "✓ earlier turns saved to the notes (/notes) · the conversation was already short, so nothing was compacted")
             lastCompacted = compactLine.map { ($0, from) }
             compactLine = nil
             // the context meter follows the fold / /clear (the next reply_done sets it again)
@@ -785,10 +805,9 @@ final class AppModel: ObservableObject {
                 stat = st
             }
         case "card":
-            // {text, n?}: n is the card's number (shown as "state #N"); an older Elisa omits it and none is shown
-            let no = (e["n"] as? NSNumber)?.intValue
-            if let no { cardNo = no }
-            add(.card(s(e, "text"), no))
+            // {text, n?}: the running facts Elisa keeps after a tool turn. Not shown in the chat or the status bar
+            // (its ids, tool names and "goal / done / next" rows are Elisa's own); /state prints them on request
+            break
         case "check":
             // the fix loop: a new round (or a new command) is a new row; the same round updates its row in place
             let c = CheckRow(e)
@@ -816,7 +835,7 @@ final class AppModel: ObservableObject {
                 if Self.isFold(label) {
                     if let done {
                         // a fold that ended without compacting (cancelled, nothing to fold) says so on its line
-                        if compactLine != nil { setCompactLine(done.hasPrefix("summary failed") || done.contains("cancelled") ? "⚠︎ compacting: \(done)" : "✓ \(done)") }
+                        if compactLine != nil { setCompactLine(done.hasPrefix("summary failed") || done.contains("cancelled") || done == "stopped" ? "⚠︎ compacting: \(done)" : "✓ \(done)") }
                     } else if compactLine == nil {
                         // a fold right after a shrink line goes on that line
                         if let lc = lastCompacted, isNewest(lc.id) { compactLine = lc.id }

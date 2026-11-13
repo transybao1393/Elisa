@@ -1,0 +1,59 @@
+# Counting asks about a file's lines, words or characters (`repl/turn.rs` `asked_counts`): one wording per line under
+# its unit's section, English and Vietnamese, with and without accents. A message holding a wording (whole words)
+# asks that count: Elisa counts it herself from the file her read or command touched this turn, tells the model the
+# exact number, and answers with it when the reply leaves it out ("todo.txt có 2 dòng."). The English count words of
+# `mcp_reason::count_units` ("how many lines", "count the words") count too. Fix a missed wording by adding it here,
+# not in code.
+[lines]
+how many lines
+number of lines
+count the lines
+count lines
+line count
+lines does
+lines are in
+lines in
+mấy dòng
+bao nhiêu dòng
+số dòng
+đếm dòng
+đếm số dòng
+có bao nhiêu dòng
+may dong
+bao nhieu dong
+so dong
+dem dong
+dem so dong
+co bao nhieu dong
+[words]
+how many words
+number of words
+count the words
+count words
+word count
+mấy từ
+bao nhiêu từ
+số từ
+đếm từ
+đếm số từ
+có bao nhiêu từ
+may tu
+bao nhieu tu
+so tu
+dem tu
+dem so tu
+[characters]
+how many characters
+number of characters
+count the characters
+character count
+how many chars
+mấy ký tự
+bao nhiêu ký tự
+số ký tự
+đếm ký tự
+đếm số ký tự
+bao nhieu ky tu
+so ky tu
+dem ky tu
+dem so ky tu

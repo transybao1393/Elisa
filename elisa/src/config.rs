@@ -873,16 +873,13 @@ mod tests {
     }
 
     fn load(tag: &str, user: &str, project: &str) -> Config {
-        let d = std::env::temp_dir().join(format!("elisa-config-unit-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TempDir::new(&format!("config-unit-{tag}"));
         let (home, proj) = (d.join("home"), d.join("proj"));
         std::fs::create_dir_all(home.join(".config/elisa")).unwrap();
         std::fs::create_dir_all(proj.join(".elisa")).unwrap();
         std::fs::write(home.join(".config/elisa/config.toml"), user).unwrap();
         if !project.is_empty() { std::fs::write(proj.join(".elisa/config.toml"), project).unwrap(); }
-        let c = Config::load_from(&proj, Some(home), |_| None).unwrap();
-        let _ = std::fs::remove_dir_all(&d);
-        c
+        Config::load_from(&proj, Some(home), |_| None).unwrap()
     }
 
     #[test]

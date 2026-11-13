@@ -474,12 +474,7 @@ mod tests {
     use super::*;
     use crate::frontend::CheckEvent;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("elisa-chk-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d.canonicalize().unwrap()
-    }
+    fn tmp(tag: &str) -> crate::testdir::TempDir { crate::testdir::TempDir::real(&format!("chk-{tag}")) }
     fn touch(d: &Path, rel: &str, body: &str) -> PathBuf {
         let p = d.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();

@@ -1,0 +1,27 @@
+# Asks about free disk space (`repl/turn.rs` `space_asked`): one wording per line, English and Vietnamese, with and
+# without accents. When a message holding one of them (whole words) ran `df` as Elisa's own command, she answers in
+# words from the output, the free space of the root file system or of the one this folder is on ("29 GB free on /."
+# / "Còn trống 29 GB trên /."), instead of the raw table. Fix a missed wording by adding it here, not in code.
+disk space
+free space
+space is free
+space left
+space is left
+space do i have
+space do we have
+space available
+how full is the disk
+disk is full
+room left on the disk
+dung lượng trống
+dung lượng còn
+còn trống bao nhiêu
+còn bao nhiêu dung lượng
+ổ đĩa còn
+ổ cứng còn
+đĩa còn trống
+dung luong trong
+dung luong con
+con trong bao nhieu
+o dia con
+o cung con

@@ -1506,8 +1506,7 @@ deny = ["shell(rm *)"]
 
     #[test]
     fn the_pin_covers_the_manifest_and_the_commands() {
-        let d = std::env::temp_dir().join(format!("elisa-plugin-hash-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TempDir::new("plugin-hash");
         std::fs::create_dir_all(d.join("commands")).unwrap();
         std::fs::write(d.join(MANIFEST), GOOD).unwrap();
         let h0 = content_hash(&d).unwrap();
@@ -1518,6 +1517,5 @@ deny = ["shell(rm *)"]
         assert_eq!(content_hash(&d).unwrap(), h1, "only .md command files count");
         std::fs::write(d.join(MANIFEST), GOOD.replace("1.0.0", "1.0.1")).unwrap();
         assert_ne!(content_hash(&d).unwrap(), h1);
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

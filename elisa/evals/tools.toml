@@ -66,8 +66,7 @@ text = "hi"
 type = "file_absent"
 path = "x.txt"
 [[case.checks]]
-type = "tool_result_contains"
-name = "bash"
+type = "request_contains"
 text = "denied by user: the user said no, so NOTHING was done"
 [[case.checks]]
 type = "audit_has"

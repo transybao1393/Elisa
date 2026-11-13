@@ -1,0 +1,13 @@
+# What Elisa says herself when she could not work out a number question and the reply stated a number anyway
+# (`situation::ReplyFacts`, the confirm-when-unsure rule): she asks, never guesses. One section per reply language
+# (`reply_lang`); the first is used when the language is not known. Change the wording here, not in code.
+
+[en]
+ask = I'm not sure how to work this out. Which numbers should I use, and how: add, subtract, multiply or divide?
+date = That day falls on a different date each year, so I can't be sure of it. Which date is it this year?
+clock = I'm not sure which way to count: is the {duration} after {start} or before it? Tell me and I'll work out the time.
+
+[vi]
+ask = Mình chưa chắc cách tính câu này. Bạn muốn dùng những số nào, và tính thế nào: cộng, trừ, nhân hay chia?
+date = Ngày đó mỗi năm rơi vào một ngày khác nên mình chưa chắc. Năm nay là ngày nào vậy bạn?
+clock = Mình chưa chắc tính xuôi hay ngược: {duration} đó là sau {start} hay trước {start}? Bạn cho mình biết để mình tính giờ nhé.

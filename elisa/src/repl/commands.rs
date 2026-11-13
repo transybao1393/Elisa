@@ -31,18 +31,19 @@ impl<'f> Session<'f> {
         }
     }
 
-    /// `/router`: the intent router and Elisa's own intent rules. `/router rules off|fallback`: `elisa_rules` set for
-    /// this session and saved to providers.toml `[router]` (`router::save_rules`).
+    /// `/router`: which part of the decision model decides. `/router use router|rules`: `decision` saved to
+    /// providers.toml `[router]` (`router::save_decision`) and used from this turn on.
     fn router_command(&mut self, arg: &str) {
         let mut a = arg.split_whitespace();
         match (a.next(), a.next(), a.next()) {
             (None, ..) => {}
-            (Some("rules"), Some(v), None) if crate::router::RULES.contains(&v) => {
+            (Some("use"), Some(v), None) if crate::router::DECISION.contains(&v) => {
                 let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
-                if let Err(e) = crate::router::save_rules(&home, v) { return self.fe.error(&e); }
-                if let Some(t) = self.router.target.as_mut() { t.fallback = v == "fallback"; }
+                if let Err(e) = crate::router::save_decision(&home, v) { return self.fe.error(&e); }
+                let conf = crate::provider::Providers::load(&home).ok().and_then(|f| f.router);
+                self.router.target = conf.and_then(|r| r.target(&|k| std::env::var(k).ok()));
             }
-            _ => return self.fe.error("usage: /router · /router rules off|fallback"),
+            _ => return self.fe.error("usage: /router · /router use router|rules"),
         }
         self.fe.info(&self.router.describe());
     }
@@ -631,7 +632,7 @@ impl<'f> Session<'f> {
                 // the conversation's KV, before the summary call and the fresh start replace it (/resume brings it back)
                 if cmd == "/clear" { self.slot_save("/clear"); }
                 // the text estimate, like the size after (a server count against an estimate would compare apples
-                // with pears)
+                // with pears); both are shown on the context bar's scale (`shown_size`)
                 let before = self.fixed() + estimate_messages(&self.history);
                 // same progress job as the automatic fold ("summarizing …"): the status line shows it and input pauses
                 let turns = self.history.iter().filter(|m| m.role == Role::User && m.content.iter().any(|b| matches!(b, Block::Text { .. }))).count();
@@ -639,8 +640,16 @@ impl<'f> Session<'f> {
                 let (label, t0) = (format!("summarizing {turns} turn{} ({}){earlier}", if turns == 1 { "" } else { "s" }, ui::k(before)), Instant::now());
                 let prog = |frac: f32, done: Option<String>| Progress { label: label.clone(), frac: Some(frac), elapsed_s: t0.elapsed().as_secs_f64(), done };
                 self.fe.progress(Some(&prog(0.0, None)));
-                let r = self.summarise("[summarising…]");
-                let done = match &r { Ok(_) => "saved summary".to_string(), Err(_) => "summary failed".to_string() };
+                // (no "[summarising…]" line of its own: the progress job above says it, and its result is the one line)
+                let r = self.summarise("");
+                // no usable summary from the model (empty, a tool call, an error): Elisa's own notes from what she has
+                // (the user's asks; the facts from their own words come in `finish_notes`), and the command still
+                // does what the user asked; only a Stop keeps everything as it was
+                let r = match r {
+                    Err(e) if e != "cancelled" => { self.debug(&format!("[summary failed: {e}; notes from the conversation itself]")); Ok(self.own_notes()) }
+                    r => r,
+                };
+                let done = match &r { Ok(_) => "saved notes".to_string(), Err(_) => "stopped".to_string() };
                 self.fe.progress(Some(&prog(1.0, Some(done))));
                 match r {
                     Ok(n) => {
@@ -664,6 +673,12 @@ impl<'f> Session<'f> {
                             (self.topic, self.card_req) = (Default::default(), None);
                             self.ledger = context::Ledger::default();
                             self.forget_pictures();
+                            // a fresh start carries no tool group of the last turn: the next request's tools come from
+                            // its own words (kept, the size after /clear counted the old route's tool definitions)
+                            if self.cfg.route == "auto" {
+                                (self.route, self.gate) = (crate::route::Route::default(), (false, false));
+                                self.rebuild_system();
+                            }
                         }
                         self.card_log.clear();
                         self.history.clear();
@@ -676,18 +691,14 @@ impl<'f> Session<'f> {
                             self.fe.notes_saved(&notes);
                             self.watch_note("fold", &notes);
                         }
-                        // `compacted` carries the new context size: the status bars show it now, not at the next reply
-                        self.fe.compacted(before, after);
-                        if clear {
-                            let kept = match &self.notes {
-                                None => "no notes kept: the conversation was shorter than any summary",
-                                Some(_) if after >= before => "notes saved to .elisa/notes/, whole: the conversation was shorter than its facts, decisions and file changes",
-                                Some(_) => "notes saved to .elisa/notes/",
-                            };
-                            self.fe.info(&format!("[cleared: {} → {} tokens; {kept}]", ui::k(before), ui::k(after)));
-                        }
+                        // one line for the result: `compacted` (it also carries the new context size, so the status bars
+                        // show it now), which says the earlier turns are in the notes and, when the summary is no smaller
+                        // than the conversation, claims no gain. With no notes kept that would be untrue: its own line.
+                        if self.notes.is_some() { let (b, a) = (self.shown_size(before), self.shown_size(after)); self.fe.compacted(b, a); }
+                        else { self.fe.info("Cleared. There was nothing to keep in notes."); }
                     }
-                    Err(e) => self.fe.error(&format!("summary failed: {e}. Old notes kept, history kept (use /reset to wipe without a summary).")),
+                    // (only a Stop gets here)
+                    Err(_) => self.fe.info("Stopped. Nothing was cleared."),
                 }
             }
             "/reset" => {
@@ -697,7 +708,7 @@ impl<'f> Session<'f> {
                 self.forget_pictures();
                 self.goal = None;
                 self.notes_bg = true;
-                self.fe.info("history and state card emptied (notes kept)");
+                self.fe.info("Started fresh: the chat and its running facts are cleared (notes kept).");
             }
             "/context" => {
                 let h = estimate_messages(&self.history);
@@ -735,7 +746,7 @@ impl<'f> Session<'f> {
                 self.fe.info(&msg);
             }
             "/state" => {
-                if self.topic_cards.is_empty() { self.fe.info("no state card yet"); return true; }
+                if self.topic_cards.is_empty() { self.fe.info(NO_RUNNING_FACTS); return true; }
                 let docs: Vec<String> = self.kept_docs.iter().map(|k| k.doc.name.clone()).collect();
                 // the topics: each document (attach order), then the cards about no document
                 let mut keys: Vec<Option<String>> = docs.iter().cloned().map(Some).collect();
@@ -748,9 +759,9 @@ impl<'f> Session<'f> {
                     let doc_on = k.as_ref().is_some_and(|d| self.topic.doc.and_then(|i| docs.get(i)) == Some(d));
                     let head = match &k { Some(d) => format!("topic: {d}{}", if doc_on { "  (active)" } else { "" }), None => "topic: no document".to_string() };
                     let mut t = vec![head];
-                    if mine.is_empty() { t.push("  (no card yet)".into()); }
+                    if mine.is_empty() { t.push("  (no running facts yet)".into()); }
                     for (i, c) in mine {
-                        let n = c.id.map_or("card".to_string(), |id| format!("card #{id}"));
+                        let n = c.id.map_or("running facts".to_string(), |id| format!("running facts #{id}"));
                         t.push(format!("  {n}{}:", if active == Some(i) { " (active)" } else { "" }));
                         t.extend(c.text.lines().map(|l| format!("    {l}")));
                     }
@@ -812,19 +823,22 @@ impl<'f> Session<'f> {
                 // or the next request still carries them in [state]
                 self.set_notes(None);
                 self.drop_card();
+                // the count said is the facts the user pinned (`/pin`) in this project; the facts Elisa took from the
+                // notes are unpinned too, as part of the notes (counted, "11 pinned facts" after one /pin)
+                let pins = self.mem.as_ref().map_or(0, |m| m.db.user_pinned_facts(&m.project).len());
                 let n = self.mem.as_mut().map(|m| m.db.unpin_all(m.session, &m.project));
                 // what earlier chats in this project left in memory (their turns, notes, cards) is not recalled again:
                 // otherwise a new chat asked "what's my favourite colour?" still gets the old answer from memory
                 let next = self.mem.as_mut().map(|m| { let _ = m.db.refresh(); m.db.next_id() });
-                let recalled = match next.map(|id| self.store.save_forgot(id)) {
-                    Some(Ok(())) => " · memories of earlier chats in this project forgotten (saved conversations kept)",
-                    Some(Err(e)) => { self.fe.error(&format!("forgetting memories failed: {e}")); "" }
-                    None => "",
+                let forgot = match next.map(|id| self.store.save_forgot(id)) {
+                    Some(Ok(())) => true,
+                    Some(Err(e)) => { self.fe.error(&format!("Forgetting earlier chats failed: {e}")); false }
+                    None => false,
                 };
                 match n {
-                    Some(Ok(n)) => self.fe.info(&format!("notes deleted · {n} pinned facts unpinned{recalled}")),
-                    Some(Err(e)) => self.fe.error(&format!("notes deleted; unpinning facts failed: {e}{recalled}")),
-                    None => self.fe.info("notes deleted"),
+                    Some(Ok(_)) => self.fe.info(&forget_line(pins, forgot)),
+                    Some(Err(e)) => { self.fe.info("Deleted your notes."); self.save_failed("memory", &e.to_string()); }
+                    None => self.fe.info(&forget_line(0, forgot)),
                 }
             }
             "/resume" => {
@@ -859,8 +873,11 @@ impl<'f> Session<'f> {
                 let r = self.mem.as_mut().map(|m| m.db.pin_fact(m.session, &crate::secrets::redact(fact).0));
                 match r {
                     None => self.fe.error("memory is off: nothing to pin into"),
-                    Some(Ok(id)) => { self.unindexed += 1; self.fe.info(&format!("pinned fact #{id}: {fact} (carried in [state] from the next fresh context)")); }
-                    Some(Err(e)) => self.fe.error(&format!("memory: {e}")),
+                    Some(Ok(_)) => { self.unindexed += 1;
+                        let line = if crate::reply_lang::detect(fact) == Some(crate::reply_lang::Lang::Vi) { format!("Đã ghi nhớ: {fact}. Mình sẽ nhớ điều này trong các cuộc trò chuyện mới.") }
+                            else { format!("Pinned: {fact}. I'll keep it in mind in new chats.") };
+                        self.fe.info(&line); }
+                    Some(Err(e)) => self.save_failed("memory", &e.to_string()),
                 }
             }
             "/watcher" => {
@@ -934,4 +951,32 @@ fn project_summary(p: &plugins::Project) -> String {
     if !p.infos.is_empty() { v.push(n(p.infos.len(), "plugin")); }
     if !p.rules.is_empty() { v.push(n(p.rules.len(), "rule")); }
     v.join(" · ")
+}
+
+/// What /state says when the chat has no running facts (its state cards) yet.
+pub(super) const NO_RUNNING_FACTS: &str = "No running facts for this chat yet.";
+
+/// /forget's line, one plain sentence: the notes, the facts the user pinned in this project (`pins`), and whether
+/// earlier chats here are forgotten for recall (`forgot`).
+fn forget_line(pins: usize, forgot: bool) -> String {
+    let mut parts = vec!["Deleted your notes".to_string()];
+    if pins > 0 { parts.push(format!("unpinned {pins} fact{}", if pins == 1 { "" } else { "s" })); }
+    if forgot { parts.push("forgot earlier chats here".to_string()); }
+    let mut s = match parts.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => parts.join(""),
+    };
+    s.push_str(if forgot { " (saved conversations kept)." } else { "." });
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn forget_says_one_plain_sentence() {
+        assert_eq!(super::forget_line(1, true), "Deleted your notes, unpinned 1 fact and forgot earlier chats here (saved conversations kept).");
+        assert_eq!(super::forget_line(3, false), "Deleted your notes and unpinned 3 facts.");
+        assert_eq!(super::forget_line(0, true), "Deleted your notes and forgot earlier chats here (saved conversations kept).");
+        assert_eq!(super::forget_line(0, false), "Deleted your notes.");
+    }
 }

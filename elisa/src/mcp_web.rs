@@ -25,8 +25,8 @@ pub fn call(name: &str, args: &Value, cfg: &crate::web::WebCfg) -> (String, bool
             Some(q) => {
                 let news = recent(&args["recent"]);
                 // past-week results are the news itself: the reply tells what they say, not where to read it
-                let how = if news { "(a news search: answer now with what these headlines and snippets say happened, not a list of the sites)" }
-                    else { "(web_fetch a url to read the page)" };
+                // the day it runs, so an old snippet on a news site's page is not told as today's news
+                let how = if news { news_note(&crate::web::today(crate::situation::now_secs())) } else { "(web_fetch a url to read the page)".into() };
                 crate::web::search(q, news, cfg).map(|t| format!("{t}\n{how}"))
             }
             None => Err("missing query".into()),
@@ -35,6 +35,13 @@ pub fn call(name: &str, args: &Value, cfg: &crate::web::WebCfg) -> (String, bool
         n => Err(format!("unknown tool {n}")),
     };
     match r { Ok(t) => (t, false), Err(e) => (e, true) }
+}
+
+/// The line after a news search's results: today's date, and what to answer with (the newest things the results say
+/// happened, with their dates; nothing they date long before today).
+pub fn news_note(today: &str) -> String {
+    format!("(a news search on {today}: answer now with the newest things these headlines and snippets say happened, with their \
+        dates when given; leave out anything they date long before {today}; not a list of the sites)")
 }
 
 /// `recent` as a small model may send it: true, "true" or "yes"

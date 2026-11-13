@@ -1,0 +1,46 @@
+# Yes/no questions whether a file is (still) there (`repl/turn.rs` `exists_ask`): one example per line. The file's
+# name in a message is put as "the file" before it is compared, so write it that way here. A message close in meaning
+# (all-MiniLM-L6-v2) to the `[exists]` examples and nearer to them than to every `[other]` example, sharing a word
+# with that nearest example that no `[other]` example has, is such a question: Elisa looks for the file and answers
+# yes or no herself. Fix a missed or wrong wording by adding an example to the side it belongs to, not by code.
+[exists]
+is the file still there?
+is the file still here?
+is the file there?
+does the file exist?
+does the file still exist?
+is the file still in this folder?
+do we still have the file?
+did the file get deleted?
+was the file removed?
+is the file gone?
+the file còn ở đó không?
+the file còn tồn tại không?
+the file đã bị xóa chưa?
+[other]
+what is in the file?
+what does the file say?
+how many lines does the file have?
+which region sold the most units in the file?
+summarise the file
+read the file
+show me the file
+is the file safe?
+is the code in the file correct?
+is there an error in the file?
+is the file valid JSON?
+is the file too long?
+what is the meeting code in the file?
+is the token in the file safe?
+delete the file
+save that to the file
+fix the add function in the file
+the file nói gì?
+the file có bao nhiêu dòng?
+tóm tắt the file
+the file giờ có gì?
+trong the file vùng nào bán nhiều nhất?
+không biết trong the file vùng nào bán nhiều nhất nhỉ
+không biết trong the file có gì nhỉ
+việc đầu tiên trong the file là gì?
+đọc the file giúp mình

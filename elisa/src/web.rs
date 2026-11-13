@@ -121,15 +121,65 @@ pub fn search(query: &str, recent: bool, cfg: &WebCfg) -> Result<String, String>
     // Elisa's result cache (`cache.rs`, 15 min): per engine (and SearXNG server), time filter and query, never the API key
     let key = format!("{}\n{server}\n{}{}", cfg.engine, if recent { "recent\n" } else { "" }, q.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase());
     crate::cache::cached(crate::cache::Kind::WebSearch, &key, || {
-        let run = |week: bool| match cfg.engine.as_str() {
+        let run = |q: &str, week: bool| match cfg.engine.as_str() {
             DUCKDUCKGO => duckduckgo(q, week),
             SEARXNG => searxng(&cfg.searxng, q, week),
             _ => brave(&brave_base(), &cfg.brave_key, q, week),
         };
-        let mut hits = run(recent)?;
-        if recent && hits.is_empty() { hits = run(false)?; }
+        // a news search names the current month and year (from the clock): the plain words find the news sites'
+        // front pages, whose snippets can be years-old page text; dated words find this month's articles
+        let dated = if recent { dated_query(q, crate::situation::now_secs()) } else { q.to_string() };
+        let mut hits = run(&dated, recent)?;
+        if recent && hits.is_empty() && dated != q { hits = run(q, true)?; }
+        if recent && hits.is_empty() { hits = run(q, false)?; }
         Ok((format_hits(q, &hits), true))
     })
+}
+
+const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/// (year, month 1..=12) of a unix time, local
+fn year_month(t: i64) -> (i32, u32) {
+    unsafe {
+        let tt = t as libc::time_t;
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&tt, &mut tm).is_null() { return (1970, 1); }
+        (tm.tm_year + 1900, tm.tm_mon as u32 + 1)
+    }
+}
+
+/// A news search's query with the current month and year added ("latest news about Apple November 2026"), unless
+/// it already names a year or a month.
+pub fn dated_query(q: &str, now: i64) -> String {
+    let (y, m) = year_month(now);
+    let has_year = q.split(|c: char| !c.is_ascii_digit()).any(|w| w.len() == 4 && (w.starts_with("19") || w.starts_with("20")));
+    let low = q.to_lowercase();
+    let has_month = MONTHS.iter().any(|n| low.split(|c: char| !c.is_alphabetic()).any(|w| w == n.to_lowercase()));
+    if has_year || has_month { return q.to_string(); }
+    format!("{q} {} {y}", MONTHS[(m as usize).clamp(1, 12) - 1])
+}
+
+/// The day a news search runs, for its note to the model ("2026-11-10")
+pub fn today(now: i64) -> String {
+    unsafe {
+        let tt = now as libc::time_t;
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&tt, &mut tm).is_null() { return String::new(); }
+        format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
+    }
+}
+
+/// a result's date as the engine gives it (an ISO time or a day), as its day: "2026-11-09"; None when there is none
+fn day_of(v: &Value) -> Option<String> {
+    let s = v.as_str()?.trim();
+    let d: String = s.chars().take(10).collect();
+    let ok = d.len() == 10 && d.chars().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() });
+    ok.then_some(d)
+}
+
+/// a snippet with its result's date in front ("(2026-11-09) …"), so a news answer can tell new from old
+fn dated_snippet(day: Option<String>, snippet: String) -> String {
+    match day { Some(d) if snippet.is_empty() => format!("({d})"), Some(d) => format!("({d}) {snippet}"), None => snippet }
 }
 
 /// each engine's past-week filter as a query parameter (`&…`), or nothing
@@ -203,7 +253,7 @@ pub fn parse_searxng(v: &Value) -> Vec<Hit> {
     v["results"].as_array().map(|rs| rs.iter().filter_map(|r| Some(Hit {
         title: r["title"].as_str()?.trim().to_string(),
         url: r["url"].as_str()?.to_string(),
-        snippet: one_line(r["content"].as_str().unwrap_or("")),
+        snippet: dated_snippet(day_of(&r["publishedDate"]), one_line(r["content"].as_str().unwrap_or(""))),
     })).collect()).unwrap_or_default()
 }
 
@@ -240,7 +290,7 @@ pub fn parse_brave(v: &Value) -> Vec<Hit> {
     v["web"]["results"].as_array().map(|rs| rs.iter().filter_map(|r| Some(Hit {
         title: text_of(r["title"].as_str()?),
         url: r["url"].as_str()?.to_string(),
-        snippet: text_of(r["description"].as_str().unwrap_or("")),
+        snippet: dated_snippet(day_of(&r["page_age"]), text_of(r["description"].as_str().unwrap_or(""))),
     })).collect()).unwrap_or_default()
 }
 
@@ -535,6 +585,30 @@ mod tests {
             {"title": "no url"}]}});
         assert_eq!(parse_brave(&v), vec![Hit { title: "Learn Rust".into(), url: "https://www.rust-lang.org/learn".into(), snippet: "The Rust book & more".into() }]);
         assert!(parse_brave(&serde_json::json!({"type": "search"})).is_empty());
+    }
+
+    /// A news search names this month and year (from the clock), unless the words already name a date
+    #[test]
+    fn a_news_query_names_the_current_month() {
+        // 2026-11-10 12:00 UTC: November 2026 in every zone
+        let now = 1_794_312_000;
+        assert_eq!(dated_query("latest news about Apple", now), "latest news about Apple November 2026");
+        assert_eq!(dated_query("Apple news 2025", now), "Apple news 2025");
+        assert_eq!(dated_query("Apple news in march", now), "Apple news in march");
+        // a number that is no year: still dated
+        assert_eq!(dated_query("iPhone 17 news", now), "iPhone 17 news November 2026");
+        assert_eq!(today(now), "2026-11-10");
+    }
+
+    /// The engines that give a result's date: it leads the snippet
+    #[test]
+    fn result_dates_lead_the_snippet() {
+        let v = serde_json::json!({"results": [{"title": "A", "url": "https://a.org", "content": "x", "publishedDate": "2026-11-09T08:00:00"},
+            {"title": "B", "url": "https://b.org", "content": "y", "publishedDate": null}]});
+        let h = parse_searxng(&v);
+        assert_eq!((h[0].snippet.as_str(), h[1].snippet.as_str()), ("(2026-11-09) x", "y"));
+        let v = serde_json::json!({"web": {"results": [{"title": "A", "url": "https://a.org", "description": "x", "page_age": "2026-11-08T10:00:00"}]}});
+        assert_eq!(parse_brave(&v)[0].snippet, "(2026-11-08) x");
     }
 
     #[test]

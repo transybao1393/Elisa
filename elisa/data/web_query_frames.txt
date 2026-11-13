@@ -1,0 +1,100 @@
+# The frame of a web search ask: the words around the thing to look up (`repl/turn.rs` `strip_query_frames`), one
+# phrase per line, English and Vietnamese, with and without accents. A phrase found as whole words in the first half
+# of the ask (a lead-in: "can u serach the web for who won …" keeps "who won …"; a phrase of one word only at the
+# very start) is cut with everything before it; one found at the end is cut (a question tail, "thế nào", "là gì";
+# politeness, "giúp mình", "please"). What is left is the query Elisa searches for. Fix a query that keeps its frame
+# by adding the phrase here, not in code.
+can you search the web for
+could you search the web for
+can u search the web for
+search the web for
+search the web
+search online for
+search online
+search the internet for
+search google for
+search for
+google it for me
+google it
+look it up for me
+look it up
+look that up for me
+look that up
+look up
+could you look it up
+can you look that up
+check the web for
+check online for
+the web for
+online for
+on the web
+on the internet
+for me
+please
+pls
+can you
+could you
+can u
+curious what
+i'm curious
+i am curious
+i wonder
+do you know
+tell me
+these days
+right now
+tìm trên mạng xem
+tra google xem
+tra cứu xem
+tìm xem
+tìm trên mạng
+tìm trên internet
+tìm kiếm trên web
+tìm kiếm trên mạng
+tra cứu trên mạng
+tra google
+tra cứu
+lên mạng tìm
+tìm giùm mình
+tìm giúp mình
+giúp mình
+giùm mình
+hộ mình
+giúp tôi
+cho mình
+cho mình biết
+cho tôi biết
+mình muốn biết
+không biết
+thế nào
+như thế nào
+ra sao
+là gì
+là bao nhiêu
+bao nhiêu
+nhỉ
+nhé
+nha
+với
+vậy
+tim tren mang xem
+tra cuu xem
+tim xem
+tim tren mang
+tim tren internet
+tim kiem tren web
+tra cuu tren mang
+tra cuu
+len mang tim
+tim giup minh
+giup minh
+gium minh
+cho minh biet
+khong biet
+the nao
+nhu the nao
+la gi
+la bao nhieu
+bao nhieu
+nhi
+nhe

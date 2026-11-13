@@ -122,6 +122,10 @@ fn render_turn(parts: &[Part], system: &str, prompt: &str, response: &str, cut: 
 pub fn raw_prompt(tmpl: &str, system: &str, msgs: &[Message]) -> Option<(String, Vec<String>)> {
     let parts = parse_template(tmpl)?;
     let mut images: Vec<String> = Vec::new();
+    // a template with no system part (moondream:1.8b's "Question: … Answer:") would drop Elisa's system prompt and
+    // send the user's words bare: it goes before the first message's words instead
+    let has_system = parts.iter().any(|p| matches!(p, Part::Field(Field::System) | Part::If(Field::System)));
+    let mut lead = if has_system { String::new() } else { system.trim().to_string() };
     let (mut sys, mut prompt, mut response) = (system.to_string(), String::new(), String::new());
     let mut out = String::new();
     let add = |s: &mut String, t: &str| { if !s.is_empty() && !t.is_empty() { s.push_str("\n\n"); } s.push_str(t); };
@@ -144,6 +148,7 @@ pub fn raw_prompt(tmpl: &str, system: &str, msgs: &[Message]) -> Option<(String,
                     (sys, prompt, response) = (String::new(), String::new(), String::new());
                 }
                 let text = format!("{tags}{text}");
+                let text = if lead.is_empty() { text } else { format!("{}\n\n{text}", std::mem::take(&mut lead)) };
                 if glue { prompt.push_str(&text); } else { add(&mut prompt, &text); }
                 glue = !tags.is_empty() && text == tags;
             }
@@ -228,6 +233,8 @@ pub struct Stream {
     /// after a `NO_THINK_PREFILL`: the answer is shown only at the end, without any reasoning the model still wrote
     /// into it (it sometimes opens a second block, or reasons and then writes `</think>`)
     pub hold: bool,
+    /// text pieces streamed (one per shown token), for `openai::unshown_tokens`
+    pieces: usize,
 }
 
 impl Stream {
@@ -258,6 +265,7 @@ impl Stream {
         if let Some(t) = m["content"].as_str().or(v["response"].as_str()).filter(|t| !t.is_empty()) {
             if !self.started { self.started = true; publish(Phase::Decode); }
             self.text.push_str(t);
+            self.pieces += 1;
             if !self.hold { on_text(t); }
         }
         for tc in m["tool_calls"].as_array().map_or(&[][..], Vec::as_slice) {
@@ -280,6 +288,8 @@ impl Stream {
 
     /// (content, stop_reason, usage)
     pub fn finish(mut self, cancelled: bool) -> (Vec<Block>, String, Usage) {
+        // (the tokens Ollama generated and never streamed: a control-typed "!" it hides)
+        crate::openai::set_unshown(!cancelled && !self.hold && self.thinking == 0 && self.calls.is_empty() && self.done_reason == "stop", self.usage.output_tokens, self.pieces);
         if self.hold {
             let (answer, reasoning) = split_reasoning(&self.text);
             if reasoning > 0 { self.usage.reasoning_tokens += (reasoning / 4).max(1).min(self.usage.output_tokens.saturating_sub(self.usage.reasoning_tokens)); }
@@ -487,8 +497,10 @@ mod tests {
             Message::user_text("what colour are its ears?\n"),
         ];
         let (p, imgs) = raw_prompt(SPACED, "You are Elisa.", &msgs).unwrap();
-        // (this template has no system part)
-        assert_eq!(p, " Question: what is 2 + 3?\n\n Answer: 5\n\n Question: [img-0]what colour are its ears?\n\n\n Answer:");
+        // (this template has no system part: the system prompt goes before the first message, never dropped)
+        assert_eq!(p, " Question: You are Elisa.\n\nwhat is 2 + 3?\n\n Answer: 5\n\n Question: [img-0]what colour are its ears?\n\n\n Answer:");
+        assert_eq!(raw_prompt(SPACED, "You are Elisa, an assistant.", &[Message::user_text("hi Elisa!")]).unwrap().0,
+            " Question: You are Elisa, an assistant.\n\nhi Elisa!\n\n Answer:");
         assert_eq!(imgs, vec!["AAAA".to_string()]);
         let b = raw_body("m", SPACED, &Request { system: "", tools: &[], messages: &msgs[..1], max_tokens: 64 }, 2048).unwrap();
         assert_eq!((b["raw"].clone(), b["prompt"].clone(), b.get("images").is_none()), (json!(true), json!(" Question: what is 2 + 3?\n\n Answer:"), true));
@@ -524,5 +536,24 @@ mod tests {
         let (content, _, usage) = s.finish(false);
         assert_eq!(content, vec![Block::Text { text: "Hi!".into() }]);
         assert!(usage.reasoning_tokens > 0);
+    }
+
+    /// The tokens Ollama generated and never streamed (minicpm-v's control-typed "!"): eval_count less the pieces
+    /// and the end token, for a plain reply only.
+    #[test]
+    fn hidden_tokens_are_counted() {
+        let mut on = |_: &str| {};
+        let mut s = Stream::default();
+        for t in ["Hello", " there", " How", " are", " you", " today", " Great"] {
+            s.feed(&json!({"message": {"content": t}, "done": false}).to_string(), &mut on).unwrap();
+        }
+        s.feed(r#"{"message":{"content":""},"done":true,"done_reason":"stop","eval_count":11}"#, &mut on).unwrap();
+        s.finish(false);
+        assert_eq!(crate::openai::unshown_tokens(), Some(3));
+        let mut s = Stream::default();
+        s.feed(r#"{"message":{"content":"Hi."},"done":false}"#, &mut on).unwrap();
+        s.feed(r#"{"message":{"content":""},"done":true,"done_reason":"stop","eval_count":2}"#, &mut on).unwrap();
+        s.finish(false);
+        assert_eq!(crate::openai::unshown_tokens(), Some(0));
     }
 }

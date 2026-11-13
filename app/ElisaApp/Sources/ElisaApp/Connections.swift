@@ -152,19 +152,26 @@ final class ConnectionStore: ObservableObject {
     private var saved: [Connection] = []
     private var savedActive = ""
 
-    func load() {
+    /// Reads the saved connections. `keep`: the name to select afterwards, else the one selected now (each read makes
+    /// new ids, and the file may list the connections in another order, so the selection follows the name, not a
+    /// position).
+    func load(keep: String? = nil, then: (() -> Void)? = nil) {
+        let keep = keep ?? items.first { $0.id == selected }?.name
         run(["--providers-json"], nil) { [weak self] j in
             guard let self else { return }
-            if j["ok"] as? Bool == false { self.note = (j["detail"] as? String ?? "cannot read the connections", false); return }
+            if j["ok"] as? Bool == false { self.note = (j["detail"] as? String ?? "cannot read the connections", false); then?(); return }
             self.path = ((j["path"] as? String) ?? self.path)
             self.active = j["active"] as? String ?? ""
             self.items = (j["providers"] as? [[String: Any]] ?? []).map(Connection.init(json:))
             self.saved = self.items
             self.savedActive = self.active
             self.dirty = false
-            if self.selected == nil || !self.items.contains(where: { $0.id == self.selected }) {
+            if let keep, let c = self.items.first(where: { $0.name == keep }) {
+                self.selected = c.id
+            } else if self.selected == nil || !self.items.contains(where: { $0.id == self.selected }) {
                 self.selected = self.items.first(where: { $0.name == self.active })?.id ?? self.items.first?.id
             }
+            then?()
         }
     }
 
@@ -237,10 +244,8 @@ final class ConnectionStore: ObservableObject {
             let ok = j["ok"] as? Bool ?? false
             self.note = (j["detail"] as? String ?? "no answer", ok)
             if ok {
-                let (keepSel, keepNote) = (self.items.firstIndex { $0.id == self.selected }, self.note)
-                self.load()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    if let k = keepSel, k < self.items.count { self.selected = self.items[k].id }
+                let (keepName, keepNote) = (self.items.first { $0.id == self.selected }?.name, self.note)
+                self.load(keep: keepName) {
                     self.note = keepNote
                     then()
                 }
@@ -347,7 +352,8 @@ private struct Btn: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Text(verbatim: title).font(Fonts.mono(13, on ? .semibold : .regular))
+            // one line at any width: the footer's path label gives way instead
+            Text(verbatim: title).font(Fonts.mono(13, on ? .semibold : .regular)).lineLimit(1).fixedSize()
                 .foregroundStyle(!enabled ? p.fg2 : on ? p.fg : danger ? p.err : p.tx)
                 .padding(.horizontal, 12).padding(.vertical, 5)
                 .background(RoundedRectangle(cornerRadius: 5).fill(on ? p.sel : .clear))
@@ -758,7 +764,8 @@ struct ConnectionsView: View {
                 Spacer()
                 Text(verbatim: pathLabel).font(Fonts.mono(11)).foregroundStyle(p.fg2).lineLimit(1).truncationMode(.head)
                 Btn(title: reconnects ? "Save and reconnect" : "Save", on: s.dirty, enabled: s.dirty && !s.busy) {
-                    s.save { if reconnects { m.reconnect() } }
+                    // with no session open, the next one starts on the connection just saved (not this window's last model)
+                    s.save { if reconnects { m.reconnect() } else { m.model = "" } }
                 }
             }
         }
@@ -773,7 +780,8 @@ struct ConnectionsView: View {
 final class ConnectionsWindow {
     static let shared = ConnectionsWindow()
     private var window: NSWindow?
-    private let store = ConnectionStore()
+    /// the window's store (internal so --selftest can press its buttons through the same functions)
+    let store = ConnectionStore()
 
     private func view(_ m: AppModel) -> some View {
         ConnectionsRoot(s: store, m: m)

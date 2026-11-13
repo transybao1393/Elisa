@@ -1,0 +1,37 @@
+# How arithmetic is said in words (`mcp_reason::ops_in_words`): the wordings that stand between two numbers for one
+# of `calc`'s operators, or around one number for a percentage, a square, a cube or a square root, so Elisa computes
+# "144 chia 12" and "25% của 480" herself as she does "144 divided by 12" and "25% of 480", whatever the model says.
+# One section per operator, "a | b | c", English and Vietnamese, with and without accents; a wording may be several
+# words. Only wordings that mean the operator between two numbers belong here (not "lần" as "occasion" alone, not a
+# bare "căn"/"can"). Fix a missed wording here, not in code.
+
+[plus]
+plus | added to | cộng | cong | cộng với | cong voi | cộng thêm | cong them | thêm | them
+
+[minus]
+minus | trừ | tru | trừ đi | tru di | bớt | bot | bớt đi | bot di
+
+[times]
+times | multiplied by | nhân | nhan | nhân với | nhan voi | lần | lan
+
+[divided by]
+divided by | chia | chia cho
+
+[to the power of]
+to the power of | mũ | mu | lũy thừa | luy thua
+
+# a percentage of a number: "{n} percent of {m}", "{n} phần trăm của {m}" ("%" is read in any language)
+[percent]
+percent | per cent | phần trăm | phan tram
+
+[of]
+of | của | cua
+
+[squared]
+squared | bình phương | binh phuong
+
+[cubed]
+cubed | lập phương | lap phuong
+
+[square root of]
+square root of | căn bậc hai của | can bac hai cua | căn bậc 2 của | can bac 2 cua | căn của | can cua

@@ -1,0 +1,47 @@
+# Wordings of a model planning its work instead of giving content ("The task is to create a file named tomtat.md…",
+# "It should include the meeting code…", "Nhiệm vụ là tạo…"): in content Elisa saves from files she read, such a
+# sentence talks about the task or the file to make, not what the files say, so it is left out (`repl/turn.rs`
+# `from_read`). One wording per line under [plan], lowercase, matched as whole words.
+# Under [cut]: words a sentence cut off mid-way ends on ("…, and a brief"): such a last piece is never saved either.
+# Add a language's wording here, not in code.
+[plan]
+the task is
+task is to
+should include
+should contain
+must include
+must contain
+needs to include
+need to include
+will include
+will contain
+a file named
+a file called
+the file should
+the summary should
+the user wants
+the user asked
+i need to
+i will create
+nhiệm vụ là
+cần bao gồm
+nên bao gồm
+phải bao gồm
+sẽ bao gồm
+tệp có tên
+file có tên
+người dùng muốn
+người dùng yêu cầu
+[cut]
+and
+or
+a
+an
+the
+of
+with
+và
+hoặc
+một
+của
+với

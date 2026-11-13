@@ -96,6 +96,8 @@ struct App {
     // edit panel
     views: Vec<View>, sel: Option<usize>, last_read: Option<ReadV>, last_cmd: Option<(String, Option<bool>)>, awaiting: Await,
     pscroll: usize, panel_h: usize, split: f32, panel_pref: Option<bool>, term_w: u16,
+    // the approval box: how far its whole command / code is scrolled (PgUp / PgDn while it asks)
+    ascroll: usize,
     main_r: Rect,
     // memory job under the input: the last update and when it arrived; `memory` = any memory event seen
     jobs: Vec<Job>, memory: bool,

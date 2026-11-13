@@ -1,0 +1,38 @@
+# Who is who in a question about the user (`context::NameFix::about_user`): a message asking about the user's own
+# facts ("what do you know about me?", "tóm tắt những gì bạn biết về mình", "tên mình là gì") whose reply describes
+# the assistant instead (gemma3:1b read "mình" as itself) gets Elisa's answer from the user's facts. In Vietnamese
+# "mình" in the user's message is the user, the assistant being "bạn". Fix a wording here, not in code.
+# Keys per language:
+#   me         the user's words for themself          about me   asks about the user as a whole
+#   you        the words a reply speaks to the user with: a fact of theirs said with one is an answer
+#   ask        words that make a message a question (with "?" or without: "mình sống ở đâu")
+# One fact is asked when a "me" word stands right next to its thing ("my name", "tên mình", "mình sống").
+#   say        Elisa's answer: {facts} the facts       fact       one fact "The user's X is V": {thing} {value}
+#   things     a fact's thing in this language, "english: this language" (a thing not listed keeps its words)
+#   lives / works   "The user lives in …" / "works …" in this language: {what} all after the verb ("in Hanoi"),
+#              {place} without its English place word ("Hanoi"); the template's second word is the verb an ask uses
+#   restate    lead-ins of a sentence that says something over again ("as for", "in other words"): a reply sentence
+#              opening with one that tells the user a fact of theirs an earlier sentence told goes (`NameFix::fix`)
+
+[en]
+me = i | me | my | myself | mine
+you = you | your | yours | you're | you've
+about me = about me | about myself
+ask = what | which | where | who | how | when | tell
+say = Here is what I know about you: {facts}
+fact = Your {thing} is {value}.
+lives = You live {what}.
+works = You work {what}.
+restate = as for | as to | regarding | when it comes to | in other words | that is to say | to put it another way | as i said | as i mentioned | like i said | as mentioned | as noted | to repeat | once again | again
+
+[vi]
+me = mình | tôi | tớ | tui
+you = bạn | cậu
+about me = về mình | về tôi | về tớ | về bản thân mình | ve minh | ve toi
+ask = gì | gi | đâu | dau | nào | nao | ai | không | khong | sao | bao nhiêu | mấy
+say = Những gì mình biết về bạn: {facts}
+fact = {thing} của bạn là {value}.
+things = name: Tên | meeting code: Mã cuộc họp | age: Tuổi | job: Công việc | favourite colour: Màu yêu thích | favorite color: Màu yêu thích | wife: Vợ | husband: Chồng | dog: Chó | cat: Mèo | email: Email | phone: Số điện thoại | birthday: Sinh nhật
+lives = Bạn sống ở {place}.
+works = Bạn làm việc: {place}.
+restate = còn về | con ve | về việc | ve viec | nói cách khác | noi cach khac | như đã nói | nhu da noi | như mình đã nói | nhu minh da noi | nhắc lại | nhac lai | một lần nữa | mot lan nua

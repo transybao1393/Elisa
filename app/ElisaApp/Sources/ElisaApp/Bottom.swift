@@ -230,10 +230,69 @@ struct InputBox: View {
     }
 }
 
+/// How tall the permission box's scrolling part may be: the transcript above it keeps at least Shade's dock (its
+/// bubble, tray and character) in full, so the box, the transcript's last line, the status bar and the dock never
+/// overlap. The transcript's height plus the part's shown height stays the same while the part grows or shrinks
+/// (everything else in the window is fixed), so the part gets that sum less what the transcript needs.
+@MainActor
+final class ApprovalRoom: ObservableObject {
+    static let shared = ApprovalRoom()
+    /// the transcript area's height, Shade's dock height (0 when hidden), the box part's shown height
+    private(set) var transcript: CGFloat = 0
+    private(set) var dock: CGFloat = 0
+    private(set) var shown: CGFloat = 0
+    /// the part's largest height (a roomy window), and its smallest (about two lines: the start of the call)
+    static let most: CGFloat = 170
+    static let least: CGFloat = 40
+    @Published private(set) var cap: CGFloat = ApprovalRoom.most
+
+    func set(transcript t: CGFloat? = nil, dock d: CGFloat? = nil, shown s: CGFloat? = nil) {
+        if let t { transcript = t }
+        if let d { dock = d }
+        if let s { shown = s }
+        guard transcript > 0 else { return }
+        // the transcript keeps the dock plus a little air, and at least a few lines when Shade is hidden
+        let need = max(dock + 16, 120)
+        let c = min(Self.most, max(Self.least, (transcript + shown - need).rounded(.down)))
+        if abs(c - cap) >= 1 { cap = c }
+    }
+}
+
+/// its content at its own height up to `cap`, then scrolling inside that height, with a line saying there is more
+struct CappedScroll<C: View>: View {
+    @Environment(\.pal) var p
+    let cap: CGFloat
+    /// tells ApprovalRoom the height it shows (the permission box's part)
+    var report = false
+    @ViewBuilder let content: () -> C
+    @State private var h: CGFloat = 0
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.vertical) {
+                content()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(GeometryReader { g in
+                        Color.clear.onAppear { h = g.size.height }.onChange(of: g.size.height) { h = g.size.height }
+                    })
+            }
+            .scrollIndicators(h > cap ? .visible : .hidden)
+            .frame(height: h > 0 ? min(h, cap) : nil)
+            .onChange(of: min(h, cap)) { _, v in if report { ApprovalRoom.shared.set(shown: v) } }
+            .onAppear { if report && h > 0 { ApprovalRoom.shared.set(shown: min(h, cap)) } }
+            .onDisappear { if report { ApprovalRoom.shared.set(shown: 0) } }
+            if h > cap {
+                Text("↕ scroll to read all of it").font(Fonts.mono(11)).foregroundStyle(p.warn)
+            }
+        }
+    }
+}
+
 /// the permission box (kit 03): takes the input's slot; ↑↓ / 1–3 / enter / esc
 struct PermissionBox: View {
     @EnvironmentObject var m: AppModel
     @Environment(\.pal) var p
+    @ObservedObject private var room = ApprovalRoom.shared
     @FocusState private var focus: Bool
 
     var body: some View {
@@ -256,10 +315,15 @@ struct PermissionBox: View {
         let n = choices.count
         let note = mcp.map { "MCP server \($0)" } ?? tool
         VStack(alignment: .leading, spacing: 10) {
+            // what is asked, in full (a harmless start can't hide the rest of a command or a path): wrapped, and
+            // scrolling inside its own part once long, so the choices below always stay in view
+            // its height leaves the transcript room for Shade's dock (ApprovalRoom): a small window scrolls sooner
+            CappedScroll(cap: room.cap, report: true) {
+            VStack(alignment: .leading, spacing: 10) {
             if a.question {
                 // a yes / no question (a plugin's setup, a project's trust prompt): its details are in the setup window
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(a.summary).font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg).lineLimit(2)
+                    Text(a.summary).font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg).textSelection(.enabled)
                     Spacer()
                     Text(a.tool).font(Fonts.mono(11.5)).foregroundStyle(p.fg2).lineLimit(1)
                 }
@@ -280,7 +344,7 @@ struct PermissionBox: View {
                 (Text("Allow \(word)\(what.isEmpty ? "" : " ")").font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg)
                  + Text(what).font(Fonts.mono(14, .medium)).foregroundStyle(p.code)
                  + Text("?").font(Fonts.mono(15, .semibold)).foregroundStyle(p.fg))
-                    .lineLimit(2)
+                    .textSelection(.enabled)
                 Spacer()
                 Text(web ? (a.tool == "web_search" ? "the query leaves this Mac" : "the page is fetched from the internet")
                      : a.outside ? "\(note) · outside \(m.title)" : "\(note) · in \(m.title)").font(Fonts.mono(11.5))
@@ -294,13 +358,14 @@ struct PermissionBox: View {
                         .font(Fonts.mono(13, .semibold))
                     ForEach(Array(a.paths.enumerated()), id: \.offset) { _, path in
                         Text(path).font(Fonts.mono(12.5, .medium)).foregroundStyle(p.fg).textSelection(.enabled)
-                            .lineLimit(2).truncationMode(.middle)
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 6).fill(p.warn.opacity(0.12)))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(p.warn.opacity(0.6), lineWidth: 1))
+            }
+            }
             }
             }
             VStack(alignment: .leading, spacing: 2) {

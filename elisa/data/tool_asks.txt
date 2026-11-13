@@ -1,0 +1,178 @@
+# Explicit asks for one of Elisa's own tools, by meaning (`route::tool_ask_by_meaning`, all-MiniLM-L6-v2): one
+# example per line, English and Vietnamese, with and without accents. A message whose nearest example is under
+# `[web]` (an explicit ask to search the web, or a question only the web of today answers: today's price, weather or
+# news, "could you look it up?"), `[run]` (an ask to run a snippet) or `[show]` (an ask to see a whole
+# file as it is) or `[token]` (an ask whether a token in a file is safe: Elisa decodes it) is that ask, when it is near
+# enough and clearly nearer than any `[other]` example. The model reads Vietnamese poorly, so the Vietnamese
+# wordings need examples on both sides. Fix a missed or wrong wording by adding an example to the side it belongs
+# to, not by code. The English word rules (`route::web_ask`, `code_ask`) still decide on their own.
+[web]
+search the web: what is the tallest building?
+search the web
+search online for news about the election
+look it up on the internet
+google the weather in Paris
+check the web for the score
+tìm trên mạng: thủ đô của Pháp là gì?
+tìm trên mạng giúp mình
+tìm trên internet: giá vàng hôm nay
+tra cứu trên mạng: ai thắng trận tối qua?
+tra google giúp mình
+lên mạng tìm giùm mình tin mới nhất
+tìm kiếm trên web: thời tiết Hà Nội
+tim tren mang: thu do cua Phap la gi?
+tim tren mang giup minh
+tim tren internet: gia vang hom nay
+tra cuu tren mang: ai thang tran toi qua?
+len mang tim gium minh tin moi nhat
+tim kiem tren web: thoi tiet Ha Noi
+could you look it up?
+look it up for me
+can you look that up for me?
+curious what the population of Norway is these days, could you look it up?
+what's the gold price today?
+what's the weather in Hanoi today?
+what's the weather like today?
+what's in the news today?
+any news today?
+giá xăng hôm nay thế nào nhỉ
+giá vàng hôm nay bao nhiêu?
+thời tiết Đà Nẵng hôm nay thế nào?
+hôm nay thời tiết thế nào?
+tin tức hôm nay có gì?
+hôm nay có tin gì mới?
+tỷ giá đô hôm nay bao nhiêu?
+gia vang hom nay the nao nhi
+thoi tiet Ha Noi hom nay the nao?
+tin tuc hom nay co gi?
+thủ đô của Canada là gì? tra google giúp mình
+dân số Iceland là bao nhiêu? tra google giúp mình
+thủ đô của Úc là gì? tìm trên mạng giúp mình
+tra cứu giúp mình thủ đô của Úc
+google giúp mình thủ đô của Úc
+tra google xem thủ đô của Úc là gì
+thu do cua Uc la gi? tra google giup minh
+tra cuu giup minh thu do cua Uc
+what's the capital of Australia? google it for me
+search google for the capital of Australia
+look up the capital of Australia online
+can you google the population of Iceland?
+[run]
+run this python: print(1)
+run this code
+execute this snippet
+run this javascript for me
+chạy đoạn python này
+chạy đoạn mã này
+chạy thử đoạn code này giúp mình
+chạy code python này
+thực thi đoạn mã này
+chay doan python nay
+chay doan ma nay
+chay thu doan code nay giup minh
+chay code python nay
+thuc thi doan ma nay
+[show]
+show me the full contents of notes.txt
+show me the whole file app.py
+print the contents of todo.txt
+display requirements.txt
+cat config.toml
+show me what's in todo.txt, all of it
+cho mình xem toàn bộ nội dung tệp notes.txt
+in ra nội dung tệp todo.txt
+hiển thị toàn bộ tệp app.py
+cho minh xem toan bo noi dung tep notes.txt
+in ra noi dung tep todo.txt
+hien thi toan bo tep app.py
+[token]
+is the jwt in auth.py secure?
+check the token in config.json
+decode the token in app.py
+is the access token in .env still valid?
+can someone forge the token in login.py?
+decode the JWT in session.py
+what does the jwt in auth.py hold?
+giải mã JWT trong session.py
+token trong auth.py có an toàn không?
+kiểm tra token trong config.json giúp mình
+token trong .env còn hạn không?
+token trong auth.py co an toan khong?
+kiem tra token trong config.json giup minh
+[other]
+what is a token?
+how many tokens can this model take?
+token là gì?
+what's the password in settings.py?
+what is the api key in .env?
+show me the outline of main.py
+show the functions in utils.py
+show me the add function in app.py
+what does notes.txt say about the meeting?
+summarize notes.txt
+how many lines does todo.txt have?
+tóm tắt notes.txt
+tom tat notes.txt
+what is the capital of France?
+what is the capital of Australia?
+what is python?
+explain this code
+write a python function that adds two numbers
+how do I search a list in python?
+read notes.txt
+save that to plan.md
+what time is it in Seoul?
+tell me a joke
+thủ đô của Pháp là gì?
+python là gì?
+giải thích đoạn mã này
+viết một hàm python cộng hai số
+đọc tệp notes.txt
+mấy giờ rồi?
+kể chuyện cười đi
+mạng xã hội là gì?
+bạn chạy nhanh không?
+thu do cua Phap la gi?
+python la gi?
+giai thich doan ma nay
+viet mot ham python cong hai so
+doc tep notes.txt
+may gio roi?
+ke chuyen cuoi di
+mang xa hoi la gi?
+latest news about Apple
+tìm giúp mình file nào có chữ ORCHID
+tim giup minh file nao co tu khoa BLUEBIRD
+file nào có chữ ORCHID?
+tìm chữ ORCHID trong các file
+which file mentions ORCHID?
+search the files for ORCHID
+search the project for the word Banana
+My name is Minh and I live in Hue.
+I live in Hanoi
+I'm so tired today
+my sister lives in Da Nang
+Mình tên là Linh và mình sống ở Hà Nội.
+tôi sống ở Hà Nội
+minh ten la Linh va minh song o Ha Noi
+hôm nay mệt quá
+trời mưa rồi
+hôm nay vui ghê
+trời hôm nay đẹp quá
+hôm nay trời đẹp ghê
+nóng quá hôm nay
+it's so hot today
+nice weather today
+what a lovely day
+hom nay met qua
+troi mua roi
+troi hom nay dep qua
+what date is it today?
+what day is it today?
+what day of the week is it?
+hôm nay là ngày bao nhiêu?
+nay là thứ mấy rồi?
+hôm nay ngày mấy?
+hom nay la ngay bao nhieu?
+hom nay la thu may?
+hom nay ngay may?

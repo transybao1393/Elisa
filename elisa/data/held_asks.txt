@@ -1,0 +1,47 @@
+# Short follow-ups that ask for the one item not yet named of a file Elisa holds (`repl/turn.rs` `held_line`): after
+# "what's the first task in todo.txt?" (buy milk), "the other one?" is the task not named yet (send report); after
+# "and South?" on sales.csv, "the other one?" is the row not named yet (East). One example per line, English and
+# Vietnamese, with and without accents. A message close in meaning (all-MiniLM-L6-v2) to the `[next]` examples and
+# nearer to them than to every `[other]` example, sharing a word with that nearest example that no `[other]` example
+# has, is such a follow-up: Elisa answers from the file herself. A follow-up that names a row ("and South?") needs
+# no example: the named row answers it. Fix a missed or wrong wording by adding an example to the side it belongs
+# to, not by code.
+[next]
+the other item?
+and the other one?
+what about the other one?
+the other?
+the remaining one?
+what about the remaining one?
+what about the rest?
+and the next one?
+và cái kia nữa?
+còn cái kia?
+cái kia?
+cái kia thì sao?
+còn cái còn lại?
+cái còn lại là gì?
+còn lại?
+còn lại thì sao?
+va cai kia?
+con cai kia?
+cai kia thi sao?
+cai con lai la gi?
+con lai?
+[other]
+and North?
+what about East?
+how come?
+more
+ok
+the first one?
+the second one
+tell me a joke
+what's the time now?
+and the total?
+how many are there?
+cái đầu tiên?
+tại sao?
+tiếp đi
+tổng cộng là bao nhiêu?
+có mấy cái?

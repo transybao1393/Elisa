@@ -1,0 +1,28 @@
+# Asks for the value one setting of a file holds (`repl/turn.rs` `value_ask`): one example per line. In a message
+# the setting's name is put as "foo" and the file's name as "the file" before it is compared, so write them that way
+# here. A message close in meaning (all-MiniLM-L6-v2) to the `[value]` examples and nearer to them than to every
+# `[other]` example, sharing a word with that nearest example that no `[other]` example has, is such an ask: Elisa
+# answers with that one value from the file (a secret cut short). Fix a missed or wrong wording by adding an example
+# to the side it belongs to, not by code.
+[value]
+what is the foo in the file?
+what's foo set to in the file?
+what is foo in the file?
+which foo does the file use?
+give me the foo from the file
+tell me the foo in the file
+foo trong the file là gì?
+the file đặt foo là bao nhiêu?
+giá trị của foo trong the file là gì?
+[other]
+is the foo in the file safe?
+is foo valid?
+change foo in the file
+set foo to 9090 in the file
+delete foo from the file
+why is foo set in the file?
+explain the file
+describe the file
+show me the whole file
+is the token in the file safe?
+foo trong the file có an toàn không?

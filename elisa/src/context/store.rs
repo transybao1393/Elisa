@@ -18,6 +18,17 @@ pub fn run_id() -> u64 {
     RUN_ID.load(Ordering::SeqCst)
 }
 
+/// Takes this run's session id for project state `dir` when none is set yet: the current second, or past every id
+/// this project's saved sessions and notes already use, so a run started in the same second as the last one (or
+/// after a /clear moved ids ahead of the clock) never writes into that one's session or notes file.
+pub fn claim_run_id(dir: &Path) {
+    use std::sync::atomic::Ordering;
+    if RUN_ID.load(Ordering::SeqCst) != 0 { return; }
+    let used = ["sessions", "notes"].iter().filter_map(|sub| fs::read_dir(dir.join(sub)).ok()).flatten()
+        .filter_map(|e| e.ok()?.path().file_stem()?.to_str()?.parse::<u64>().ok()).max().unwrap_or(0);
+    let _ = RUN_ID.compare_exchange(0, unix_now().max(used + 1).max(1), Ordering::SeqCst, Ordering::SeqCst);
+}
+
 /// A new session file from now on (/clear): the one saved so far stays as it is, so /resume can go back to it.
 pub fn new_session() {
     use std::sync::atomic::Ordering;
@@ -33,7 +44,7 @@ fn non_empty(s: String) -> Option<String> { if s.trim().is_empty() { None } else
 /// Project-local state under <cwd>/.elisa/
 pub struct Store { pub dir: PathBuf }
 impl Store {
-    pub fn new(cwd: &Path) -> Store { Store { dir: cwd.join(".elisa") } }
+    pub fn new(cwd: &Path) -> Store { let dir = cwd.join(".elisa"); claim_run_id(&dir); Store { dir } }
 
     /// This session's notes: `.elisa/notes/<session id>.md`, one file per session, so a new session never overwrites
     /// or loses an earlier one's (one shared `notes.md` was carried into every new session, and a small model could
@@ -105,10 +116,10 @@ impl Store {
         let tmp = p.with_extension("json.tmp");
         fs::write(&tmp, json).and_then(|_| fs::rename(&tmp, &p)).map_err(|e| format!("{}: {e}", p.display()))?;
         // tiny sidecar (.elisa/session-meta/<ts>.meta) so /resume never loads whole sessions: "<n_msgs>\t<title>"
-        let title = msgs.iter().filter(|m| m.role == Role::User).find_map(|m| m.content.iter().find_map(|b| match b {
+        let title = msgs.iter().filter(|m| m.role == Role::User).filter_map(|m| m.content.iter().find_map(|b| match b {
             Block::Text { text } => Some(session_title(text)),
             _ => None,
-        })).unwrap_or_default();
+        })).find(|t| !t.is_empty()).unwrap_or_default();
         let meta = self.dir.join("session-meta");
         if fs::create_dir_all(&meta).is_ok() { let _ = fs::write(meta.join(format!("{}.meta", run_id())), format!("{}\t{title}", msgs.len())); }
         Ok(p)
@@ -256,4 +267,8 @@ fn head_title(path: &Path) -> String {
 }
 
 /// The user's own words of a first message (without the `first_message` header), one line, <= 80 chars.
-fn session_title(text: &str) -> String { one_line(request_body(text), 79) }
+/// Empty for a fold's placeholder (`FOLDED_TURNS`): Elisa's words, not the user's.
+fn session_title(text: &str) -> String {
+    let b = request_body(text);
+    if fold_placeholder(b) { String::new() } else { one_line(b, 79) }
+}

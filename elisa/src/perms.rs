@@ -486,8 +486,7 @@ mod tests {
 
     #[test]
     fn a_symlink_does_not_dodge_a_deny_or_widen_an_allow() {
-        let d = std::env::temp_dir().join(format!("elisa-perms-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TempDir::new("perms");
         std::fs::create_dir_all(d.join("src")).unwrap();
         std::fs::write(d.join(".env"), "x").unwrap();
         std::os::unix::fs::symlink(d.join(".env"), d.join("src/config.txt")).unwrap();
@@ -496,7 +495,6 @@ mod tests {
         // the link's real path is not under src/: the allow does not cover writing through it
         assert_eq!(r.decide("write", &json!({"path": "src/config.txt"}), None, None, &d).map(|x| x.level), None);
         assert_eq!(r.decide("write", &json!({"path": "src/new.rs"}), None, None, &d).map(|x| x.level), Some(Level::Allow));
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -548,15 +546,13 @@ mod tests {
         assert!(toml::from_str::<toml::Value>(&q).is_ok(), "{q}");
         assert!(add_allow_to("", "nope(x)").is_err());
         // save: created with mode 600, a second save changes nothing
-        let d = std::env::temp_dir().join(format!("elisa-perms-save-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testdir::TempDir::new("perms-save");
         let p = d.join(".config/elisa/config.toml");
         save_allow(&p, "shell(ls *)").unwrap();
         save_allow(&p, "shell(ls *)").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "[permissions]\nallow = [\"shell(ls *)\"]\n");
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

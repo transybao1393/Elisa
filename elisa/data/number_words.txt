@@ -1,0 +1,29 @@
+# Numbers written as words, for checking a reply's numbers against Elisa's exact facts (`situation::ReplyFacts`):
+# "notes.txt has eight words" says 8, so it needs no "8 words" added, and a wrong "one word" is put right.
+# One number per line: "N = word | word | …", English and Vietnamese, with and without accents. A word that is
+# also an everyday word ("không" is "no", "sau" is "after", "ba" is "dad") ends with "?": it counts as that number
+# when a reply already holds the right one, but is never replaced. Fix a missed wording here, not in code.
+0 = zero | không? | khong?
+1 = one | một | mot | mốt?
+2 = two | hai
+3 = three | ba?
+4 = four | bốn | bon
+5 = five | năm? | nam? | lăm? | lam?
+6 = six | sáu | sau?
+7 = seven | bảy | bay?
+8 = eight | tám | tam?
+9 = nine | chín | chin
+10 = ten | mười | muoi
+11 = eleven | mười một | muoi mot
+12 = twelve | mười hai | muoi hai
+13 = thirteen | mười ba | muoi ba
+14 = fourteen | mười bốn | muoi bon
+15 = fifteen | mười lăm | muoi lam
+16 = sixteen | mười sáu | muoi sau
+17 = seventeen | mười bảy | muoi bay
+18 = eighteen | mười tám | muoi tam
+19 = nineteen | mười chín | muoi chin
+20 = twenty | hai mươi | hai muoi
+30 = thirty | ba mươi | ba muoi
+40 = forty | bốn mươi | bon muoi
+50 = fifty | năm mươi | nam muoi

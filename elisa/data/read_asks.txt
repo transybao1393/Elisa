@@ -1,0 +1,97 @@
+# Asks to read a file of the project and answer from it, where the English word rules (`route::file_ask`: "read X",
+# "open X", "what's in X") see none (`repl/turn.rs` `read_ask`): one example per line, English and Vietnamese, with
+# and without accents. In a message the file's name is put as "the file" before it is compared, so write it that way
+# here. A message close in meaning (all-MiniLM-L6-v2) to the `[read]` examples and nearer to them than to every
+# `[other]` example, sharing a word with that nearest example that no `[other]` example has, is such an ask: Elisa
+# reads the file herself, and the model answers from what it holds (no model then invents "MEETING001" for a file it
+# never read). The `[other]` side holds asks that name a file for something else: a save, a change, a delete, a
+# question whether it is there, or a plain mention. Fix a missed or wrong wording by adding an example to the side it
+# belongs to, not by code. The short `[read]` examples of a reading word and "the file" ("đọc the file", "mở the
+# file", "read the file") also give the reading words: a message of that word and a file's name alone ("đọc
+# todo.txt", "mo todo.txt") is a read ask in any spelling, with no meaning measured (`bare_read`).
+[read]
+đọc the file
+mở the file
+xem the file
+doc the file
+mo the file
+read the file
+open the file
+cat the file
+đọc file the file và cho mình biết mã cuộc họp
+đọc the file và cho mình biết nội dung
+đọc the file rồi cho mình biết nó nói gì
+đọc giúp mình the file
+đọc the file giúp mình
+mở the file xem có gì
+mở the file và cho mình biết tiêu đề
+xem the file giúp mình
+xem giúp mình the file
+check giúp mình cái file the file, meeting code là gì?
+kiểm tra giúp mình the file xem có gì
+cho mình xem the file
+cho mình biết the file nói gì
+the file giờ có gì?
+the file có gì?
+the file nói gì?
+trong the file có gì?
+trong the file, việc đầu tiên là gì?
+công việc đầu tiên trong the file là gì?
+không biết trong the file có gì nhỉ
+không biết trong the file vùng nào bán nhiều nhất nhỉ
+the file có mấy dòng?
+đếm số dòng trong the file
+doc file the file va cho minh biet ma cuoc hop
+doc the file giup minh
+xem giup minh the file
+the file gio co gi?
+the file noi gi?
+trong the file co gi?
+khong biet trong the file co gi nhi
+read the file and tell me the meeting code
+hmm I wonder what's in the file
+lemme see whats in the file
+pull up the file
+open up the file for me
+could you show me what the file says?
+what does the file say?
+take a look at the file
+have a look at the file and tell me the code
+what's the first task in the file?
+which region sold the most in the file?
+I'd love to know how many lines the file has
+can you check the file for me?
+[other]
+lưu tóm tắt vào the file
+lưu từ hello vào the file
+ghi dòng xin chào vào the file
+tạo the file với chữ hello
+xóa the file bằng rm
+xóa the file đi
+the file còn không?
+the file còn tồn tại không?
+đổi 'buy milk' thành 'buy bread' trong the file
+trong the file, đổi a thành b
+sửa lỗi trong the file
+thêm flask vào the file
+mình vừa đổi tên the file
+mình đã xóa the file hôm qua
+save that to the file
+write hello to the file
+create the file containing hello
+delete the file
+is the file still there?
+does the file exist?
+in the file change a to b
+replace a with b in the file
+fix the add function in the file
+add flask to the file
+I renamed the file
+I deleted the file yesterday
+the file is too long
+is the token in the file safe?
+decode the jwt in the file
+what is a text file?
+what time is it in Paris?
+tell me a joke
+kể chuyện cười đi

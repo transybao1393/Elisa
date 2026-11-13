@@ -13,6 +13,9 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
+mod common;
+use common::TempDir;
+
 struct Server { child: Child, stdin: ChildStdin, rx: Receiver<Value>, next: u64 }
 
 impl Server {
@@ -62,12 +65,7 @@ impl Drop for Server {
     fn drop(&mut self) { let _ = self.child.kill(); let _ = self.child.wait(); }
 }
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("elisa-mcp-run-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+fn scratch(tag: &str) -> TempDir { TempDir::new(&format!("mcp-run-{tag}")) }
 
 #[test]
 fn no_daemon_says_to_start_colima_and_never_starts_it() {
@@ -75,7 +73,6 @@ fn no_daemon_says_to_start_colima_and_never_starts_it() {
     let mut s = Server::start(5, &[("HOME", home.display().to_string()), ("DOCKER_HOST", "unix:///nonexistent/elisa/docker.sock".into())]);
     let (t, err) = s.run(json!({"language": "python", "code": "print(1)"}));
     assert!(err && t.contains("Colima isn't running — start it with `colima start`"), "{t}");
-    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// A stand-in `docker` (first on PATH) that logs its arguments and environment and, for `run`, hangs: the wall-clock
@@ -113,7 +110,6 @@ fn the_wall_clock_limit_kills_the_container_by_name() {
     // the code is in the environment, never the arguments (`ps` shows those)
     assert!(!run.contains("secret-marker") && l.contains("CODE while True: pass  # secret-marker"), "{l}");
     for f in ["--network none", "--read-only", "--user 65534:65534", "--cap-drop ALL", "--pids-limit 64", "--memory 256m"] { assert!(run.contains(f), "{f}: {run}"); }
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -134,7 +130,6 @@ fn a_cancelled_call_kills_its_container_and_the_server_stays_up() {
     assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("cancelled"), "{r}");
     assert!(std::fs::read_to_string(&log).unwrap().contains("ARGS kill elisa-run-"));
     assert_eq!(s.request("ping", json!({}))["result"], json!({}));
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// the fake docker's environment: its bin first on PATH, its socket, a scratch HOME, a test volume prefix
@@ -164,7 +159,6 @@ fn deps_are_fetched_online_first_then_the_code_runs_offline() {
     assert!(run.contains("--name elisa-run-") && run.contains("--network none") && !run.contains("--network bridge"), "{run}");
     assert!(run.contains("--mount type=volume,src=elisa-test-fake-python,dst=/deps,readonly") && run.contains("PYTHONPATH=/deps/"), "{run}");
     assert!(l.contains("CODE import six  # code-marker"), "{l}");
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -181,7 +175,6 @@ fn bad_deps_are_refused_before_docker_is_touched() {
         assert!(err && t.contains(why) && t.contains("nothing was fetched or run"), "{lang} {deps}: {t}");
     }
     assert!(!log.exists(), "{}", std::fs::read_to_string(&log).unwrap_or_default());
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -198,7 +191,6 @@ fn a_slow_fetch_is_killed_at_its_own_limit_and_the_code_never_runs() {
     let l = std::fs::read_to_string(&log).unwrap();
     assert!(l.lines().any(|x| x.starts_with("ARGS kill elisa-fetch-")), "{l}");
     assert!(!l.contains("--name elisa-run-"), "{l}");
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 // ---- with Colima (ignored by default) ----
@@ -357,7 +349,6 @@ fn the_sandbox_is_off_by_default_and_a_project_can_only_switch_it_off() {
     assert!(c.sandbox_fetch_timeout_s == 40 && c.notes.iter().any(|n| n.contains("sandbox_fetch_timeout = 70 ignored")), "{:?}", c.notes);
     std::fs::write(proj.join(".elisa/config.toml"), "sandbox_fetch_timeout = 20\n").unwrap();
     assert_eq!(load().sandbox_fetch_timeout_s, 20);
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -487,5 +478,4 @@ fn a_missing_image_is_named_in_meta_and_the_project_picks_the_version() {
     assert!(l.contains("--pull never") && !l.contains("ARGS pull"), "the server never pulls: {l}");
     let _ = child.kill();
     let _ = child.wait();
-    let _ = std::fs::remove_dir_all(&d);
 }

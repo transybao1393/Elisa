@@ -1,0 +1,44 @@
+# Wordings of an ask for the file that holds something ("which file in this folder mentions a meeting code?", "file nào
+# có chữ ORCHID?"), read by `route::which_file_term`: Elisa searches the project's files for that thing herself and
+# the answer names the file(s). One frame per line; `{x}` is the thing asked for, and every other word must be in the
+# ask, in this order (words of `[here]` in data/route_words.txt, "in this folder", "trong thư mục này", are left out
+# first; a Vietnamese frame matches a message typed without marks too). The `drop` line lists words a thing may open
+# with that are not part of it ("a meeting code" is searched as "meeting code"). Add a wording here, not in code.
+drop = a | an | the | any | some | word | the word | text | the text | chữ | từ | dòng chữ | đoạn | cái
+which file mentions {x}
+which file has {x}
+which file contains {x}
+which file says {x}
+which file talks about {x}
+which file is {x} in
+which files mention {x}
+which files have {x}
+which files contain {x}
+what file mentions {x}
+what file has {x}
+what file contains {x}
+what file is {x} in
+in which file is {x}
+where is {x} mentioned
+where is {x} written
+where does it say {x}
+find the file with {x}
+find the file that mentions {x}
+find the file that has {x}
+find files with {x}
+find files that mention {x}
+file nào có {x}
+file nào chứa {x}
+file nào nhắc đến {x}
+file nào nhắc tới {x}
+file nào ghi {x}
+tệp nào có {x}
+tệp nào chứa {x}
+tệp nào nhắc đến {x}
+{x} nằm trong file nào
+{x} nằm ở file nào
+{x} ở file nào
+{x} có trong file nào
+tìm file có {x}
+tìm file chứa {x}
+tìm tệp có {x}

@@ -1,0 +1,26 @@
+# Asks to see the whole list after Elisa cut a long dependency list short ("N more — ask for the full list"): Elisa
+# prints it from the check she ran, with no model call (`repl/turn.rs` `full_list_line`). A message near the `[full]`
+# examples, and nearer to them than to every `[other]` one, is such an ask (all-MiniLM-L6-v2, with the shared-word
+# rule). Fix a missed or wrong wording by adding an example to the side it belongs to, not by code.
+[full]
+show the full list
+show me the whole list
+list all of them
+show all the advisories
+give me the complete list
+show every advisory
+cho tôi xem toàn bộ danh sách
+hiện tất cả cảnh báo
+liệt kê hết đi
+cho toi xem toan bo danh sach
+hien tat ca canh bao
+liet ke het di
+[other]
+show me the file
+list the files in the docs folder
+show the notes
+what is in the list in todo.txt
+check package.json for outdated dependencies
+show me the code
+cho tôi xem tệp này
+liệt kê các tệp ở đây

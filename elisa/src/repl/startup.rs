@@ -271,7 +271,7 @@ impl<'f> Session<'f> {
             max_ctx: self.max_ctx, notes: self.notes.clone(), resumed, vision: self.vision,
         };
         self.fe.banner(&b);
-        // the intent router, when one is set: on, and whether Elisa's own intent rules still decide (`elisa_rules`)
+        // which part of the decision model decides: the router (when set and `decision` isn't "rules") or the hardcoded rules
         if self.router.on() { let l = self.router.describe(); self.fe.info(&l); }
     }
 
@@ -354,7 +354,8 @@ impl<'f> Session<'f> {
         self.watch_poll();
         if let TurnEnd::Failed(e) = end { self.fe.error(&e); return 1; }
         let last = self.history.iter().rev().find(|m| m.role == Role::Assistant).map(texts).unwrap_or_default();
-        println!("{}", last.trim());
+        // shown as the screen shows it: secrets masked ("sk-l…", `secrets::mask_shown`)
+        println!("{}", crate::secrets::mask_shown(last.trim()));
         0
     }
 }

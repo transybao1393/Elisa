@@ -110,6 +110,26 @@ pub struct Stream {
     timings: Option<(usize, usize)>,
     /// a first delta came: the seconds to it are the reply's ttft
     pub started: bool,
+    /// text pieces streamed (one per shown token) and whether any reasoning came, for `unshown_tokens`
+    pieces: usize,
+    reasoned: bool,
+}
+
+thread_local! {
+    /// The tokens the last finished reply on this thread generated but never showed (`unshown_tokens`).
+    static UNSHOWN: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// How many tokens the last finished reply on this thread generated that the stream never showed: its
+/// `completion_tokens` less one per text piece and the end token. A server that hides a token (Ollama never sends
+/// a control-typed "!") streams nothing for it, so this counts the hidden marks. None: unknown (no usage, reasoning or
+/// tool calls, a cut reply).
+pub fn unshown_tokens() -> Option<usize> { UNSHOWN.with(std::cell::Cell::get) }
+
+/// Sets `unshown_tokens` for the reply that just finished (`plain`: a whole plain-text reply that ended on its end
+/// token; `tokens` generated, `pieces` text pieces streamed).
+pub fn set_unshown(plain: bool, tokens: usize, pieces: usize) {
+    UNSHOWN.with(|u| u.set((plain && tokens > 0).then(|| tokens.saturating_sub(pieces + 1))));
 }
 
 impl Stream {
@@ -145,11 +165,13 @@ impl Stream {
         // model's first output: timing from the first answer word made tok/s absurd (or 0 when no answer came)
         if let Some(t) = ["reasoning", "reasoning_content"].iter().find_map(|k| d[k].as_str().filter(|t| !t.is_empty())) {
             if !self.started { self.started = true; publish(Phase::Decode); }
+            self.reasoned = true;
             publish_thinking(t);
         }
         if let Some(t) = d["content"].as_str().filter(|t| !t.is_empty()) {
             if !self.started { self.started = true; publish(Phase::Decode); }
             self.text.push_str(t);
+            self.pieces += 1;
             on_text(t);
         }
         for tc in d["tool_calls"].as_array().map_or(&[][..], Vec::as_slice) {
@@ -185,6 +207,8 @@ impl Stream {
                 self.cache_seen = true;
             }
         }
+        // (only a whole plain-text reply that ended on its end token counts)
+        set_unshown(!cancelled && !self.reasoned && self.calls.is_empty() && self.finish == "stop", self.usage.output_tokens, self.pieces);
         let mut content = Vec::new();
         if !self.text.is_empty() { content.push(Block::Text { text: self.text }); }
         if cancelled { return (content, "cancelled".into(), self.usage, self.cache_seen); }
@@ -266,5 +290,22 @@ mod tests {
         let mut v = Stream::default();
         v.feed(r#"{"choices":[{"delta":{"reasoning_content":"hmm"}}]}"#, &mut on).unwrap();
         assert!(v.started);
+    }
+
+    /// The tokens a stream never showed: completion tokens less one per text piece and the end token (Ollama's
+    /// "Hello there! Great!" for minicpm-v streams "Hello", " there", " Great" and counts 6).
+    #[test]
+    fn unshown_tokens_are_counted() {
+        let mut on = |_: &str| {};
+        let run = |pieces: &[&str], finish: &str, tokens: usize, on: &mut dyn FnMut(&str)| {
+            let mut s = Stream::default();
+            for p in pieces { s.feed(&serde_json::json!({"choices": [{"delta": {"content": p}}]}).to_string(), on).unwrap(); }
+            s.feed(&serde_json::json!({"choices": [{"delta": {}, "finish_reason": finish}], "usage": {"prompt_tokens": 5, "completion_tokens": tokens}}).to_string(), on).unwrap();
+            s.finish(false);
+            unshown_tokens()
+        };
+        assert_eq!(run(&["Hello", " there", " Great"], "stop", 6, &mut on), Some(2));
+        assert_eq!(run(&["Hello", " there", "."], "stop", 4, &mut on), Some(0));
+        assert_eq!(run(&["Hello"], "length", 9, &mut on), None);
     }
 }

@@ -473,7 +473,18 @@ fn advisory(id: &str, v: &Value, p: &Pkg) -> Advisory {
     let summary = v["summary"].as_str().filter(|s| !s.trim().is_empty())
         .or_else(|| v["details"].as_str().and_then(|d| d.lines().map(str::trim).find(|l| !l.is_empty())))
         .unwrap_or("").to_string();
-    Advisory { id: id.into(), alias, severity, fixed, summary: crate::context::one_line(&summary, 90) }
+    Advisory { id: id.into(), alias, severity, fixed, summary: title_line(&summary, 90) }
+}
+
+/// an advisory's title on one line, cut at a word end past `n` characters: "… missing Vary: Cookie header" stays
+/// whole words ("… missing Vary:…" never "… Vary: C…")
+fn title_line(s: &str, n: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= n { return flat; }
+    let head: String = flat.chars().take(n + 1).collect();
+    // the last space within the room; a title with no space early enough keeps its first word whole
+    let cut = head.rfind(' ').filter(|&i| i > 0).map_or_else(|| flat.split(' ').next().unwrap_or("").to_string(), |i| head[..i].to_string());
+    format!("{}…", cut.trim_end_matches([',', ';', ':', '-', '(', '=', ' ']))
 }
 
 fn norm_py(n: &str) -> String { n.to_ascii_lowercase().replace(['_', '.'], "-") }
@@ -792,12 +803,7 @@ pub fn decode_jwt(token: &str, now: i64) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("elisa-sec-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
+    fn tmp(tag: &str) -> crate::testdir::TempDir { crate::testdir::TempDir::new(&format!("sec-{tag}")) }
 
     fn cfg(root: &Path) -> SecCfg { SecCfg { root: outside::root(root), max_chars: SEC_CHARS } }
 
@@ -895,6 +901,15 @@ source = "git+https://example.com/fork#abc"
     }
 
     #[test]
+    fn a_long_title_is_cut_at_a_word_end() {
+        let flask = "Flask vulnerable to possible disclosure of permanent session cookie due to missing Vary: Cookie header";
+        assert_eq!(title_line(flask, 90), "Flask vulnerable to possible disclosure of permanent session cookie due to missing Vary…");
+        let requests = "Requests `Session` object does not verify requests after making first request with verify=False";
+        assert_eq!(title_line(requests, 90), "Requests `Session` object does not verify requests after making first request with…");
+        assert_eq!(title_line("Prototype  pollution", 90), "Prototype pollution");
+    }
+
+    #[test]
     fn advisory_fields() {
         let v = json!({"id": "GHSA-x", "aliases": ["CVE-2021-1"], "summary": "Prototype pollution",
             "database_specific": {"severity": "HIGH"},
@@ -935,9 +950,11 @@ source = "git+https://example.com/fork#abc"
 
     #[test]
     fn inspects_this_test_binary_and_refuses_outside() {
-        // the running test executable is a real Mach-O / ELF; copied into a project folder
+        // the running test executable is a real Mach-O / ELF, inside a project folder: a hard link where the temp
+        // folder allows one, else a copy (both go with `d`)
         let d = tmp("bin");
-        std::fs::copy(std::env::current_exe().unwrap(), d.join("prog")).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        if std::fs::hard_link(&exe, d.join("prog")).is_err() { std::fs::copy(&exe, d.join("prog")).unwrap(); }
         let c = cfg(&d);
         let out = inspect_binary("prog", &c).unwrap();
         assert!(out.contains("Mach-O") || out.contains("ELF"), "{out}");

@@ -83,7 +83,8 @@ pub fn picture_non_answer(answer: &str) -> bool {
     let t = answer.trim().replace('’', "'");
     // a refusal anywhere, not only first (a small model asked about a picture can describe it first and refuse
     // at the end)
-    t.is_empty() || re.is_match(&t) || t.split_inclusive(['.', '!', '?', '\n']).any(|s| unfit_memory(s.trim()))
+    // (and one saying it cannot see images at all, `reply_check::denies_sight`: "as a language model, I cannot see images")
+    t.is_empty() || re.is_match(&t) || crate::reply_check::denies_sight(&t) || t.split_inclusive(['.', '!', '?', '\n']).any(|s| unfit_memory(s.trim()))
 }
 
 /// A reply without any `[picture: …]` text a model copied from the turn's message (a small model may begin
@@ -175,10 +176,20 @@ pub fn shares_meaning(a: &str, b: &str) -> bool {
 /// A reply on a turn with picture text that has nothing to do with what the picture showed (`pic`: the picture's
 /// answer), such as a small model carrying on from its own earlier replies instead of answering about the picture.
 /// A reply with no word (a bare count, "2") has nothing to compare; `ReplyGuard` judges it.
+/// A short reply (SHORT_PIC_WORDS words or fewer, "Pink.") whose words of three letters or more are none of the
+/// picture answer's ("…the insides of the cat's ears are blue.") says something the picture did not: close in meaning
+/// as colours are, it is no answer from the picture.
 pub fn off_picture(reply: &str, pic: &str) -> bool {
     let word = reply.chars().collect::<Vec<_>>().windows(2).any(|w| w[0].is_alphabetic() && w[1].is_alphabetic());
-    word && !shares_meaning(reply, pic)
+    let low = |t: &str| t.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    let (r, p) = (low(reply), low(pic));
+    let long: Vec<&String> = r.iter().filter(|w| w.chars().count() >= 3).collect();
+    let unbacked = r.len() <= SHORT_PIC_WORDS && !long.is_empty() && !long.iter().any(|w| p.contains(w));
+    word && (unbacked || !shares_meaning(reply, pic))
 }
+
+/// words a reply may have and still be judged word by word against the picture's answer (`off_picture`)
+const SHORT_PIC_WORDS: usize = 3;
 
 /// a reply's text for comparing: lowercase, whitespace collapsed
 fn norm_reply(t: &str) -> String { t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase() }
@@ -187,6 +198,10 @@ fn norm_reply(t: &str) -> String { t.split_whitespace().collect::<Vec<_>>().join
 const COPY_PREFIX_CHARS: usize = 60;
 /// a reply shorter than this is never called a copy ("Yes.", "Paris", a name): short answers repeat for real
 const COPY_MIN_CHARS: usize = 12;
+/// words a reply needs before being one of the user's earlier messages again makes it a copy
+const SAID_COPY_WORDS: usize = 3;
+/// a reply at least this long whose every sentence is in an earlier reply to another ask is a copy of it
+const COPY_CONTAIN_CHARS: usize = 24;
 
 fn word_grams(t: &str) -> std::collections::HashSet<String> {
     let w: Vec<String> = t.to_lowercase().split(|c: char| !c.is_alphanumeric() && c != '\'').filter(|w| !w.is_empty()).map(str::to_string).collect();
@@ -202,8 +217,8 @@ fn word_grams(t: &str) -> std::collections::HashSet<String> {
 pub struct ReplyGuard {
     /// the user's words of this turn
     ask: String,
-    /// the earlier replies (normalized) that answered another ask: an earlier turn with the same ask may get the
-    /// same reply
+    /// the earlier replies (normalized) that answered another ask: an earlier turn with the same ask, or an ask about
+    /// the same thing whose reply is about this ask too, may get the same reply
     sources: Vec<String>,
     /// four-word runs of the request's heading and tag lines (a user-message line starting with "## " or "[",
     /// picture text excepted), less those in the user's own words
@@ -212,6 +227,13 @@ pub struct ReplyGuard {
     numbers: std::collections::HashSet<String>,
     /// four-word runs of what the user typed in earlier turns (`copies_said`)
     said: std::collections::HashSet<String>,
+    /// the facts Elisa gave in this turn's message (`situation::turn_fact_values`): a reply holding one is no copy
+    grounded: Vec<String>,
+    /// what the user typed in each earlier turn, whole (normalized, end marks left out): a reply that is one of them
+    /// again copies the user ("Bây giờ là mấy giờ?" as the translation of "good morning")
+    said_whole: std::collections::HashSet<String>,
+    /// the last reply (normalized) to another ask: a reply that is it again, however short ("4" to "thanks!"), is a copy
+    last: Option<String>,
 }
 
 impl ReplyGuard {
@@ -219,27 +241,45 @@ impl ReplyGuard {
         let ask = request_body(ask).trim().to_string();
         let a = norm_reply(&ask);
         let own = word_grams(&ask);
+        // this ask's content words: an earlier ask about the same thing ("What's my name?" before "What's my name and
+        // where do I live?") may get the same reply for real, when that reply is about this ask too
+        let ask_words = crate::topics::words(&ask);
+        let same_subject = |earlier_ask: &str, reply: &str| !ask_words.is_disjoint(&crate::topics::words(earlier_ask))
+            && !ask_words.is_disjoint(&crate::topics::words(reply));
         let mut g = ReplyGuard { ask, ..Default::default() };
         let mut last_ask = String::new();
         for m in msgs {
             let blocks = || m.content.iter().filter_map(|b| match b { Block::Text { text } if !is_picture_block(text) => Some(text.as_str()), _ => None });
             if m.role == Role::User {
+                // (a message of tool results only keeps the ask it answers)
+                if blocks().next().is_none() { continue; }
                 for l in blocks().flat_map(str::lines).map(str::trim).filter(|l| l.starts_with("## ") || l.starts_with('[')) { g.grams.extend(word_grams(l)); }
                 last_ask = norm_reply(request_body(&blocks().collect::<Vec<_>>().join("\n")));
                 // (the typed words alone: an attached document's text that follows them may be quoted for real)
                 let typed = norm_reply(blocks().next().map(request_body).unwrap_or_default());
-                if !typed.is_empty() && typed != a && !typed.ends_with(&format!(" {a}")) { g.said.extend(word_grams(&typed)); }
+                if !typed.is_empty() && typed != a && !typed.ends_with(&format!(" {a}")) {
+                    g.said.extend(word_grams(&typed));
+                    g.said_whole.insert(typed.trim_end_matches(['.', '!', '?', ' ']).to_string());
+                }
                 continue;
             }
             // (a first message ends with the user's words after Elisa's blocks)
-            if last_ask == a || last_ask.ends_with(&format!(" {a}")) { continue; }
+            // (the same question asked again, in other words or not, may get the same answer: the same content words;
+            // a question about part of it may too, when that reply is about this ask: `same_subject` below)
+            let lw = crate::topics::words(&last_ask);
+            let same_question = !lw.is_empty() && lw == ask_words;
+            if last_ask == a || last_ask.ends_with(&format!(" {a}")) || same_question { continue; }
             let e = norm_reply(&blocks().collect::<Vec<_>>().join("\n"));
-            if !e.is_empty() { g.sources.push(e); }
+            if e.is_empty() { continue; }
+            if same_subject(&last_ask, &e) { g.last = None; } else { g.last = Some(e.clone()); g.sources.push(e); }
         }
         g.grams.retain(|x| !own.contains(x));
         if let Some(m) = msgs.iter().rev().find(|m| m.role == Role::User) {
             for b in &m.content {
-                if let Block::Text { text } = b { g.numbers.extend(text.split(|c: char| !c.is_ascii_digit()).filter(|n| !n.is_empty()).map(str::to_string)); }
+                if let Block::Text { text } = b {
+                    g.numbers.extend(text.split(|c: char| !c.is_ascii_digit()).filter(|n| !n.is_empty()).map(str::to_string));
+                    g.grounded.extend(crate::situation::turn_fact_values(text));
+                }
             }
         }
         g
@@ -255,14 +295,61 @@ impl ReplyGuard {
         !g.is_empty() && g.iter().filter(|x| self.said.contains(*x)).count() * 10 >= g.len() * 9
     }
 
+    /// `reply` without its opening sentences when they are, word for word, a whole earlier reply to another question
+    /// and words of its own follow ("The insides of the cat's ears are blue. The second picture shows…"). None: it
+    /// does not open so.
+    pub fn without_copied_start(&self, reply: &str) -> Option<String> {
+        // (a reply that is a copy as a whole, `broken`, is asked again instead)
+        if self.broken(reply) == Some("copy") { return None; }
+        let r = norm_reply(reply);
+        let e = self.sources.iter().filter(|e| e.chars().count() >= COPY_MIN_CHARS && e.ends_with(['.', '!', '?'])).find(|e| r.starts_with(e.as_str()))?;
+        // the byte where the copied words end: after its k-th word
+        let k = e.split_whitespace().count();
+        let mut seen = 0;
+        let mut in_word = false;
+        let mut at = None;
+        for (i, c) in reply.char_indices() {
+            if c.is_whitespace() { if in_word { seen += 1; in_word = false; if seen == k { at = Some(i); break; } } } else { in_word = true; }
+        }
+        let t = reply[at?..].trim().to_string();
+        (t.chars().any(char::is_alphabetic)).then_some(t)
+    }
+
+    /// Whether `reply` is the last reply to another ask again, word for word, however short, when it is a value (it has
+    /// a digit: "4" to "thanks!" after "4", "ORCHID-42" to an edit), and this ask does not hold it. ("Sure." or "OK."
+    /// may answer two asks for real; asked alone, without the conversation, the same value stands too: it is this
+    /// ask's answer as well.)
+    pub fn copies_last(&self, reply: &str) -> bool {
+        let r = norm_reply(reply);
+        let low = reply.to_lowercase();
+        r.chars().any(|c| c.is_ascii_digit()) && self.last.as_deref() == Some(r.as_str()) && !norm_reply(&self.ask).contains(r.as_str())
+            && !self.grounded.iter().any(|f| low.contains(f.as_str()))
+    }
+
     /// Why `reply` cannot stand ("copy", "no words", "heading"), or None.
     pub fn broken(&self, reply: &str) -> Option<&'static str> {
         let r = norm_reply(reply);
         if r.is_empty() { return None; }
-        if r.chars().count() >= COPY_MIN_CHARS && self.sources.iter().any(|e| *e == r || r.chars().zip(e.chars()).take_while(|(a, b)| a == b).count() >= COPY_PREFIX_CHARS) {
+        let low = reply.to_lowercase();
+        let grounded = self.grounded.iter().any(|f| low.contains(f.as_str()));
+        if !grounded && r.chars().count() >= COPY_MIN_CHARS && self.sources.iter().any(|e| *e == r || r.chars().zip(e.chars()).take_while(|(a, b)| a == b).count() >= COPY_PREFIX_CHARS) {
+            return Some("copy");
+        }
+        // every sentence of it is in one earlier reply to another ask (a refusal pasted as the answer to each later
+        // question, cut short or not)
+        if !grounded && r.chars().count() >= COPY_CONTAIN_CHARS && self.sources.iter().any(|e| {
+            let parts: Vec<&str> = r.split(['.', '!', '?', '\n']).map(str::trim).filter(|p| p.chars().any(char::is_alphanumeric)).collect();
+            !parts.is_empty() && parts.iter().all(|p| e.contains(p))
+        }) {
             return Some("copy");
         }
         if self.copies_said(reply) { return Some("copy"); }
+        // one of the user's earlier messages again, whole, however short
+        // (of SAID_COPY_WORDS words or more: "hi" back to "hi" is a greeting)
+        // (or opening with one: "Bây giờ là mấy giờ? (Good morning)")
+        let first = r.split_inclusive(['.', '!', '?']).next().unwrap_or(&r);
+        let whole = |t: &str| t.split_whitespace().count() >= SAID_COPY_WORDS && self.said_whole.contains(t.trim_end_matches(['.', '!', '?', ' ']));
+        if (whole(&r) || whole(first)) && r != norm_reply(&self.ask) { return Some("copy"); }
         // a word: two letters in a row ("Â©" from moondream:1.8b has none; "Paris", "OK", "4 giờ" do)
         let has_word = |t: &str| t.chars().collect::<Vec<_>>().windows(2).any(|w| w[0].is_alphabetic() && w[1].is_alphabetic());
         let a = &self.ask;
@@ -270,7 +357,13 @@ impl ReplyGuard {
         // pictures, …"); a box of several numbers, or a number from nowhere (an earlier reply's count), is not
         let t = r.trim_matches(|c: char| !c.is_alphanumeric());
         let number = !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) && self.numbers.contains(t);
-        if !has_word(&r) && !number && has_word(a) && !a.chars().any(|c| c.is_ascii_digit()) { return Some("no words"); }
+        // (an ask with numbers may get numbers back, but not a list of them from nowhere: `reply_check::number_list`)
+        // (an ask for a number, a time or a date may get digits alone: "2026-11-10 22:20" to "what time is it in UTC?")
+        // (one number, a time or a date: up to three pieces of digits joined by "-", "/", ":" or ".", never a box of them)
+        let value = { let p: Vec<&str> = r.trim_end_matches('.').split_whitespace().collect();
+            !p.is_empty() && p.len() <= 3 && p.iter().all(|x| x.chars().any(|c| c.is_ascii_digit()) && x.chars().all(|c| c.is_ascii_digit() || "-/:.".contains(c))) };
+        let answers = value && crate::reply_check::asks_number(a);
+        if !has_word(&r) && !number && !answers && has_word(a) && (!a.chars().any(|c| c.is_ascii_digit()) || crate::reply_check::number_list(&r, &self.numbers)) { return Some("no words"); }
         if word_grams(reply).iter().any(|x| self.grams.contains(x)) { return Some("heading"); }
         None
     }
@@ -334,20 +427,27 @@ pub fn picture_asks(question: &str, new: bool) -> Vec<String> {
     asks
 }
 
+/// the marker a folded result or string opens with ("[trimmed: … 19 lines]", "[trimmed 400 chars]")
+pub const TRIM_MARK: &str = "[trimmed";
+
+/// A result folded to one line: its first line's head and its length. A fenced result (`untrusted::fence`) folds to
+/// the source the fence names, not to the tag itself: the tag quoted back reads like a line to go on from, and a
+/// small model copies it as its reply.
 fn trim_result(content: &str) -> String {
     let first = content.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-    format!("[trimmed: {} … {} lines]", head(first, 80), content.lines().count())
+    let lead = match crate::untrusted::source_of(first) { Some(s) => format!("{} result", head(s, 80)), None => head(first, 80).to_string() };
+    format!("{TRIM_MARK}: {lead} … {} lines]", content.lines().count())
 }
 
 /// Whether a fold's one-line shrink would really make this result shorter: "False\n[exit 0]" (14 chars) would become
 /// "[trimmed: False … 2 lines]" (25), a longer rewrite that still costs a full re-prefill.
 fn shrinkable(content: &str) -> bool {
-    !content.starts_with("[trimmed:") && trim_result(content).chars().count() < content.chars().count()
+    !content.starts_with(TRIM_MARK) && trim_result(content).chars().count() < content.chars().count()
 }
 
 fn trim_strings(v: &mut Value) {
     match v {
-        Value::String(s) if s.chars().count() > 300 => *s = format!("[trimmed {} chars]", s.chars().count()),
+        Value::String(s) if s.chars().count() > 300 => *s = format!("{TRIM_MARK} {} chars]", s.chars().count()),
         Value::Array(a) => a.iter_mut().for_each(trim_strings),
         Value::Object(o) => o.values_mut().for_each(trim_strings),
         _ => {}
@@ -582,7 +682,10 @@ pub fn shrink_results_but_newest(msgs: &mut [Message]) -> bool {
 pub fn request_body(text: &str) -> &str {
     // "OS: …": a routed chat first turn's header, without the working directory (`repl.rs` `route_cwd`);
     // "Local time now: …": the clock lines in front of a routed time turn (`repl.rs`): both may lead, in either order
-    let header = |t: &str| t.starts_with("Working directory: ") || t.starts_with("Local time now: ") || (t.starts_with("OS: ") && t.contains("\nDate: "));
+    // ("Date: …": that header on a chat turn, which carries no OS line either)
+    // (each block of header lines, with or without the clock line: what Elisa writes, `prompt::is_header_block`)
+    let header = |t: &str| t.starts_with("Working directory: ") || t.starts_with("Local time now: ")
+        || crate::context::is_header_block(t.split_once("\n\n").map_or("", |(h, _)| h));
     let body = match text.rsplit_once("## Request\n") {
         Some((_, r)) => r,
         None => {
@@ -603,6 +706,25 @@ pub const EARLIER_TURNS: usize = 40;
 /// TUI): the user's own words (no Working directory / OS / Date / clock header, notes, `[state]`, recalled memories,
 /// situation or follow-up hints; an attached document as its reference line only) and the replies as written, a
 /// tool call as one line ("used read on README.md"), tool results left out. The last `max_turns` user turns.
+/// The user turn a fold leaves in place of the turns it summarised (`repl::memory`): Elisa's, never the user's words.
+pub const FOLDED_TURNS: &str = "[earlier turns are summarised in the notes above]";
+/// The same placeholder when the turns were folded into the running facts (the state card) instead of notes.
+pub const FOLDED_BY_CARD: &str = "[earlier turns are carried by the state card above]";
+/// Whether a user turn's words are only a fold's placeholder.
+pub fn fold_placeholder(t: &str) -> bool { let t = t.trim(); t == FOLDED_TURNS || t == FOLDED_BY_CARD }
+
+/// Elisa's own marker of a turn that stopped (`[stopped: …]`), in plain words for the screen, in `lang`'s language.
+pub fn stopped_plain(text: &str, vi: bool) -> Option<String> {
+    let why = text.trim().strip_prefix("[stopped: ")?.strip_suffix(']')?;
+    let full = why.starts_with("context full");
+    Some(match (vi, full) {
+        (false, true) => "I stopped here: the chat had grown too long to go on.".into(),
+        (false, false) => "I stopped here before finishing.".into(),
+        (true, true) => "Mình dừng ở đây: cuộc trò chuyện đã quá dài để tiếp tục.".into(),
+        (true, false) => "Mình dừng ở đây trước khi xong.".into(),
+    })
+}
+
 pub fn earlier_turns(history: &[Message], cwd: &Path, max_turns: usize) -> Vec<crate::frontend::Earlier> {
     use crate::frontend::Earlier;
     let mut out: Vec<Earlier> = Vec::new();
@@ -620,6 +742,8 @@ pub fn earlier_turns(history: &[Message], cwd: &Path, max_turns: usize) -> Vec<c
                     }
                     let t = request_body(text);
                     let t = strip_turn_lines(t).unwrap_or_else(|| t.to_string());
+                    // the fold's placeholder is Elisa's, not a user turn
+                    if fold_placeholder(&t) { continue; }
                     if !t.trim().is_empty() { if !words.is_empty() { words.push('\n'); } words += t.trim(); }
                 }
                 for r in refs { if !words.is_empty() { words.push('\n'); } words += &r; }
@@ -629,7 +753,11 @@ pub fn earlier_turns(history: &[Message], cwd: &Path, max_turns: usize) -> Vec<c
                 let mut t = String::new();
                 for b in &m.content {
                     let line = match b {
-                        Block::Text { text } => split_state(text).0.trim().to_string(),
+                        Block::Text { text } => {
+                            let t = split_state(text).0.trim().to_string();
+                            let vi = out.iter().rev().find(|e| e.role == "user").is_some_and(|e| crate::reply_lang::detect(&e.text) == Some(crate::reply_lang::Lang::Vi));
+                            stopped_plain(&t, vi).unwrap_or(t)
+                        }
                         Block::ToolUse { name, input, .. } => match crate::tui::act_target(name, input, cwd).filter(|x| !x.is_empty()) {
                             Some(x) => format!("used {name} on {}", one_line(&x, 80)),
                             None => format!("used {name}"),
@@ -846,7 +974,12 @@ pub const MEMORY_OPEN_YOU: &str = "[memory: recalled by Elisa from earlier sessi
 /// Elisa…"; small models answer "your …" more often with the facts already in that form).
 pub fn with_memory(lines: &[String], text: &str) -> String {
     if lines.is_empty() { return text.to_string(); }
-    let lines: Vec<(String, bool)> = lines.iter().map(|l| fact_to_you(l).map_or((l.clone(), false), |y| (y, true))).collect();
+    // a line of several facts ("The user's name is Linh; The user lives in Hanoi"): each one said to the user, so
+    // a line never mixes "your" and "The user"
+    let lines: Vec<(String, bool)> = lines.iter().map(|l| {
+        let parts: Vec<(String, bool)> = l.split("; ").map(|p| fact_to_you(p).map_or((p.to_string(), false), |y| (y, true))).collect();
+        (parts.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join("; "), parts.iter().any(|(_, y)| *y))
+    }).collect();
     let open = if lines.iter().any(|(_, y)| *y) { MEMORY_OPEN_YOU } else { MEMORY_OPEN };
     let mut s = format!("{open}\n");
     for (l, _) in &lines { s += &format!("- {l}\n"); }

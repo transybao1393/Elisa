@@ -6,16 +6,14 @@ use elisa::mcp_host::{Host, ServerCfg};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("elisa-mcp-sec-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+mod common;
+use common::TempDir;
+
+fn tmp(tag: &str) -> TempDir { TempDir::new(&format!("mcp-sec-{tag}")) }
 
 fn write(root: &Path, rel: &str, body: &str) {
     let p = root.join(rel);
@@ -165,7 +163,9 @@ fn deps_without_lockfiles_send_nothing() {
 #[test]
 fn binary_and_jwt() {
     let d = tmp("bin");
-    std::fs::copy(env!("CARGO_BIN_EXE_elisa"), d.join("elisa-copy")).unwrap();
+    // the real binary inside the project: a hard link where the temp folder allows one, else a copy (both go with `d`)
+    let bin = d.join("elisa-copy");
+    if std::fs::hard_link(env!("CARGO_BIN_EXE_elisa"), &bin).is_err() { std::fs::copy(env!("CARGO_BIN_EXE_elisa"), &bin).unwrap(); }
     let mut h = start(&d, Vec::new());
     let (out, err) = call(&mut h, "sec_binary", json!({"path": "elisa-copy"}));
     assert!(!err, "{out}");
@@ -186,7 +186,7 @@ fn malware_tool_is_gone() {
     let d = tmp("nomalware");
     let h = start(&d, Vec::new());
     assert!(!h.owns("sec_malware"));
-    let cfg = elisa::mcp_sec::SecCfg { root: d.clone(), max_chars: 6000 };
+    let cfg = elisa::mcp_sec::SecCfg { root: d.to_path_buf(), max_chars: 6000 };
     let (out, err) = elisa::mcp_sec::call("sec_malware", &json!({}), &cfg);
     assert!(err && out.contains("unknown tool"), "{out}");
 }
@@ -196,18 +196,18 @@ fn config_security_switch() {
     let home = tmp("cfg-home");
     let proj = tmp("cfg-proj");
     let none = |_: &str| None;
-    assert_eq!(Config::load_from(&proj, Some(home.clone()), none).unwrap().security, "on");
+    assert_eq!(Config::load_from(&proj, Some(home.to_path_buf()), none).unwrap().security, "on");
     write(&home, ".config/elisa/config.toml", "security = \"maybe\"\n");
-    let c = Config::load_from(&proj, Some(home.clone()), none).unwrap();
+    let c = Config::load_from(&proj, Some(home.to_path_buf()), none).unwrap();
     assert_eq!(c.security, "off");
     assert_eq!(c.notes.iter().filter(|n| n.contains("security")).count(), 1, "{:?}", c.notes);
     // a project may switch it off, never on
     write(&home, ".config/elisa/config.toml", "security = \"off\"\n");
     write(&proj, ".elisa/config.toml", "security = \"on\"\n");
-    let c = Config::load_from(&proj, Some(home.clone()), none).unwrap();
+    let c = Config::load_from(&proj, Some(home.to_path_buf()), none).unwrap();
     assert_eq!(c.security, "off");
     assert!(c.notes.iter().any(|n| n.contains("only switch the security server off")), "{:?}", c.notes);
     write(&home, ".config/elisa/config.toml", "");
     write(&proj, ".elisa/config.toml", "security = \"off\"\n");
-    assert_eq!(Config::load_from(&proj, Some(home), none).unwrap().security, "off");
+    assert_eq!(Config::load_from(&proj, Some(home.to_path_buf()), none).unwrap().security, "off");
 }

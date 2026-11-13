@@ -121,6 +121,25 @@ pub fn access(name: &str) -> Access {
 
 fn sv<'a>(input: &'a Value, k: &str) -> &'a str { input.get(k).and_then(Value::as_str).unwrap_or("") }
 
+/// The mark at the start of each line of a call's whole command or code in `approval_text` (readable as it is).
+pub const FULL_LINE: &str = "│ ";
+
+/// What an approval asks about, whole: `summary`'s line, then, where that line shortens it, the full command (bash),
+/// code (run_code) or text argument (an MCP tool), every line as written and marked `FULL_LINE`. A person approves
+/// only what they can read in full; status and step lines keep the short `summary`.
+pub fn approval_text(name: &str, input: &Value) -> String {
+    let short = summary(name, input);
+    let full = match name {
+        "bash" => sv(input, "command"),
+        "run_code" => sv(input, "code"),
+        "read" | "write" | "edit" | "outline" | "read_symbol" | "edit_symbol" | "glob" | "grep" | "web_search" | "web_fetch" => return short,
+        _ => input.as_object().and_then(|o| o.values().find_map(|v| v.as_str())).unwrap_or(""),
+    };
+    let full = full.trim_end();
+    if full.trim().is_empty() || (!full.contains('\n') && short.ends_with(full)) { return short; }
+    format!("{short}\n{}", full.lines().map(|l| format!("{FULL_LINE}{l}")).collect::<Vec<_>>().join("\n"))
+}
+
 /// One line for the permission prompt / transcript, e.g. "bash cargo build".
 pub fn summary(name: &str, input: &Value) -> String {
     match name {
@@ -239,7 +258,8 @@ fn read(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
     if total == 0 { return Ok(format!("[{p} is empty]")); }
     let start = num(input, "offset").unwrap_or(1).max(1);
     let limit = num(input, "limit").filter(|&l| l > 0).unwrap_or(READ_LIMIT);
-    if start > total { return Err(format!("offset {start} is past the end ({total} lines)")); }
+    // past the end: a plain note, not an error (an error there had small models apologise for a file read whole)
+    if start > total { return Ok(format!("[end of file: {p} has {total} lines; nothing from line {start} on]")); }
     let mut out = String::new();
     // stop at a whole line before the output cap (a cut middle made the model miscount lines)
     let room = if ctx.max_chars == 0 { usize::MAX } else { ctx.max_chars.saturating_sub(80) };
@@ -279,8 +299,41 @@ fn binary_read_error(p: &str) -> String {
     format!("{p} {BINARY_READ} Use docs_sheet for a spreadsheet (xlsx, xls, ods), docs_pdf for a PDF, or bash `file {p}` to see what it is.")
 }
 
+/// The folders a file tool never changes, as (folder under the project or home, what it holds): Elisa's own state
+/// (notes, memory, sessions, settings; the sandbox mounts it read-only too) and git's hooks (code git runs). Only
+/// Elisa's own code writes there.
+const GUARDED: [(&str, &str); 2] = [(".elisa", "where Elisa keeps her own notes, memory and sessions"), (".git/hooks", "which holds code git runs")];
+
+/// The path with `..` and `.` taken out and the part that exists followed through its links (a link into `.elisa`
+/// from elsewhere counts as `.elisa`).
+fn real_path(path: &Path) -> PathBuf {
+    let mut plain = PathBuf::new();
+    for c in path.components() {
+        match c { std::path::Component::ParentDir => { plain.pop(); } std::path::Component::CurDir => {} c => plain.push(c) }
+    }
+    let mut rest = Vec::new();
+    let mut head = plain.as_path();
+    loop {
+        if let Ok(r) = head.canonicalize() { return rest.iter().rev().fold(r, |a: PathBuf, c| a.join(c)); }
+        match (head.parent(), head.file_name()) { (Some(up), Some(n)) => { rest.push(n.to_owned()); head = up; } _ => return plain }
+    }
+}
+
+/// The plain line a write / edit into a guarded folder (`GUARDED`) gets, in the project or the home folder; None for
+/// any other path. Names compare without case (macOS folders ignore it).
+pub fn guarded(ctx: &ToolCtx, p: &str) -> Option<String> {
+    let path = real_path(&resolve(ctx, p));
+    let low = |q: &Path| q.to_string_lossy().to_lowercase();
+    let target = low(&path);
+    let roots = [Some(ctx.cwd.clone()), std::env::var_os("HOME").map(PathBuf::from)];
+    roots.into_iter().flatten().flat_map(|r| GUARDED.iter().map(move |(d, why)| (real_path(&r.join(d)), *d, *why)))
+        .find(|(g, ..)| { let g = low(g); target == g || target.starts_with(&format!("{g}/")) })
+        .map(|(_, d, why)| format!("I didn't change {p}: it is in {d}/, {why}. Files there are never changed by a tool."))
+}
+
 fn write(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
     let p = file_path_arg(input)?;
+    if let Some(e) = guarded(ctx, p) { return Err(e); }
     let content = arg(input, "content")?;
     let path = resolve(ctx, p);
     not_binary(&path, p, "write")?;
@@ -300,6 +353,7 @@ fn write(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
 /// change the file is an error here, so `precheck` refuses it before anyone is asked to approve it.
 fn edit_plan(input: &Value, ctx: &ToolCtx) -> Result<(PathBuf, String, String, usize), String> {
     let p = file_path_arg(input)?;
+    if let Some(e) = guarded(ctx, p) { return Err(e); }
     let old = arg(input, "old")?;
     let new = arg(input, "new")?;
     if old.is_empty() { return Err("old must not be empty".into()); }
@@ -362,7 +416,9 @@ fn text_file(path: &Path, p: &str, tool: &str) -> Result<String, String> {
 /// before the outside-the-project approval (an "old not found" would otherwise tell what an unapproved file holds).
 pub fn precheck(name: &str, input: &Value, ctx: &ToolCtx) -> Result<(), String> {
     if matches!(name, "read" | "outline" | "read_symbol" | "write" | "edit" | "edit_symbol") {
-        file_path_arg(input)?;
+        let p = file_path_arg(input)?;
+        // (before the outside-the-project check: a guarded folder in the home folder is refused, not asked about)
+        if access(name) == Access::Write { if let Some(e) = guarded(ctx, p) { return Err(e); } }
         if crate::outside::check(name, input, &ctx.cwd).is_some() { return Ok(()); }
     }
     match name {
@@ -472,6 +528,7 @@ fn read_symbol(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
 /// call that cannot change the file (used by `precheck` too).
 fn edit_symbol_plan(input: &Value, ctx: &ToolCtx) -> Result<(PathBuf, String, String, ast::Sym, ast::Action), String> {
     let p = file_path_arg(input)?;
+    if let Some(e) = guarded(ctx, p) { return Err(e); }
     let name = arg(input, "name")?;
     let action = ast::Action::parse(opt_str(input, "action").unwrap_or(""))?;
     let source = input.get("source").and_then(Value::as_str).unwrap_or("");
@@ -511,6 +568,32 @@ pub fn edit_symbol_preview(input: &Value, ctx: &ToolCtx) -> Option<(String, Stri
     let action = ast::Action::parse(opt_str(input, "action").unwrap_or("")).ok()?;
     let new = ast::apply(&text, y, action, input.get("source").and_then(Value::as_str).unwrap_or(""));
     Some((text, new))
+}
+
+/// An edit_symbol or write worked out without writing and held to the parse guard: Err with the reason when it could
+/// not change the file or would add syntax errors (what the call itself would refuse).
+pub fn edit_would_parse(name: &str, input: &Value, ctx: &ToolCtx) -> Result<(), String> {
+    match name {
+        "edit_symbol" => {
+            let (path, text, out, _, _) = edit_symbol_plan(input, ctx)?;
+            ast::guard(&path, arg(input, "path")?, Some(&text), &out)
+        }
+        "write" => {
+            let p = file_path_arg(input)?;
+            let path = resolve(ctx, p);
+            let old = std::fs::read_to_string(&path).ok();
+            ast::guard(&path, p, old.as_deref(), input.get("content").and_then(Value::as_str).unwrap_or(""))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The top-level symbols of a code file: (name, first line, last line), in order. None = not a code file Elisa
+/// can parse.
+pub fn outline_syms(p: &str, ctx: &ToolCtx) -> Option<Vec<(String, usize, usize)>> {
+    let (_, lang, text) = code_file(ctx, p).ok()?;
+    let o = ast::outline(lang, &text)?;
+    Some(o.syms.iter().filter(|y| y.depth == 0).map(|y| (y.path.clone(), y.line_a, y.line_b)).collect())
 }
 
 /// The line range read_symbol would show (for the read panel). None = it would fail.
@@ -705,6 +788,11 @@ pub fn glob_args(input: &Value) -> (String, String) {
 fn glob(input: &Value, ctx: &ToolCtx) -> Result<String, String> {
     arg(input, "pattern")?;
     let (dir, pat) = glob_args(input);
+    // a folder as the pattern ("./", "src", "src/"): that folder's files (as a glob it matched nothing)
+    let bare = pat.trim_start_matches("./").trim_end_matches('/');
+    let named = (!bare.contains(['*', '?', '{', '['])).then(|| if bare.is_empty() || bare == "." { dir.clone() } else { format!("{}/{bare}", dir.trim_end_matches('/')) })
+        .filter(|d| resolve(ctx, d).is_dir());
+    let (dir, pat) = match named { Some(d) => (d, "*".to_string()), None => (dir, pat) };
     let re = glob_re(&pat)?;
     let root = resolve(ctx, &dir);
     if !root.is_dir() { return Err(format!("not a directory: {}", root.display())); }
