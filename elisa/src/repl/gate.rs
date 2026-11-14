@@ -33,7 +33,7 @@ const F_CLOCK: &str = "gave a date or a day that is not the clock's";
 const CUT_SIGN_OFF: &str = "ended with a letter's sign-off";
 const CUT_REPEAT: &str = "said the same sentence twice";
 const CUT_STRAY: &str = "listed bare values of the results beside its answer";
-const CUT_LEAD_IN: &str = "ended in a lead-in with nothing after it";
+const CUT_LEAD_IN: &str = "ended in a lead-in or a list mark with nothing after it";
 const CUT_CANT: &str = "said it could not do what ran, or had no information, beside its answer";
 const CUT_ORDER: &str = "said Elisa's language note back beside its answer";
 const CUT_MORE: &str = "claimed more content than the file read holds beside its answer";
@@ -51,6 +51,9 @@ const CUT_LINK: &str = "gave a source no tool returned";
 const CUT_REF: &str = "pointed at a message or item by a number nothing holds";
 const CUT_FIGURES: &str = "listed times or dates nobody asked for";
 
+/// sentences holding none of the results' facts a retry has more than the grounded reply before it, from which it
+/// added things the results never said (`worse_than`)
+const CLAIMS_ADDED_MIN: usize = 2;
 /// words a parenthetical needs before it counts as a copy of a sentence outside it
 const PAREN_COPY_WORDS: usize = 3;
 /// words a label before a parenthetical copy has at most ("Vietnamese:", "English translation:")
@@ -190,7 +193,7 @@ impl Session<'_> {
             if once.trim() != text { text = once.trim().to_string(); cut = Some(CUT_REPEAT); }
         }
         if ran { if let Some(t) = without_stray_value_lines(&text, &got) { text = t; cut = Some(CUT_STRAY); } }
-        if let Some(t) = without_dangling_lead_in(&text) {
+        if let Some(t) = without_hollow_parts(&text) {
             if !letters(&t) { return Err(F_LEAD_IN); }
             text = t;
             cut = Some(CUT_LEAD_IN);
@@ -254,6 +257,12 @@ impl Session<'_> {
         // (an offer or a question back nobody asked for at the end, "Want me to add something? Or is this what you
         // were looking for?" after a file's lines: `reply_check::without_offer_tail`)
         if let Some(t) = crate::reply_check::without_offer_tail(&text, ask) { text = t; cut = Some(CUT_OFFER); }
+        // (what the cuts since left hollow: a list mark with nothing after it, a lead-in whose content went)
+        if let Some(t) = without_hollow_parts(&text) {
+            if !letters(&t) { return Err(F_LEAD_IN); }
+            text = t;
+            cut = Some(CUT_LEAD_IN);
+        }
         // (a bracketed note alone, "[trimmed: …", or a tag alone, "</s>", that a screen shows as nothing: no answer)
         if !crate::reply_check::has_visible_words(&text) { return Err(F_EMPTY); }
         if crate::reply_check::own_name_only(&text, &self.system) { return Err(F_NAME); }
@@ -406,7 +415,10 @@ impl Session<'_> {
         // (its language was its only fault)
         let Ok(as_came) = self.gate_fault_in(&first, ask, false) else { return shown };
         let why = if none { "the retry was no better" } else { "the retry was worse" };
-        let said = if self.is_worded(&shown) { None } else { self.same_answer_in(ask, &first).and_then(|t| self.gate_fault(&t, ask).ok()) };
+        // (the answer said again is held to the same measure: worse than `first` too, `first` as it came)
+        let said = if self.is_worded(&shown) { None } else {
+            self.same_answer_in(ask, &first).and_then(|t| self.gate_fault(&t, ask).ok()).filter(|m| !self.worse_than(&m.text, &first, ask))
+        };
         let (text, note) = match said {
             Some(m) => (m.text, format!("[the reply's only fault was its language and {why}; Elisa had it said in the user's language]")),
             None => (as_came.text, format!("[the reply's only fault was its language and {why}; it stands as it came]")),
@@ -421,12 +433,17 @@ impl Session<'_> {
     /// Whether `shown`, the model's words after a retry, is worse than `first`, the reply before it: garbled
     /// (`reply_check::garbled`), or with fewer of this turn's results' facts in it (`reply_check::result_facts`: the
     /// names and numbers the results hold) while `first` has some.
+    /// Or, `first` grounded in them (some of their facts in it), with CLAIMS_ADDED_MIN or more sentences more that
+    /// hold none of their facts (`reply_check::claims_without_facts`): things the results never said, added by the
+    /// retry ("Gặp gỡ vào thứ Hai, không biết thời gian cụ thể." beside a file's two lines told right before).
     fn worse_than(&self, shown: &str, first: &str, ask: &str) -> bool {
         if crate::reply_check::garbled(shown, ask) { return true; }
         let got = self.turn_tool_text().0.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>().join("\n");
         if got.trim().is_empty() { return false; }
         let was = crate::reply_check::result_facts(first, &got);
-        !was.is_empty() && crate::reply_check::result_facts(shown, &got).len() < was.len()
+        if was.is_empty() { return false; }
+        crate::reply_check::result_facts(shown, &got).len() < was.len()
+            || crate::reply_check::claims_without_facts(shown, &got) >= crate::reply_check::claims_without_facts(first, &got) + CLAIMS_ADDED_MIN
     }
 
     /// Whether `t` is one of Elisa's lines that give no answer (`reply_check::no_answer_line`, `cant_answer_line`).
@@ -475,6 +492,25 @@ pub(super) fn without_dangling_lead_in(text: &str) -> Option<String> {
         cut = true;
     }
     cut.then(|| lines.join("\n").trim().to_string())
+}
+
+/// `text` without its hollow parts: each list item that is its mark alone ("1.", "-": its words went, or never
+/// came), outside code blocks, and then a last lead-in with nothing after it (`without_dangling_lead_in`), "Here
+/// are the details:" above items that were all copies. None: it has none.
+pub(super) fn without_hollow_parts(text: &str) -> Option<String> {
+    let mut fenced = false;
+    let kept: Vec<&str> = text.lines().filter(|l| {
+        if l.trim_start().starts_with("```") { fenced = !fenced; return true; }
+        fenced || !crate::reply_check::list_mark_only(l)
+    }).collect();
+    let marks_cut = kept.len() < text.lines().count();
+    let mut t = kept.join("\n");
+    while t.contains("\n\n\n") { t = t.replace("\n\n\n", "\n\n"); }
+    let t = t.trim().to_string();
+    match without_dangling_lead_in(&t) {
+        Some(l) => Some(l),
+        None => marks_cut.then_some(t),
+    }
 }
 
 /// The lowercase alphanumeric words of `t`.
@@ -576,6 +612,20 @@ mod tests {
         // a colon ending a line of code is code
         assert_eq!(without_dangling_lead_in("Here is the fix:\n```\nif x:\n```"), None);
         assert_eq!(without_dangling_lead_in("12:30:"), None, "no letters: not a lead-in");
+    }
+
+    #[test]
+    fn list_marks_with_nothing_after_them_go_and_so_does_the_lead_in_above_them() {
+        assert_eq!(without_hollow_parts("The room is B12.\n\nHere are the details:\n\n1.\n2.").as_deref(), Some("The room is B12."));
+        assert_eq!(without_hollow_parts("Rooms:\n- \n- B12\n* ").as_deref(), Some("Rooms:\n- B12"));
+        // items with words, and a mark inside a code block, stay
+        assert_eq!(without_hollow_parts("Steps:\n1. Open it.\n2. Save it."), None);
+        assert_eq!(without_hollow_parts("Output:\n```\n-\n1.\n```"), None);
+        assert_eq!(without_hollow_parts("Details:\n1.").as_deref(), Some(""));
+        // the measure of added claims: a sentence without a name or number of the results counts, a quoted block not
+        let got = "1\tRoom: B12\n2\tOwner: Mina Tran";
+        assert_eq!(crate::reply_check::claims_without_facts("plan.txt says:\n```\nRoom: B12\n```\nThe room is B12.", got), 0);
+        assert_eq!(crate::reply_check::claims_without_facts("Phòng là B12. Buổi họp diễn ra vào sáng thứ Hai, chưa rõ giờ.\n- Có lẽ là một sự kiện chính thức.", got), 2);
     }
 
     #[test]

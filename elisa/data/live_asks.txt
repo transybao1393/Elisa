@@ -25,13 +25,20 @@
 #        u, nhiệt độ mát 22°C") and an aside is given only when the page has nothing else; a reply giving the reading
 #        with an aside labelled beside it ("22°C, cảm giác như 24°C") stands (`repl/turn.rs` `aside_sentence`,
 #        `LiveFigure::rank`, `live_figure_fix`).
+#   state: the words of a question whether a state still holds or has changed ("ông Jensen Huang đã từ chức khỏi
+#        Nvidia chưa?", "is she still the CEO?", "has he resigned yet?"). Such a question about what this
+#        conversation's last web search was about (a name shared with that search's query or a page read then) is
+#        about the present: Elisa searches again rather than let the model answer from memory (`repl/turn.rs`
+#        `searched_state_ask`). Alone, with no earlier search, these words ask nothing of the web ("xong chưa?").
 [en]
 now: today | right now | rn | these days | currently | current | at the moment | as of now | as of today | latest | this week | this month | this year | nowadays | tonight | this morning | this evening
 updated: updated | last updated | last update | refreshed | data as of | prices as of | rates as of
 currency: $ | us$ | usd | dollar | dollars | cent | cents
 aside: feels like | feel like | feeling like | real feel | realfeel | apparent temperature | wind chill | heat index | dew point | dewpoint | high | highs | low | lows | max | maximum | min | minimum
+state: yet | still | already | anymore | any more | no longer | not anymore | so far | up to now | as of today
 [vi]
 now: hôm nay | hom nay | bây giờ | bay gio | hiện nay | hien nay | hiện tại | hien tai | dạo này | dao nay | lúc này | luc nay | tuần này | tuan nay | tháng này | thang nay | năm nay | nam nay | mới nhất | moi nhat | tối nay | toi nay | sáng nay | sang nay
 updated: cập nhật lúc | cap nhat luc | cập nhật lần cuối | cap nhat lan cuoi | cập nhật ngày | cap nhat ngay | cập nhật vào | cap nhat vao | số liệu lúc | so lieu luc | số liệu ngày | so lieu ngay
 currency: ₫ | đ | vnd | vnđ | đồng | dong | xu
 aside: cảm giác như | cam giac nhu | cảm giác | cam giac | cảm nhận | cam nhan | điểm sương | diem suong | cao nhất | cao nhat | thấp nhất | thap nhat | tối đa | toi da | tối thiểu | toi thieu | lớn nhất | lon nhat | nhỏ nhất | nho nhat
+state: chưa | chua | hay chưa | hay chua | rồi chưa | roi chua | vẫn | vẫn còn | van con | còn không | con khong | đến nay | den nay | tới nay | toi nay | đến giờ | den gio | không còn | khong con

@@ -41,7 +41,7 @@ impl<'f> Session<'f> {
     }
 
     /// May this tool call run? A call that reaches outside the project folder goes through `approve_outside` first
-    /// (its own rules: never the per-project always-allow list, never `--yes` for writes).
+    /// (its own rules: never the per-project always-allow list, never `--yes`: it asks).
     pub(super) fn approve(&mut self, name: &str, input: &serde_json::Value, summary: &str) -> Result<(), String> {
         // a file-tool call that cannot change anything (URL path, old == new, old not found, binary file) fails
         // before anyone is asked (`tools::precheck`); MCP tools are their servers' business
@@ -68,9 +68,9 @@ impl<'f> Session<'f> {
     }
 
     /// Outside the project (config `outside`): deny → denied; allow → the normal rules; read-ok → reads take the
-    /// normal rules, writes ask; ask → ask (Yes once / Always = these paths for this session / No). Writes outside
-    /// (and bash naming outside paths) under `--yes` / approve-all are denied unless `outside = "allow"`; with nobody
-    /// to ask (-p without a terminal) the call is denied. Paths granted for the session pass without asking.
+    /// normal rules, writes ask; ask → ask (Yes once / Always = these paths for this session / No). `--yes` /
+    /// approve-all does not cover them: they ask and wait the same; with nobody to ask (-p without a terminal) the call
+    /// is denied. Paths granted for the session pass without asking.
     fn approve_outside(&mut self, name: &str, summary: &str, o: &Outside, input: &serde_json::Value, rule: Option<RuleHit>) -> Result<(), String> {
         let list = o.paths.join(", ");
         let what = o.access_word();
@@ -81,13 +81,11 @@ impl<'f> Session<'f> {
             _ => {}
         }
         if outside::covered(&self.outside_ok, o) { return Ok(()); }
-        if self.yolo && o.write() {
-            return Err(format!("denied: {what} outside the project folder ({list}) is never auto-approved by --yes / approve-all; \
-                set outside = \"allow\" in ~/.config/elisa/config.toml to allow it"));
-        }
+        // approve-all (--yes, /yolo) covers inside calls only: an outside call asks and waits here like in every
+        // other mode; with nobody to ask it is denied
         if !self.interactive {
-            return Err(format!("denied: {what} outside the project folder ({list}) needs a person to approve it (non-interactive){}",
-                if o.write() { "" } else { "; outside = \"read-ok\" allows outside reads" }));
+            return Err(format!("denied: {what} outside the project folder ({list}) needs a person to approve it (non-interactive); {}",
+                if o.write() { "with --yes, outside = \"allow\" in ~/.config/elisa/config.toml allows it" } else { "outside = \"read-ok\" allows outside reads" }));
         }
         self.acts.waiting_ok(&mut *self.fe, true);
         let a = self.fe.approve_outside(name, summary, o);

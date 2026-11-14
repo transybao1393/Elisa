@@ -22,6 +22,11 @@ impl<'f> Session<'f> {
         if let Some(p) = &self.turn_pic { text = format!("{text}\n{}", context::picture_block(p)); }
         // (the document text before the words, as `with_turn_extras` places it)
         if let Some(d) = &self.doc_req { text = format!("{d}\n{text}"); }
+        // (asked alone, a message that points back, "code trò chơi ấy thành file HTML", loses what it points to: the
+        // user's message before it goes first, `earlier_note`; and what this request plans is no part of the turn's
+        // plan, `api::plan_close`)
+        crate::api::plan_close();
+        if let Some(n) = self.earlier_note(&ask) { text = format!("{n}\n\n{text}"); }
         // (the message as sent, before the language note: the note names a language, which the garble check would
         // read as a translation ask, "I'm hungry" to "'tôi đói rồi' tiếng Anh là gì?" thrown out as no Vietnamese)
         let seen = text.clone();
@@ -299,6 +304,13 @@ impl<'f> Session<'f> {
         format!("{results}\n{said}\n{}", self.system)
     }
 
+    /// The replies before this turn, one text per line group: pieces of them glued with earlier lines make no answer
+    /// (`reply_check::glued_earlier_lines`).
+    fn earlier_replies(&self) -> String {
+        let cap = self.turn_cap(&self.history).min(self.history.len());
+        self.history[..cap].iter().filter(|m| m.role == Role::Assistant).map(texts).collect::<Vec<_>>().join("\n")
+    }
+
     /// A reply with no tool call this turn that answers nothing: one word to an ask that wants more ("Image"), a bare
     /// line copied from earlier in the chat ("Meeting code: ORCHID-42" to "tell me a short joke"), a claim to be a
     /// human being ("I'm not a robot, I'm a human.", against Elisa's own facts), a description of the message's own
@@ -311,6 +323,8 @@ impl<'f> Session<'f> {
         if doc.is_empty() { if crate::reply_check::one_word_non_answer(vis, ask) { return Some("no answer"); } }
         else if crate::reply_check::few_words_of_nothing(vis, ask, &doc) { return Some("no answer"); }
         if crate::reply_check::copies_earlier_line(vis, ask, &self.earlier_lines()) { return Some("copy"); }
+        // (or pieces of earlier lines and of Elisa's earlier replies glued, "noI made index.html. no matches")
+        if crate::reply_check::glued_earlier_lines(vis, ask, &format!("{}\n{}", self.earlier_lines(), self.earlier_replies())) { return Some("copy"); }
         if crate::reply_check::claims_human(vis) { return Some("claims human"); }
         if crate::reply_check::about_message_words(vis, ask) { return Some("about the words"); }
         // (or Elisa's own prompt or clock line said back in other words, "You are a friendly assistant who is helping you.")
@@ -388,6 +402,14 @@ impl<'f> Session<'f> {
                 self.debug("[a question about what Elisa can do; she answered from her tools]");
                 return self.said_own(t);
             }
+            // the general question ("what can you do?", "bạn làm được gì cho tôi?"): her own list from her tools and
+            // the model's sight when the reply does not give it (`situation::can_do_line`)
+            if let Some(t) = self.can_do_line_for(ask, &vis) {
+                self.fe.reply_retracted();
+                if self.interactive { self.fe.text_delta(&t); }
+                self.debug("[a question about what Elisa can do; she listed what she has here]");
+                return self.said_own(t);
+            }
         }
         // a question pointing at a page Elisa holds ("trang đó dùng để làm gì?", "what is that page for?"), naming no
         // URL of its own (`held_page_turn`: a turn that ran no tool, or one whose search the page makes needless): her
@@ -462,6 +484,11 @@ impl<'f> Session<'f> {
         let known = format!("{}\n{}\n{}", self.system, self.history.iter().filter(|m| m.role == Role::User).map(texts).collect::<Vec<_>>().join("\n"), self.input);
         // (a reply that is only such a claim is asked again after the turn, `claimed_facts_retry`)
         let vis = match crate::reply_check::without_false_self(&vis, &own, &known).filter(|t| !t.is_empty()) {
+            // (a cut never drops what the turn's tools returned: the sentence giving a result's line is the answer)
+            Some(t) if crate::reply_check::loses_given(&vis, &t, &results) => {
+                self.debug("[the reply named itself with one of the user's names in the sentence that gave the results; it stays]");
+                vis
+            }
             Some(t) => {
                 self.fe.reply_retracted();
                 if self.interactive { self.fe.text_delta(&t); }
@@ -1193,6 +1220,9 @@ impl<'f> Session<'f> {
                 // (a lone "yes" or "no" beside a line Elisa put first, her clock line "Bây giờ là 05:41.": her line alone)
                 // (and the same when the model's own words beside it are garbled or in another language)
                 let clean = crate::reply_check::beside_own_line(&clean, &vis, &self.input);
+                // (and a cleaning that took out the whole answer to the general question about what Elisa can do,
+                // leaving only a line she holds, her clock line, in its place: that answer stands, `ability_answer_kept`)
+                let clean = self.ability_answer_kept(clean, &vis, &ask);
                 let vis = if clean != vis.trim() && clean != vis {
                     self.fe.reply_retracted();
                     if self.interactive && !clean.is_empty() { self.fe.text_delta(&clean); }
@@ -2200,8 +2230,52 @@ impl Session<'_> {
     /// `ability_line` weighing the model's `reply`: an ability nothing she has gives, and no chat ability ("read
     /// minds"), gets her no only when the reply claims it.
     fn ability_line_for(&self, ask: &str, reply: &str) -> Option<String> {
-        let all: Vec<(String, String)> = tools::defs_for(self.cfg.ast).into_iter().chain(self.mcp.defs()).map(|t| (t.name, t.description)).collect();
-        crate::situation::ability_answer(ask, reply, &all, self.client.caps().vision == Some(true))
+        crate::situation::ability_answer(ask, reply, &self.ability_tools(), self.client.caps().vision == Some(true))
+    }
+
+    /// Every tool Elisa has here (name, description): the built-in ones and the plugins'.
+    pub(super) fn ability_tools(&self) -> Vec<(String, String)> {
+        tools::defs_for(self.cfg.ast).into_iter().chain(self.mcp.defs()).map(|t| (t.name, t.description)).collect()
+    }
+
+    /// Elisa's own answer to the general question about what she can do ("what can you do?", "bạn làm được gì cho
+    /// tôi?": `situation::can_do_line`), from every tool she has and the model's sight, when `reply` does not give it
+    /// as she would (`situation::can_do_reply_fits`: a greeting back, a pitch, a claim of an ability she lacks); with
+    /// an empty `reply`, her answer as such. Never the no-answer line for this question.
+    fn can_do_line_for(&self, ask: &str, reply: &str) -> Option<String> {
+        let all = self.ability_tools();
+        let vision = self.client.caps().vision == Some(true);
+        if !reply.trim().is_empty() && crate::situation::can_do_reply_fits(reply, &all, vision) { return None; }
+        // (the router's answer decides when it gave one, as for the turn's situation note: `turn.rs` `says_or`)
+        let routed = self.router_says("about_elisa").or((!self.own_rules()).then_some(false));
+        crate::situation::can_do_line(ask, routed, &all, vision)
+    }
+
+    /// Whether `vis` answers the general question about what Elisa can do (`can_do_line_for`: `ask` is that question)
+    /// as she would, naming what she has here and nothing she lacks (`situation::can_do_reply_fits`). Such a reply
+    /// says what her prompt and her note of what she can do say, and that is the answer, not a copy of them.
+    pub(super) fn states_abilities(&self, vis: &str, ask: &str) -> bool {
+        !vis.trim().is_empty() && self.can_do_line_for(ask, "").is_some() && self.can_do_line_for(ask, vis).is_none()
+    }
+
+    /// `clean` (the model's reply `raw` after Elisa's cleaning) as it is, unless the cleaning left only lines Elisa
+    /// holds herself (`reply_check::own_lines_only`: her clock line in place of the reply) on the general question
+    /// about what she can do (`can_do_line_for`): then the answer to that question was removed, and it comes back as
+    /// the model's reply when that gives it as she would (`situation::can_do_reply_fits`), else as her own list from
+    /// her tools. Her held line stays in front only when the message asks for it in its own words
+    /// (`situation::asks_time_in_words`); a fact nobody asked is never the whole answer.
+    fn ability_answer_kept(&mut self, clean: String, raw: &str, ask: &str) -> String {
+        if !crate::reply_check::own_lines_only(&clean, raw) || self.can_do_line_for(ask, "").is_none() { return clean; }
+        let own = self.can_do_line_for(ask, raw);
+        let body = context::request_body(ask);
+        let asked = crate::situation::asks_time_in_words(context::own_words(body).unwrap_or(body));
+        self.debug("[the cleaning left only a line Elisa holds in place of the answer to what she can do; that answer stands]");
+        match (own, asked) {
+            (Some(l), false) => self.said_own(l),
+            (Some(l), true) => format!("{}\n\n{l}", clean.trim()),
+            (None, false) => raw.trim().to_string(),
+            (None, true) => format!("{}\n\n{}", clean.trim(), raw.trim()),
+        }
     }
 
     pub(super) fn no_answer_line(&self, ask: &str) -> String { let t = self.no_answer_line_of(ask); self.said_own(t) }
@@ -2263,7 +2337,11 @@ impl Session<'_> {
         let facts = self.reply_facts();
         if let Some(l) = facts.facts_answer() { return l; }
         // (no usable reply to "are you able to run shell commands?": the answer is Elisa's own, from her tools)
-        if self.tool_lines.is_empty() { if let Some(l) = self.ability_line(ask) { return l; } }
+        // (the general question about what she can do: her list from her tools, never the no-answer line)
+        if self.tool_lines.is_empty() {
+            if let Some(l) = self.can_do_line_for(ask, "") { return l; }
+            if let Some(l) = self.ability_line(ask) { return l; }
+        }
         // (a sum she works out herself, "144 chia 12 bằng mấy?": `reply_check::computed_answer`)
         if let Some(l) = crate::reply_check::computed_answer(ask) { return l; }
         // (a question about a page read earlier this session, "what is that page for?": its own first sentence, quoted)
@@ -2379,7 +2457,11 @@ impl Session<'_> {
         // a message that names the exact reply it wants ("…, then just reply OK: …") gets that reply
         if let Some(r) = crate::reply_check::asked_reply(ask) { return r; }
         // a question about one thing Elisa can do, routed as talk about her: her own answer, never a greeting
-        if self.tool_lines.is_empty() { if let Some(l) = self.ability_line(ask) { return l; } }
+        // (the general question about what she can do: her list from her tools, never the no-answer line)
+        if self.tool_lines.is_empty() {
+            if let Some(l) = self.can_do_line_for(ask, "") { return l; }
+            if let Some(l) = self.ability_line(ask) { return l; }
+        }
         // (a feeling or a bit of the day told, "mình vừa chạy bộ xong, mệt quá", is small talk too: never a can line)
         if self.small_talk_turn || crate::route::small_talk(ask) || crate::route::opens_with_greeting(ask) || crate::reply_check::shares_a_moment(ask) { small_talk_fallback(ask, self.first_turn()) } else { self.no_answer_line(ask) }
     }

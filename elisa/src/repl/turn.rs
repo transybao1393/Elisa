@@ -210,9 +210,12 @@ impl<'f> Session<'f> {
             self.doc_follow_up(&input);
         }
         self.reason_turn(&input);
+        // (the reasoning of this turn's replies, for a file Elisa makes from it: `own_make`)
+        crate::api::plan_open();
         self.tool_lines.clear();
         self.own_results.clear();
         self.turn_guard = Default::default();
+        self.ledger.turn_begins();
         self.unsent = false;
         (self.new_card, self.card_broken) = (None, false);
         self.in_turn = true;
@@ -348,7 +351,7 @@ impl<'f> Session<'f> {
         });
         // what Elisa can do on this model, from the detected caps (a fixed list would claim images with no vision)
         let vision = self.client.caps().vision == Some(true);
-        let about = self.says_or("about_elisa", || crate::route::about_elisa(&input)).then(|| crate::situation::about(vision));
+        let about = self.says_or("about_elisa", || crate::route::about_elisa(&input)).then(|| crate::situation::about(vision, &self.ability_tools()));
         // a question about the model itself ("What can this model do for me?"): its detected facts (a meaning check:
         // Elisa's own rules only)
         let about = about.or_else(|| {
@@ -525,6 +528,9 @@ impl<'f> Session<'f> {
         let end = if matches!(end, TurnEnd::Done) { self.text_named_call().unwrap_or(end) } else { end };
         // a change asked for in a named file that no edit made: Elisa makes it (`own_fix`)
         let mut end = if matches!(end, TurnEnd::Done) { self.own_fix().unwrap_or(end) } else { end };
+        // an ask to make a file or program that no write made, answered with a promise or with code in the reply:
+        // Elisa saves the model's code herself (`own_make`)
+        if matches!(end, TurnEnd::Done) { if let Some(e) = self.own_make() { end = e; } }
         let mut retried = false;
         for k in 0..4 {
             if retried || !matches!(end, TurnEnd::Done) { break; }
@@ -538,7 +544,7 @@ impl<'f> Session<'f> {
         // (a reply the output limit cut short is held to the results like a finished one: a figure or date it gives
         // that no result holds never stands for being cut — a run of invented dated prices ending mid-list)
         if matches!(end, TurnEnd::Stopped) { self.deps_reply_fix(); self.check_reply_fix(); self.edit_reply_fix(); self.weather_claim_fix(); self.live_figure_fix(); }
-        if matches!(end, TurnEnd::Done) { self.listed_fix(); self.outline_fix(); self.grep_fix(); self.fragment_fix(); self.command_reply_fix(); self.count_reply_fix(); self.item_reply_fix(); self.weather_claim_fix(); self.live_figure_fix(); self.symbol_check_fix(); self.said_no_fix(); self.edit_reply_fix(); self.field_fix(); self.deps_reply_fix(); self.check_reply_fix(); self.asked_value_fix(); }
+        if matches!(end, TurnEnd::Done) { self.made_files_fix(); self.listed_fix(); self.outline_fix(); self.grep_fix(); self.fragment_fix(); self.command_reply_fix(); self.count_reply_fix(); self.item_reply_fix(); self.weather_claim_fix(); self.live_figure_fix(); self.symbol_check_fix(); self.said_no_fix(); self.edit_reply_fix(); self.field_fix(); self.deps_reply_fix(); self.check_reply_fix(); self.asked_value_fix(); }
         if retried { return end; }
         if let (TurnEnd::Done, Some(a)) = (&end, &pic_answer) { self.picture_refusal_fix(a); }
         self.doc_retry = None;
@@ -630,6 +636,9 @@ impl<'f> Session<'f> {
     fn own_asks(&mut self, input: &str) -> Vec<Own> {
         if self.cfg.route != "auto" || self.doc_refused.is_some() || !self.docs.is_empty() || self.doc_req.is_some() { return Vec::new(); }
         let body = context::request_body(input).to_string();
+        // (a question about the file Elisa made this session: her record answers it, never a search of file text,
+        // `made_files_ask`)
+        if self.made_files_ask(&body).is_some() { return Vec::new(); }
         // "again" right after a call of her own ("run the command: echo hello-elisa", then "again"): that call once
         // more (`repeat_asked`)
         let repeat = self.repeat_asked(&body);
@@ -725,6 +734,10 @@ impl<'f> Session<'f> {
             // me the title"): the page itself, in any language
             else if let Some(u) = url { calls.push(("web_fetch".to_string(), json!({"url": u}))); }
             else if !web_out && crate::route::web_ask(&body) { calls.push(query(&body)); }
+            // "ông Jensen Huang đã từ chức khỏi Nvidia chưa?" right after a search about him: whether a state still
+            // holds, about what was just searched, asks about the present — a fresh search, never the model's memory
+            // (`searched_state_ask`)
+            else if !web_out && self.searched_state_ask(&body) { self.debug("[a question whether what was just searched still holds: Elisa searches again]"); calls.push(query(&body)); }
             // "is todo.txt still there?": Elisa looks for it, and answers yes or no herself (`exists_answer`)
             else if let Some(p) = self.exists_asked(&body) { calls.push(("glob".to_string(), json!({"pattern": p}))); }
             else {
@@ -2339,6 +2352,30 @@ impl<'f> Session<'f> {
         (!t.trim().is_empty()).then(|| format!("{}\n", t.trim_end()))
     }
 
+    /// Whether the user's words ask whether a state still holds or has changed ("ông Jensen Huang đã từ chức khỏi
+    /// Nvidia chưa?", "has she resigned yet?": a `state:` wording of `data/live_asks.txt`) about what this
+    /// conversation's last web search was about: a word of three letters or more, no common word
+    /// (`topics::is_common`) and none of the ask's own `now:` or `state:` words, shared with that search's query or
+    /// with the title of a page read after it. Such a question is about the present, so Elisa searches again rather
+    /// than let the model answer from memory. False with no earlier search, or no shared word ("xong chưa?").
+    fn searched_state_ask(&self, body: &str) -> bool {
+        if !live_key(body, "state:") { return false; }
+        let mut searched: Option<String> = None;
+        for b in self.history.iter().flat_map(|m| &m.content) {
+            match b {
+                Block::ToolUse { name, input, .. } if name == "web_search" => searched = input["query"].as_str().map(str::to_string),
+                Block::ToolResult { content, .. } => if let Some(s) = searched.as_mut() {
+                    for l in content.lines().map(str::trim).filter(|l| l.starts_with("title:")) { s.push('\n'); s.push_str(l); }
+                },
+                _ => {}
+            }
+        }
+        let Some(searched) = searched else { return false };
+        let dropped: HashSet<String> = ["now:", "state:"].iter().flat_map(|k| live_wordings(body, k)).flat_map(|w| word_set(&w)).collect();
+        let about: HashSet<String> = word_set(&searched).into_iter().collect();
+        word_set(body).into_iter().any(|w| w.chars().count() >= 3 && !dropped.contains(&w) && !crate::topics::is_common(&w) && about.contains(&w))
+    }
+
     /// The topic of a web search ask: the words without the ask's frame and politeness (`strip_query_frames`: "can u
     /// serach the web for who won the world cup in 2022" → "who won the world cup in 2022", "giúp mình dân số
     /// Iceland" → "dân số Iceland"), then those after the search tool's verb, without the words its description
@@ -2552,6 +2589,149 @@ impl<'f> Session<'f> {
         if self.interactive { self.fe.text_delta(&line); }
         self.history.push(Message::assistant_text(line));
         Some(TurnEnd::Done)
+    }
+
+    /// An ask to make a new file or program (`make_ask`: "make me a snake game in HTML", "bạn code trò chơi ấy thành
+    /// file HTML"; a follow-up on one that got no code, `unmade`) on a turn where no write ran: the reply is a promise
+    /// or code shown, not the file. Elisa saves the code herself through the usual approval (`own_step`): the reply's
+    /// own code block when it has one, else the model's answer to a plain request of its own for the file alone
+    /// (`make_words`, one call, no tools). The file is the one the ask names, else one named from the ask and the
+    /// code's language (`made_name`). No code: her own line that no file was made, never a promise.
+    fn own_make(&mut self) -> Option<TurnEnd> {
+        let pending = self.unmade.take();
+        let wrote = |l: &String| ["[write ", "[edit ", "[edit_symbol ", "[bash ", "[run_code "].iter().any(|p| l.starts_with(p));
+        if self.tool_lines.iter().any(wrote) || self.said_no_this_turn() { return None; }
+        let cap = self.turn_cap(&self.history).min(self.history.len());
+        // (a write the output limit cut off: the model tried, and a request of the same size would be cut again)
+        if self.history[cap..].iter().flat_map(|m| &m.content).any(|b| matches!(b, Block::Text { text } if text.contains("[cut off at the "))) { return None; }
+        let body = context::request_body(&self.input).to_string();
+        // (a save of given or read text, `save_ask`; an ask for the shell to do it, `shell_ask`: the shell's, not a write)
+        if crate::route::save_ask(&body).is_some() || save_target(&body).is_some() || shell_ask(&body) || body.contains("```") { return None; }
+        let prev = self.user_messages().into_iter().last().unwrap_or_default();
+        let what = if make_ask(&body) { body.clone() }
+            else if let Some(p) = pending.filter(|p| follows_make(&body, p)) { format!("{p}\n{body}") }
+            // ("vậy thì tạo đi" after "bạn có thể làm giúp tôi 1 trò chơi rắn săn mồi không?": the thing is the one asked about)
+            else if make_verb_only(&body) && make_ask(prev.trim_end().trim_end_matches('?')) { format!("{prev}\n{body}") }
+            else { return None };
+        // (a file the ask names that is there already: a change, `own_fix`'s)
+        if crate::route::file_name(&what).is_some_and(|f| self.cwd.join(&f).exists()) { return None; }
+        if !(self.tools.iter().any(|t| t.name == "write") || (self.tiny() && tools::defs_for(self.cfg.ast).iter().any(|d| d.name == "write")) || self.widen_for("write")) { return None; }
+        // (the earlier messages the ask may point back to, "trò chơi ấy" for the game the one before named: they go
+        // with the request for the code, and a name may come from them)
+        let earlier: Vec<String> = self.user_messages().into_iter().rev().take(MAKE_CONTEXT_MESSAGES).collect::<Vec<_>>().into_iter().rev().collect();
+        // (the file type the ask names decides the file: "thành file HTML + CSS" is one HTML file)
+        let want = asked_lang(&what);
+        let reply = self.history.last().filter(|m| m.role == Role::Assistant).map(texts).unwrap_or_default();
+        // (what the model planned for it this turn, its reasoning and, when no request went without the conversation,
+        // its reply: the lines that name the thing or a file, `planned_lines`)
+        let (plan, open) = crate::api::plan();
+        crate::api::plan_close();
+        let planned = planned_lines(&if open { format!("{plan}\n{reply}") } else { plan });
+        let code = code_of(&reply, want).or_else(|| self.make_words(&what, &earlier, want, &planned));
+        let Some((lang, content)) = code else {
+            self.debug("[an ask to make a file, and no code came for it; nothing made]");
+            self.unmade = Some(what);
+            let line = crate::reply_check::own_line_of("not_made", &body, "").replace("{model}", &self.cfg.model);
+            return Some(self.made_line(line));
+        };
+        let file = made_name(&what, &earlier, &planned, &lang, &content, &self.cwd);
+        self.real = None;
+        self.debug(&format!("[an ask to make a file and no write ran: Elisa saves the code as {file}]"));
+        let call = ("write".to_string(), json!({"path": file, "content": format!("{}\n", content.trim_end())}));
+        if self.tiny() { if self.run_own_inline(vec![call]).is_err() { return None; } } else { self.own_step(vec![call]); }
+        let done = self.tool_lines.last().is_some_and(|l| l.starts_with("[write ") && !l.contains(" → "));
+        if !done {
+            // (the user said no, or the write failed: the model answers from that result)
+            if self.history.last().is_some_and(|m| m.role == Role::Assistant) { self.history.pop(); }
+            return Some(self.agent_loop(CheckRun::default(), false));
+        }
+        let line = crate::reply_check::own_line_of("made", &body, &file);
+        Some(self.made_line(line))
+    }
+
+    /// The files to name for a question about the file Elisa made or changed this session ("xong chưa? Xong thì share
+    /// tôi file HTML nhé", "done? what's the file name?"): her own record of this session's writes (the ledger), those
+    /// of the language the question names when there are any; empty when she made none. Such a question has a [name],
+    /// [give] or [status] word and a [file], [thing] or language word (`data/make_asks.txt`), or a [status] word alone
+    /// right after a turn she made a file in; and no ask to make one. None otherwise, or when it names another file of
+    /// the folder.
+    pub(super) fn made_files_ask(&self, body: &str) -> Option<Vec<String>> {
+        if make_ask(body) || make_verb_only(body) { return None; }
+        let d = make_words_data();
+        let w = word_set(body);
+        let lang = asked_lang(body);
+        // (its name, a hand-over or whether it is done asked, never its content: "what's in the file?" is a read's)
+        let about = holds_run(&w, &d.file) || holds_run(&w, &d.thing) || lang.is_some();
+        let asks = holds_run(&w, &d.name) || holds_run(&w, &d.give) || holds_run(&w, &d.status);
+        let status_after_made = holds_run(&w, &d.status) && self.made_last_turn();
+        if !(about && asks) && !status_after_made { return None; }
+        let written: Vec<String> = self.ledger.paths().into_iter().filter(|p| self.resolve(p).is_file()).collect();
+        if crate::route::file_name(body).is_some_and(|f| self.cwd.join(&f).exists() && !written.iter().any(|x| x.ends_with(f.as_str()))) { return None; }
+        // (none made: only for a file asked by its kind, "share the HTML file", never a [thing] alone, "send me the
+        // weather page", which may well be another ask)
+        if written.is_empty() && !(holds_run(&w, &d.file) || lang.is_some()) { return None; }
+        let of_lang: Vec<String> = written.iter().filter(|p| lang.is_some_and(|l| p.rsplit('.').next() == Some(l.ext.as_str()))).cloned().collect();
+        Some(if of_lang.is_empty() { written } else { of_lang })
+    }
+
+    /// Whether the turn before this one made a file with Elisa's own write (`own_make`).
+    fn made_last_turn(&self) -> bool {
+        let cap = self.turn_cap(&self.history).min(self.history.len());
+        let Some(start) = self.history[..cap].iter().rposition(super::memory::is_request) else { return false };
+        self.history[start..cap].iter().flat_map(|m| &m.content).any(|b| matches!(b, Block::ToolUse { id, name, .. } if id.starts_with("elisa_") && name == "write"))
+    }
+
+    /// The reply to a question about the file Elisa made (`made_files_ask`): her own line naming it, from her record;
+    /// none made, her line saying so. (A file made this turn, `own_make`, has its own line already.)
+    fn made_files_fix(&mut self) {
+        if self.tool_lines.iter().any(|l| l.starts_with("[write ") && !l.contains(" → ")) { return; }
+        let Some(files) = self.made_files_ask(context::request_body(&self.input)) else { return };
+        let line = if files.is_empty() { crate::reply_check::own_line_of("no_made_files", &self.input, "") }
+            else { crate::reply_check::own_line_of("made_files", &self.input, &files.join(", ")) };
+        self.debug("[a question about the file Elisa made: answered from her own record of this session's writes]");
+        self.made_line(line);
+    }
+
+    /// `line` (Elisa's own) as the turn's reply, in place of the model's last one.
+    fn made_line(&mut self, line: String) -> TurnEnd {
+        let line = self.said_own(line);
+        // (the reply sits before Elisa's own write step: it goes from the history wherever it is in this turn)
+        let cap = self.turn_cap(&self.history).min(self.history.len());
+        if let Some(i) = self.history[cap..].iter().rposition(|m| m.role == Role::Assistant && m.content.iter().all(|b| matches!(b, Block::Text { .. }))) {
+            self.history.remove(cap + i);
+            self.fe.reply_retracted();
+        }
+        if self.interactive { self.fe.text_delta(&line); }
+        self.history.push(Message::assistant_text(line));
+        TurnEnd::Done
+    }
+
+    /// The model's code for a file `what` asks to be made, from a request of its own: no tools, a short system prompt
+    /// (`MAKE_SYSTEM`): first the user's `earlier` messages it may point back to (those naming a [thing] when any do),
+    /// marked as what the ask refers to, then what was `planned` for it this turn (`planned_lines`), then the ask, for
+    /// one complete file of the type asked (`want`). (language, code) as `code_of` gives it; None when it wrote none,
+    /// was cut off or failed.
+    fn make_words(&mut self, what: &str, earlier: &[String], want: Option<&MakeLang>, planned: &[String]) -> Option<(String, String)> {
+        if CANCEL.load(Ordering::SeqCst) { return None; }
+        let d = make_words_data();
+        let others: Vec<&String> = earlier.iter().filter(|m| !m.trim().is_empty() && !what.contains(m.trim())).collect();
+        let naming: Vec<&String> = others.iter().copied().filter(|m| holds_run(&word_set(m), &d.thing)).collect();
+        let refs = if naming.is_empty() { others } else { naming };
+        let before: String = refs.iter().map(|m| format!("\"{}\"\n", context::one_line(m, 300))).collect();
+        let before = if before.is_empty() { String::new() } else { format!("{MAKE_EARLIER}\n{before}\n") };
+        let plan: String = planned.iter().map(|l| format!("- {l}\n")).collect();
+        let plan = if plan.is_empty() { String::new() } else { format!("{MAKE_PLANNED}\n{plan}\n") };
+        let kind = want.map_or("file".to_string(), |l| format!("{} file, with everything it needs inline", l.name));
+        let q = format!("{before}{plan}The user asks now: {}\n\nWrite the complete {kind}, as one code block and nothing else.", what.trim());
+        let room = self.max_ctx.saturating_sub(estimate_tokens(&q) + 256);
+        let msgs = [Message::user_text(q)];
+        let no_tools: [ToolDef; 0] = [];
+        let req = Request { system: MAKE_SYSTEM, tools: &no_tools, messages: &msgs, max_tokens: self.cfg.max_output.min(room).max(MIN_OUT) };
+        self.fe.waiting();
+        self.client.set_kind("agent");
+        let r = self.client.send(&req, &CANCEL, &mut |_| {}).map_err(|e| self.debug(&format!("[the code request failed: {e}]"))).ok()?;
+        if r.stop_reason == "max_tokens" || r.stop_reason == "cancelled" { self.debug(&format!("[the code request stopped ({}); not used]", r.stop_reason)); return None; }
+        code_of(&texts(&Message::new(Role::Assistant, r.content)), want)
     }
 
     /// The end of a change ask Elisa could not make (no usable new code came for it): said plainly in place of the
@@ -2882,7 +3062,9 @@ impl<'f> Session<'f> {
             // (the step's line in the user's language, `data/step_lines.txt`; the activity row's words when it has none)
             // (a command's step names the command it ran: "Đã chạy echo hello-elisa", never the English row)
             let target = if phrase.target.is_empty() { r.input["command"].as_str().map(|c| context::one_line(c, 80)).unwrap_or_default() } else { phrase.target.clone() };
-            let head = crate::reply_check::step_line(&phrase.group, &target, &phrase.act, &r.raw, r.is_error, crate::route::vietnamese(&self.input))
+            // (a write that made the file this turn is told as made, not edited: the ledger saw nothing there before it)
+            let group = if phrase.group == "edit" && r.input["path"].as_str().is_some_and(|p| self.ledger.made(p, &self.cwd)) { "create" } else { phrase.group.as_str() };
+            let head = crate::reply_check::step_line(group, &target, &phrase.act, &r.raw, r.is_error, crate::route::vietnamese(&self.input))
                 .unwrap_or_else(|| crate::activity::done_text(&phrase, &r.raw, r.is_error));
             let body = if r.name == "read" {
                 r.body.lines().map(|l| l.trim_start().split_once('\t').filter(|(n, _)| n.chars().all(|c| c.is_ascii_digit())).map_or(l, |(_, t)| t)).collect::<Vec<_>>().join("\n")
@@ -3924,6 +4106,224 @@ const WEB_CUT_TRIES: usize = 8;
 /// most result titles Elisa lists herself for a web ask (`plain_results`)
 const WEB_TITLES_SHOWN: usize = 5;
 /// the system prompt of `fix_words`' request, and most output tokens it may use
+/// the system prompt of `make_words`
+const MAKE_SYSTEM: &str = "You write code. You answer with the complete file only, in one code block.";
+/// the head of the user's earlier messages in `make_words`' request: the thing to make is the one they name
+const MAKE_EARLIER: &str = "The thing to make is the one the user named earlier (the ask below refers to it; make that, not another):";
+/// the head of what was planned this turn in `make_words`' request
+const MAKE_PLANNED: &str = "What was planned for it:";
+/// most lines of this turn's plan that go with the request for a file's code (`planned_lines`)
+const MAKE_PLAN_LINES: usize = 6;
+/// the head of the user's earlier message before a message asked alone that points back to it (`earlier_note`)
+const EARLIER_NOTE: &str = "(The user's message before this one, which this one refers to:";
+
+/// The lines of `plan` (this turn's reasoning and reply) that name a [thing] of `data/make_asks.txt` or a file, in
+/// order, MAKE_PLAN_LINES at most; no code.
+fn planned_lines(plan: &str) -> Vec<String> {
+    let d = make_words_data();
+    let mut fence = false;
+    plan.lines().filter(|l| { if l.trim_start().starts_with("```") { fence = !fence; return false; } !fence })
+        .map(str::trim).filter(|l| !l.is_empty() && (holds_run(&word_set(l), &d.thing) || crate::route::file_name(l).is_some()))
+        .take(MAKE_PLAN_LINES).map(|l| context::one_line(l, 200)).collect()
+}
+
+/// A plain file name of the extension `ext` that a line of `planned` names ("Một file HTML (ví dụ: snake-game.html)"):
+/// no folder in it.
+fn planned_name(planned: &[String], ext: &str) -> Option<String> {
+    planned.iter().flat_map(|l| l.split(|c: char| c.is_whitespace() || matches!(c, ',' | '(' | ')' | '"' | '\'' | '`' | '*')))
+        .filter_map(crate::route::file_name)
+        .find(|f| !f.contains(['/', '\\']) && !f.starts_with('.') && f.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case(ext)))
+}
+
+impl Session<'_> {
+    /// The user's message before this one, marked as what it refers to, when `ask` points back to something said
+    /// before (`reply_check::refers_back`: "trò chơi ấy", "that game"): for a request asked without the conversation
+    /// (`isolated_reply`). None for one that does not, or when there is no earlier message.
+    pub(super) fn earlier_note(&self, ask: &str) -> Option<String> {
+        if !crate::reply_check::refers_back(ask) { return None; }
+        let prev = self.user_messages().into_iter().rev().find(|m| !m.trim().is_empty())?;
+        Some(format!("{EARLIER_NOTE} \"{}\")", context::one_line(&prev, 300)))
+    }
+}
+/// fewest lines of code a block needs to be a file's content (`code_of`)
+const MAKE_MIN_LINES: usize = 3;
+
+/// The words of `data/make_asks.txt`: each section's wordings as word runs, the languages as (extension, fence
+/// names, ask words), the default names as (extension, name).
+struct MakeWords { make: Vec<Vec<String>>, thing: Vec<Vec<String>>, show: Vec<Vec<String>>, file: Vec<Vec<String>>, name: Vec<Vec<String>>, give: Vec<Vec<String>>, status: Vec<Vec<String>>, part: Vec<Vec<String>>, shell: Vec<Vec<String>>, langs: Vec<MakeLang>, stems: Vec<(String, String)> }
+
+fn make_words_data() -> &'static MakeWords {
+    static W: std::sync::OnceLock<MakeWords> = std::sync::OnceLock::new();
+    W.get_or_init(|| {
+        let mut w = MakeWords { make: Vec::new(), thing: Vec::new(), show: Vec::new(), file: Vec::new(), name: Vec::new(), give: Vec::new(), status: Vec::new(), part: Vec::new(), shell: Vec::new(), langs: Vec::new(), stems: Vec::new() };
+        let mut sec = "";
+        let list = |t: &str| t.split(',').map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect::<Vec<_>>();
+        for l in include_str!("../../data/make_asks.txt").lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            if l.starts_with('[') { sec = l; continue; }
+            match sec {
+                "[make]" => w.make.push(word_set(l)),
+                "[thing]" => w.thing.push(word_set(l)),
+                "[show]" => w.show.push(word_set(l)),
+                "[file]" => w.file.push(word_set(l)),
+                "[shell]" => w.shell.push(word_set(l)),
+                "[part]" => w.part.push(word_set(l)),
+                "[name]" => w.name.push(word_set(l)),
+                "[give]" => w.give.push(word_set(l)),
+                "[status]" => w.status.push(word_set(l)),
+                "[lang]" => if let Some((name, rest)) = l.split_once('=') {
+                    let p: Vec<&str> = rest.split('|').collect();
+                    if let [fence, words, ext] = p.as_slice() { w.langs.push(MakeLang { name: name.trim().to_string(), ext: ext.trim().to_string(), fences: list(fence), words: list(words) }); }
+                },
+                "[stem]" => if let Some((e, n)) = l.split_once('=') { w.stems.push((e.trim().to_string(), n.trim().to_string())); },
+                _ => {}
+            }
+        }
+        w
+    })
+}
+
+/// A language of `data/make_asks.txt` [lang]: its name, its files' extension, its fence names, its words in an ask.
+pub(super) struct MakeLang { name: String, ext: String, fences: Vec<String>, words: Vec<String> }
+
+/// most earlier user messages sent with the request for a file's code (`own_make`, `make_words`)
+const MAKE_CONTEXT_MESSAGES: usize = 2;
+
+/// The language of the file `what` asks for: the first one it names ("thành file HTML + CSS" → HTML).
+fn asked_lang(what: &str) -> Option<&'static MakeLang> {
+    let w = word_set(what);
+    w.iter().find_map(|x| make_words_data().langs.iter().find(|l| l.words.iter().any(|y| y == x)))
+}
+
+/// The language of a block: its fence name, else markup for "<…</…>".
+fn block_lang(fence: &str, code: &str) -> Option<&'static MakeLang> {
+    let d = make_words_data();
+    d.langs.iter().find(|l| !fence.is_empty() && l.fences.iter().any(|x| x == fence))
+        .or_else(|| (fence.is_empty() && code.trim_start().starts_with('<') && code.contains("</")).then(|| d.langs.iter().find(|l| l.ext == "html")).flatten())
+}
+
+/// Whether the words `w` hold one of the word runs `runs`.
+fn holds_run(w: &[String], runs: &[Vec<String>]) -> bool { !run_spans(w, runs).is_empty() }
+
+/// Where the word runs `runs` stand in the words `w`: (first word, past the last) of each.
+fn run_spans(w: &[String], runs: &[Vec<String>]) -> Vec<(usize, usize)> {
+    runs.iter().filter(|r| !r.is_empty()).flat_map(|r| (0..w.len()).filter(move |&i| w[i..].starts_with(r)).map(move |i| (i, i + r.len()))).collect()
+}
+
+/// Whether `body` asks for a new file or program to be made (`data/make_asks.txt`): a [make] word and a [thing] word
+/// or a file name, not a piece of code alone ([part]: "a python function that …"), not as a question ("can you make a game?" asks what Elisa can do), and not an
+/// ask only to see it ("show me the code for a snake game": a [show] word, no file named or [file] word), nor one
+/// for the shell to do ("use the shell to create notes.txt": a [shell] word).
+pub(super) fn make_ask(body: &str) -> bool {
+    let d = make_words_data();
+    let w = word_set(body);
+    let named = crate::route::file_name(body).is_some();
+    // (a [make] word and a [thing] word apart: "code" is both, and "my meeting code is ORCHID-42" asks nothing made)
+    let (makes, things) = (run_spans(&w, &d.make), run_spans(&w, &d.thing));
+    let apart = makes.iter().any(|m| things.iter().any(|t| t.1 <= m.0 || m.1 <= t.0));
+    // (a language alone names no whole thing: "write a python function …" is code to see; a piece of code, [part],
+    // is one too unless a file is named or a [file] word says it goes in one)
+    let thing = apart || (named && !makes.is_empty());
+    let filed = named || holds_run(&w, &d.file);
+    let show_only = holds_run(&w, &d.show) && !filed;
+    let part_only = holds_run(&w, &d.part) && !filed;
+    thing && !show_only && !part_only && !holds_run(&w, &d.shell) && !body.trim_end().ends_with('?')
+}
+
+/// Whether `body` only says to make it, naming nothing ("vậy thì tạo đi", "ok, make it"): a [make] word and no thing.
+fn make_verb_only(body: &str) -> bool {
+    let d = make_words_data();
+    let w = word_set(body);
+    // (no content word beside the [make] ones, and a few words at most: "write a haiku about rain", "hãy làm một bài
+    // thơ" name a thing of their own)
+    let own = crate::topics::words(body).into_iter().filter(|x| !d.make.iter().any(|r| r.len() == 1 && &r[0] == x)).count();
+    holds_run(&w, &d.make) && !holds_run(&w, &d.thing) && crate::route::file_name(body).is_none() && !body.trim_end().ends_with('?') && own == 0 && w.len() <= VERB_ONLY_WORDS
+}
+
+/// most words of an ask that only says to make it (`make_verb_only`: "vậy thì tạo đi")
+const VERB_ONLY_WORDS: usize = 4;
+
+/// Whether `body` follows up on the ask to make a file `pending` that got no code ("xong chưa? share tôi file HTML
+/// nhé"): it says to make it, asks whether it is done or for it to be handed over ([status], [give]), or names a
+/// [thing], [file] or language word of that ask.
+fn follows_make(body: &str, pending: &str) -> bool {
+    let d = make_words_data();
+    let (w, p) = (word_set(body), word_set(pending));
+    let kinds: Vec<&Vec<String>> = d.thing.iter().chain(d.file.iter()).collect();
+    let shared_kind = kinds.iter().any(|r| !r.is_empty() && w.windows(r.len()).any(|x| x == r.as_slice()) && p.windows(r.len()).any(|x| x == r.as_slice()))
+        || d.langs.iter().any(|l| l.words.iter().any(|x| w.contains(x) && p.contains(x)));
+    make_verb_only(body) || shared_kind || holds_run(&w, &d.status) || holds_run(&w, &d.give)
+}
+
+/// The code of a text for a file of the type `want` (any type when None): its fenced blocks of MAKE_MIN_LINES lines
+/// or more. The largest block of that type, with the other blocks of the reply put inline when it is markup (a CSS
+/// block in a `<style>`, a JavaScript one in a `<script>`, `inline_blocks`); no block of that type: None, never a side
+/// block alone. (its fence name, the code)
+fn code_of(t: &str, want: Option<&MakeLang>) -> Option<(String, String)> {
+    let parts: Vec<&str> = t.split("```").collect();
+    let blocks: Vec<(String, String)> = parts.iter().enumerate().filter(|(i, _)| i % 2 == 1 && i + 1 < parts.len()).map(|(_, b)| {
+        let (head, inner) = b.split_once('\n').unwrap_or(("", b));
+        let lang = head.trim().to_lowercase();
+        (if lang.contains(' ') { String::new() } else { lang }, inner.trim_end().to_string())
+    }).filter(|(_, c)| c.lines().filter(|l| !l.trim().is_empty()).count() >= MAKE_MIN_LINES).collect();
+    let of = |b: &(String, String), l: &MakeLang| block_lang(&b.0, &b.1).is_some_and(|x| x.name == l.name);
+    let main = match want {
+        Some(l) => blocks.iter().filter(|b| of(b, l)).max_by_key(|b| b.1.lines().count())?,
+        None => blocks.iter().max_by_key(|b| b.1.lines().count())?,
+    };
+    let rest: Vec<&(String, String)> = blocks.iter().filter(|b| !std::ptr::eq(*b, main)).collect();
+    let html = block_lang(&main.0, &main.1).is_some_and(|l| l.ext == "html");
+    let code = if html { inline_blocks(&main.1, &rest) } else { main.1.clone() };
+    Some((main.0.clone(), code))
+}
+
+/// A page's markup with the reply's other blocks put inline: CSS in a `<style>` before `</head>`, JavaScript in a
+/// `<script>` before `</body>` (at the end when the page has no such tag); a block the page already holds stays out.
+fn inline_blocks(page: &str, rest: &[&(String, String)]) -> String {
+    let mut page = page.to_string();
+    for (fence, code) in rest {
+        if page.contains(code.trim()) { continue; }
+        let Some(l) = block_lang(fence, code) else { continue };
+        let (tag, before) = match l.ext.as_str() { "css" => ("style", "</head>"), "js" => ("script", "</body>"), _ => continue };
+        let piece = format!("<{tag}>\n{}\n</{tag}>\n", code.trim_end());
+        match page.find(before) { Some(i) => page.insert_str(i, &piece), None => { page.push('\n'); page.push_str(&piece); } }
+    }
+    page
+}
+
+/// The name of a file made for `what`: the one it names, else the word right before a [thing] word in it or, when
+/// it has none, in the `earlier` messages it points back to ("tic-tac-toe" of "a tic-tac-toe game", "quiz" of "a
+/// quiz page"), else the default name (`[stem]`), with the extension of the code's language: its fence name, a
+/// language the ask names, else "html" for markup ("<…</…>") and "txt" for anything else. A name taken in `cwd` gets
+/// "-2", "-3" … before its extension.
+fn made_name(what: &str, earlier: &[String], planned: &[String], lang: &str, content: &str, cwd: &Path) -> String {
+    if let Some(f) = crate::route::file_name(what) { return f; }
+    let d = make_words_data();
+    let ext = block_lang(lang, content).or_else(|| asked_lang(what)).map(|l| l.ext.clone()).unwrap_or_else(|| "txt".into());
+    // (a name the model planned for it this turn, "snake-game.html", of the file's type)
+    let planned = planned_name(planned, &ext).and_then(|f| f.rsplit_once('.').map(|(s, _)| s.to_string()));
+    let stem = planned.or_else(|| std::iter::once(what).chain(earlier.iter().rev().map(String::as_str)).find_map(thing_name))
+        .or_else(|| d.stems.iter().find(|(e, _)| *e == ext).or_else(|| d.stems.iter().find(|(e, _)| e == "*")).map(|s| s.1.clone()))
+        .unwrap_or_else(|| "main".into());
+    let mut name = format!("{stem}.{ext}");
+    let mut n = 2;
+    while cwd.join(&name).exists() { name = format!("{stem}-{n}.{ext}"); n += 1; }
+    name
+}
+
+/// The name a text gives the thing it asks for: its word right before the first [thing] word, as written (hyphens
+/// kept: "tic-tac-toe"), when it is a plain ASCII word of three letters or more that is no word of the lists and,
+/// unless hyphenated, a content word (`topics::words`).
+fn thing_name(text: &str) -> Option<String> {
+    let d = make_words_data();
+    let toks: Vec<String> = text.split_whitespace().map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '-').to_lowercase()).filter(|t| !t.is_empty()).collect();
+    let at = (0..toks.len()).find(|&i| { let w = word_set(&toks[i..].join(" ")); d.thing.iter().any(|r| !r.is_empty() && w.starts_with(r)) })?;
+    let x = toks.get(at.checked_sub(1)?)?;
+    let listed = d.make.iter().chain(d.thing.iter()).chain(d.show.iter()).chain(d.file.iter()).chain(d.part.iter()).any(|r| r.len() == 1 && &r[0] == x)
+        || d.langs.iter().any(|l| l.words.iter().any(|y| y == x));
+    let plain = x.len() >= 3 && x.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && !x.starts_with('-') && !x.ends_with('-');
+    (plain && !listed && (x.contains('-') || crate::topics::words(x).contains(x))).then(|| x.clone())
+}
+
 const OWN_FIX_SYSTEM: &str = "You fix code. You answer with the corrected code only.";
 const OWN_FIX_TOKENS: usize = 1024;
 /// first letters two words share to be one word (`same_word`)
@@ -6919,6 +7319,48 @@ const CONTINUE_MAX: usize = 2;
 
 #[cfg(test)]
 mod own_tests {
+    #[test]
+    fn an_ask_to_make_a_file_is_told_from_one_to_see_or_ask_about_it() {
+        use super::{make_ask, make_verb_only, follows_make, made_name, code_of, asked_lang};
+        for m in ["make me a quiz page in html", "bạn code trò chơi đó thành file html cho đẹp nhé", "create a python script that counts words", "viết cho mình một trang web giới thiệu quán cà phê"] {
+            assert!(make_ask(m), "{m}");
+        }
+        for m in ["write a python function that doubles a number", "give me a regex for emails", "show me the code of a quiz page", "can you make a quiz page?", "what is a quiz page?", "tell me a joke", "write a haiku about rain", "I'm Mai and my door code is TULIP-7.", "the code word is HERON"] {
+            assert!(!make_ask(m), "{m}");
+        }
+        assert!(make_verb_only("ok vậy làm đi") && !make_verb_only("hãy làm một bài thơ") && !make_verb_only("write a haiku about rain"));
+        // a follow-up on an ask that got no code: its file kind or a make word
+        let pending = "bạn code trò chơi đó thành file html cho đẹp nhé";
+        assert!(follows_make("xong chưa? gửi mình file html nhé", pending) && follows_make("ok làm đi", pending));
+        assert!(!follows_make("thời tiết hôm nay thế nào?", pending));
+        // names: the one asked, a word before the thing (hyphens kept), one of an earlier message the ask points
+        // back to, else the default of the language
+        let nowhere = std::path::Path::new("/nonexistent-dir");
+        assert_eq!(made_name("make me a quiz page in html", &[], &[], "", "<p>x</p>", nowhere), "quiz.html");
+        assert_eq!(made_name("make me a simple connect-four game as an html file", &[], &[], "html", "", nowhere), "connect-four.html");
+        assert_eq!(made_name("bạn code trò chơi đó thành file html", &[], &[], "html", "", nowhere), "index.html");
+        assert_eq!(made_name("bạn code trò chơi đó thành file html", &["I'd like a memory game".to_string()], &[], "html", "", nowhere), "memory.html");
+        assert_eq!(made_name("create a python script that counts words", &[], &[], "", "print(1)", nowhere), "main.py");
+        assert_eq!(made_name("write it to tool.sh please", &[], &[], "bash", "", nowhere), "tool.sh");
+        // a name the model planned for it this turn, of the file's type; a folder in it or another type: not that
+        let plan = ["- Một file HTML (ví dụ: tank-war.html) chứa cấu trúc, style và script.".to_string()];
+        assert_eq!(made_name("bạn code trò chơi đó thành file html", &[], &plan, "html", "", nowhere), "tank-war.html");
+        assert_eq!(made_name("create a python script that counts words", &[], &plan, "", "print(1)", nowhere), "main.py");
+        assert_eq!(made_name("bạn code trò chơi đó thành file html", &[], &["save it as games/tank.html, e.g. here".to_string()], "html", "", nowhere), "index.html");
+        // the plan's lines that name the thing or a file, no code, no other line
+        let p = planned_lines("We build a tank war game with a canvas.\nFirst the grid.\n```html\n<p>a game</p>\n```\nSave it as tank-war.html");
+        assert_eq!(p, ["We build a tank war game with a canvas.", "Save it as tank-war.html"]);
+        // code: a block of a few lines, with its fence's language; for an HTML ask, the page with its parts inline,
+        // and never a side block alone
+        let html = asked_lang("thành file HTML + CSS");
+        assert_eq!(code_of("Here:\n```html\n<a>\n<b>\n</a>\n```\nDone.", None).unwrap().0, "html");
+        assert!(code_of("Use `ls` to see it.", None).is_none() && code_of("```\none line\n```", None).is_none());
+        let both = "```html\n<html>\n<head></head>\n<body></body>\n</html>\n```\n```css\np {\n color: red;\n}\n```";
+        let (_, page) = code_of(both, html).unwrap();
+        assert!(page.contains("<style>\np {") && page.find("<style>") < page.find("</head>"), "{page}");
+        assert!(code_of("```css\np {\n color: red;\n}\n```", html).is_none());
+    }
+
     #[test]
     fn a_write_claim_clause_beside_a_denial_is_found() {
         use super::super::docs::clause_claims;

@@ -122,7 +122,7 @@ fn en_small_talk(text: &str) -> bool {
 
 /// Vietnamese function words typed without marks (`data/reply_terms.txt`, the `plain_function` key of its [vi]
 /// section: "nao", "nhi", "khong", "cua").
-fn vi_function_words() -> &'static std::collections::HashSet<String> {
+pub(crate) fn vi_function_words() -> &'static std::collections::HashSet<String> {
     static V: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
     V.get_or_init(|| include_str!("../data/reply_terms.txt").lines().filter_map(|l| l.trim().strip_prefix("plain_function:"))
         .flat_map(|v| v.split('|').map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect::<Vec<_>>()).collect())
@@ -142,6 +142,63 @@ fn function_vi(text: &str) -> bool {
     f >= FUNCTION_VI_MIN && 2 * f >= w.len() && f > en
 }
 
+/// Common English words that are Vietnamese words too when typed without marks ("a", "an", "me", "as": `EN_WORDS`
+/// leaves them out), from `data/reply_terms.txt` (`plain_english`): they tell English only beside words no Vietnamese
+/// syllable can be (`plain_english`).
+fn en_function_words() -> &'static std::collections::HashSet<String> {
+    static V: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    V.get_or_init(|| include_str!("../data/reply_terms.txt").lines().filter_map(|l| l.trim().strip_prefix("plain_english:"))
+        .flat_map(|v| v.split('|').map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect::<Vec<_>>()).collect())
+}
+
+/// Whether `w` is a function word of English or Vietnamese ("the", "you", "a", "bạn", "của"): a word that says nothing
+/// of what a text is about.
+pub(crate) fn function_word(w: &str) -> bool {
+    let l = w.to_lowercase();
+    EN_WORDS.contains(&l.as_str()) || en_function_words().contains(&l) || vi_function_words().contains(&l.chars().map(fold_mark).collect::<String>())
+}
+
+/// The parts of a Vietnamese syllable as typed without marks: the onsets it writes (or none), the codas (or none).
+const VI_ONSETS: &[&str] = &["ngh", "ch", "gh", "gi", "kh", "ng", "nh", "ph", "qu", "th", "tr", "b", "c", "d", "g", "h", "k", "l", "m", "n", "p", "r", "s", "t", "v", "x", ""];
+const VI_CODAS: &[&str] = &["", "c", "ch", "m", "n", "ng", "nh", "p", "t"];
+/// most vowels in a row a Vietnamese syllable has ("khuya", "yeu")
+const VI_VOWELS_MAX: usize = 3;
+
+/// Whether a word of plain letters could be a Vietnamese syllable typed without its marks: an onset Vietnamese writes
+/// (or none), one to three vowels, a coda it writes (or none), and nothing else. "tac", "an", "toe", "minh" could be;
+/// "make", "simple", "html", "as" and "file" could not: no Vietnamese syllable ends in a consonant cluster, in "s",
+/// "l" or "k", or in a vowel after its coda, and none has an "f", "j", "w" or "z".
+pub(crate) fn vi_syllable(w: &str) -> bool {
+    let w = w.to_lowercase();
+    if w.is_empty() || !w.chars().all(|c| c.is_ascii_lowercase()) { return false; }
+    let vowel = |c: char| "aeiouy".contains(c);
+    VI_ONSETS.iter().filter(|o| w.starts_with(**o)).any(|o| {
+        let rest = &w[o.len()..];
+        let n = rest.chars().take_while(|c| vowel(*c)).count();
+        (1..=VI_VOWELS_MAX).contains(&n) && VI_CODAS.contains(&&rest[n..])
+    })
+}
+
+/// words no Vietnamese syllable can be that a text needs before its plain English words tell its language
+const PLAIN_ENGLISH_SHAPES: usize = 2;
+/// the common English words it needs then ("me", "a", "as", "an" in "make me a quiz page as an html file")
+const PLAIN_ENGLISH_WORDS: usize = 2;
+
+/// Whether `text` is plain English with none of the common English words `EN_WORDS` lists ("make me a small quiz page
+/// as an html file" has only ones Vietnamese shares when typed without marks): two words at least that no Vietnamese
+/// syllable can be (`vi_syllable`), two of the shared common words (`en_function_words`), and no Vietnamese word of
+/// three letters or more that is not an English one too ("lam cho minh game bang html" has "lam", "cho", "minh").
+/// Another Latin-script language ("Hallo, wie geht es dir?") has the shapes but not the words.
+fn plain_english(text: &str) -> bool {
+    if text.chars().any(|c| c.is_alphabetic() && !c.is_ascii()) { return false; }
+    let w: Vec<String> = plain_words(text).into_iter().map(|w| w.to_lowercase()).collect();
+    let shapes = w.iter().filter(|x| !vi_syllable(x)).count();
+    let en = w.iter().filter(|x| en_function_words().contains(*x)).count();
+    let english = |x: &String| EN_WORDS.contains(&x.as_str()) || en_function_words().contains(x);
+    let vi = w.iter().filter(|x| x.chars().count() >= 3 && vi_syllable(x) && !english(x) && (vi_function_words().contains(*x) || vi_vocabulary().contains(*x))).count();
+    shapes >= PLAIN_ENGLISH_SHAPES && en >= PLAIN_ENGLISH_WORDS && vi == 0
+}
+
 /// The language of `text` when it is clearly English or Vietnamese (Vietnamese with or without its marks).
 pub fn detect(text: &str) -> Option<Lang> {
     if marked_vi(text) { return Some(Lang::Vi); }
@@ -150,7 +207,7 @@ pub fn detect(text: &str) -> Option<Lang> {
     // (unless its Vietnamese function words outweigh that word: "the" in "cai nay the nao" is "thế")
     if function_vi(text) { return Some(Lang::Vi); }
     let en = words(text).any(|w| EN_WORDS.contains(&w.as_str()));
-    if en || en_small_talk(text) { return Some(Lang::En); }
+    if en || en_small_talk(text) || plain_english(text) { return Some(Lang::En); }
     unmarked_vi(text).then_some(Lang::Vi)
 }
 
@@ -208,6 +265,17 @@ mod tests {
         for t in ["où est la gare", "fn main() {}", "42", "", "café crème"] {
             assert_eq!(detect(t), None, "{t}");
         }
+        // (plain English with none of the common words listed, "make me … as an html file", was no known language: no
+        // hint went to the model in a Vietnamese chat, and a Vietnamese reply to it passed)
+        for t in ["make me a simple tic-tac-toe game as an html file", "make me a small quiz page as an html file", "give me three fun facts on penguins", "explain photosynthesis simply, like a teacher"] {
+            assert_eq!(detect(t), Some(Lang::En), "{t:?}");
+        }
+        // (unaccented Vietnamese round an English loanword, another Latin-script language, code: still not English)
+        for t in ["lam cho minh game tic tac toe bang html", "Hallo, wie geht es dir? Ich brauche Hilfe.", "hola amigos, como estan hoy", "fn main() {}"] {
+            assert_ne!(detect(t), Some(Lang::En), "{t:?}");
+        }
+        for w in ["tac", "an", "toe", "minh", "nghe", "khuya", "qua"] { assert!(vi_syllable(w), "{w}"); }
+        for w in ["make", "simple", "html", "as", "file", "quiz", "small", "Hanoi", "fn", ""] { assert!(!vi_syllable(w), "{w:?}"); }
     }
 
     #[test]

@@ -337,6 +337,13 @@ pub fn asks_time(own: &str) -> bool {
     clock_langs().iter().any(|l| l.time_asks.iter().any(|a| has_phrase(&low, a))) || time_ask_by_meaning(own)
 }
 
+/// Whether the user's words ask the clock time by a `time asks` wording of `data/clock_words.txt` itself, not by
+/// meaning alone (`asks_time`): a message that says so in its own words wants the clock, whatever else it asks.
+pub fn asks_time_in_words(own: &str) -> bool {
+    let low = own.to_lowercase();
+    !is_clock_sum(own) && clock_langs().iter().any(|l| l.time_asks.iter().any(|a| has_phrase(&low, a)))
+}
+
 /// Whether a message asks today's date or weekday ("what's today's date?", "hôm nay là thứ mấy?": the `date asks` and
 /// `day asks` wordings of `data/clock_words.txt`), and not the time.
 pub fn asks_date(own: &str) -> bool {
@@ -3474,6 +3481,10 @@ mod tests {
         for m in ["what day is it today?", "what's the date?", "how long does a flight to Tokyo take?", "when does the shop open?",
             "do you have time for a quick question?", "tell me a joke", "hôm nay thứ mấy vậy?", "bao giờ thì xong?", "cảm ơn nhé",
             "how are you?", "what is the capital of France?", "set an alarm for 7", "can you search the web?"] {
+            assert!(!asks_time(m), "{m:?}");
+        }
+        // an ask what Elisa can help with is about her, never the clock ("cho" is a word of the time examples too)
+        for m in ["bạn có thể giúp gì cho tôi?", "ban co the giup gi cho toi", "bạn giúp gì được cho tôi?", "what can you help me with today?"] {
             assert!(!asks_time(m), "{m:?}");
         }
         // the turn's facts follow: an ask with no clock line in its turn still gets Elisa's answer from the clock

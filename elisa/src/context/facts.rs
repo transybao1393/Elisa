@@ -310,7 +310,7 @@ pub struct Ledger {
 }
 
 #[derive(Clone, Debug)]
-struct LedgerFile { path: String, writes: usize, edits: usize, wrote: String, before: String }
+struct LedgerFile { path: String, writes: usize, edits: usize, wrote: String, before: String, existed: bool }
 
 /// `path` relative to `cwd` when it lies inside it (the model often writes absolute paths)
 fn rel_path(path: &str, cwd: &Path) -> String {
@@ -324,8 +324,9 @@ impl Ledger {
         let Some(path) = input.get("path").and_then(Value::as_str).filter(|p| !p.trim().is_empty()) else { return };
         let rel = rel_path(path, cwd);
         if self.files.iter().any(|f| f.path == rel) { return; }
+        let existed = cwd.join(path).exists();
         let text: String = fs::read_to_string(cwd.join(path)).unwrap_or_default().chars().take(LEDGER_TEXT_CAP).collect();
-        self.files.push(LedgerFile { path: rel, writes: 0, edits: 0, wrote: String::new(), before: text.to_lowercase() });
+        self.files.push(LedgerFile { path: rel, writes: 0, edits: 0, wrote: String::new(), before: text.to_lowercase(), existed });
     }
 
     /// A tool call that succeeded.
@@ -338,7 +339,7 @@ impl Ledger {
                 let rel = rel_path(&path, cwd);
                 let i = match self.files.iter().position(|f| f.path == rel) {
                     Some(i) => i,
-                    None => { self.files.push(LedgerFile { path: rel, writes: 0, edits: 0, wrote: String::new(), before: String::new() }); self.files.len() - 1 }
+                    None => { self.files.push(LedgerFile { path: rel, writes: 0, edits: 0, wrote: String::new(), before: String::new(), existed: true }); self.files.len() - 1 }
                 };
                 let f = &mut self.files[i];
                 if tool == "write" { f.writes += 1 } else { f.edits += 1 }
@@ -358,6 +359,18 @@ impl Ledger {
 
     /// The paths that changed, in first-change order.
     pub fn paths(&self) -> Vec<String> { self.files.iter().filter(|f| f.writes + f.edits > 0).map(|f| f.path.clone()).collect() }
+
+    /// A new turn: a file a change of an earlier turn made is there now, so this turn's write to it changes it.
+    pub fn turn_begins(&mut self) {
+        for f in self.files.iter_mut().filter(|f| f.writes + f.edits > 0) { f.existed = true; }
+    }
+
+    /// Whether a change of this turn made `path`: nothing was there before its first change (`before` saw none).
+    /// A write over a file that was there, or one an earlier turn made, changed it.
+    pub fn made(&self, path: &str, cwd: &Path) -> bool {
+        let rel = rel_path(path, cwd);
+        self.files.iter().any(|f| f.path == rel && f.writes + f.edits > 0 && !f.existed)
+    }
 
     /// The notes section: one line per changed file. None when nothing changed.
     pub fn section(&self) -> Option<String> {
@@ -1209,6 +1222,37 @@ impl NameFix {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod ledger_tests {
+    use super::*;
+
+    /// A write to a path with nothing there before it made the file; one over a file that was there changed it.
+    #[test]
+    fn the_ledger_tells_a_file_made_from_one_changed() {
+        let dir = std::env::temp_dir().join(format!("elisa-ledger-made-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("old.txt"), "x\n").unwrap();
+        let mut l = Ledger::default();
+        for p in ["new.txt", "old.txt"] {
+            let input = serde_json::json!({"path": p, "content": "y\n"});
+            l.before(&input, &dir);
+            std::fs::write(dir.join(p), "y\n").unwrap();
+            l.record("write", &input, &dir);
+        }
+        assert!(l.made("new.txt", &dir) && !l.made("old.txt", &dir) && !l.made("none.txt", &dir));
+        assert!(l.made(&dir.join("new.txt").display().to_string(), &dir), "an absolute path is the same file");
+        // (the next turn's write to the file made before changes it)
+        l.turn_begins();
+        assert!(!l.made("new.txt", &dir));
+        let input = serde_json::json!({"path": "later.txt", "content": "z\n"});
+        l.before(&input, &dir);
+        std::fs::write(dir.join("later.txt"), "z\n").unwrap();
+        l.record("write", &input, &dir);
+        assert!(l.made("later.txt", &dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

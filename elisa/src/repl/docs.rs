@@ -645,7 +645,7 @@ impl<'f> Session<'f> {
     /// is helping you." to "why is that funny?", her clock line to a question about the price of gold:
     /// `reply_check::restates_prompt`): no answer.
     pub(super) fn restates_prompt(&self, vis: &str, ask: &str) -> bool {
-        crate::reply_check::restates_prompt(vis, &self.own_turn_text(), &self.prompt_allowed(ask), &self.own_names(ask), self.time_asked(ask))
+        !self.states_abilities(vis, ask) && crate::reply_check::restates_prompt(vis, &self.own_turn_text(), &self.prompt_allowed(ask), &self.own_names(ask), self.time_asked(ask))
     }
 
     /// `t` shown in place of the reply (taken back), with `why` in the debug log; `own`: it is Elisa's own line
@@ -746,7 +746,10 @@ impl<'f> Session<'f> {
         let base = pic.clone().unwrap_or(base);
         let notes = format!("{}\n{}", self.sent_notes, self.retry_note.as_deref().unwrap_or(""));
         let now: String = self.turn_tool_text().0.into_iter().map(|(_, c)| c).collect::<Vec<_>>().join("\n");
-        let noted = crate::reply_check::without_own_note_copies(&base, &notes, ask, &now);
+        // (a reply to the general question about what Elisa can do that states what she has is that answer, whatever
+        // words it shares with her prompt or her note of what she can do: `states_abilities`)
+        let abilities = self.states_abilities(&base, ask);
+        let noted = if abilities { None } else { crate::reply_check::without_own_note_copies(&base, &notes, ask, &now) };
         let base = noted.clone().unwrap_or(base);
         let cap = self.turn_cap(&self.history).min(self.history.len());
         let before: String = self.history[..cap].iter().map(texts).collect::<Vec<_>>().join("\n");
@@ -775,7 +778,7 @@ impl<'f> Session<'f> {
         let cut = righted.is_some() || pitched.is_some() || told.is_some() || facts.is_some() || noted.is_some() || pic.is_some() || tags.is_some();
         let base = righted.unwrap_or(base);
         let vis = base.as_str();
-        let stripped = crate::reply_check::without_prompt_paraphrase(vis, &self.own_turn_text(), &self.prompt_allowed(ask), &self.own_names(ask), self.time_asked(ask));
+        let stripped = if abilities { None } else { crate::reply_check::without_prompt_paraphrase(vis, &self.own_turn_text(), &self.prompt_allowed(ask), &self.own_names(ask), self.time_asked(ask)) };
         // (nothing left: the whole reply was her prompt or clock line said back, "Bây giờ là 12:00 trưa Thứ Năm…" to a
         // translation ask, kept after the other checks' own fixes: her plain line of the ask's kind, never the echo)
         if stripped.as_deref().is_some_and(|t| !t.chars().any(char::is_alphanumeric)) {

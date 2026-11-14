@@ -41,6 +41,11 @@
 #                     (`reply_check::live_number_unbacked`): she offers to search instead
 #   nothing_else:     "what else is in {file}?" when earlier replies gave every line of it
 #   all_told:         the same, with the lines already told ({lines}) (`held_file_answer`)
+#   made:             a file Elisa saved herself from the model's code for an ask to make one (`repl/turn.rs` `own_make`)
+#   not_made:         the same when no code came for it ({model}: the model): nothing was made
+#   made_files:       a question about the file Elisa made or changed this session (`repl/turn.rs` `made_files_ask`):
+#                     {file} is the file, or the files, from her own record
+#   no_made_files:    the same when she made no file in this chat
 #   earlier_answer:   no usable reply to a question an earlier message of this chat asked too (the notes' digest
 #                     of folded turns or the history, `repl/docs.rs` `earlier_answer`): {ask} is that message, {reply}
 #                     what was answered to it then
@@ -69,6 +74,10 @@ no_figure_unread: I couldn't find the figure in the search results, and no page 
 dated_figure: The latest figure I found is from {date}, not today: {figure} (source: {source})
 nothing_else: That's everything in {file}: nothing else.
 all_told: There's nothing more in {file} than what I've already told you: {lines}
+made: I made {file}.
+not_made: I couldn't get the code for that from {model}, so no file was made.
+made_files: The file I made in this chat: {file}.
+no_made_files: I haven't made any file in this chat yet.
 earlier_answer: Earlier in this chat, when you asked "{ask}", I answered: {reply}
 lang_kept: The model could only answer this in another language; here is its answer as written:
 [vi]
@@ -96,5 +105,9 @@ no_figure_unread: Mình chưa tìm thấy con số cụ thể trong kết quả 
 dated_figure: Số liệu mới nhất mình tìm được là của ngày {date}, chưa phải hôm nay: {figure} (nguồn: {source})
 nothing_else: Đó là toàn bộ nội dung của {file}: không còn gì khác.
 all_told: {file} không có gì thêm ngoài những gì mình đã nói: {lines}
+made: Mình đã tạo file {file}.
+not_made: Mình chưa nhận được mã cho việc này từ {model}, nên chưa có file nào được tạo.
+made_files: File mình đã tạo trong cuộc trò chuyện này: {file}.
+no_made_files: Mình chưa tạo file nào trong cuộc trò chuyện này.
 earlier_answer: Trước đó trong cuộc trò chuyện này, khi bạn hỏi "{ask}", mình đã trả lời: {reply}
 lang_kept: Mô hình chỉ trả lời được câu này bằng ngôn ngữ khác; đây là câu trả lời nguyên văn của nó:

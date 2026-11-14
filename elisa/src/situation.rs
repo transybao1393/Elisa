@@ -29,12 +29,14 @@ pub const PREFIX: &str = "(Situation: ";
 /// a turn asking what Elisa can do or who she is: the capability list, on that turn only (the system prompt has none,
 /// so a small model does not tack it onto every reply, or give it instead of
 /// the user's name to "What's my name?")
-/// The "what can you do?" line for this model (a fixed `ABOUT` would claim images on a model with no vision).
-/// Search, reading files and pages, saving and running commands are Elisa's own (`route::intent`): every model.
-pub fn about(vision: bool) -> String {
+/// The "what can you do?" line for this model: what Elisa has here (`can_do_list`: her kinds of ability by the
+/// `tools` she has, pictures by the detected `vision`, the plugins' tools by what they do — a fixed list would claim
+/// images on a model with no vision, or web search with no web tools).
+pub fn about(vision: bool, tools: &[(String, String)]) -> String {
+    let list = ability_data().0.iter().find(|l| l.code == "en").and_then(|l| can_do_list(l, tools, vision)).unwrap_or_else(|| can_list(vision));
     // "you can: chat …" gets copied as the reply: the line says it in Elisa's own voice
-    format!("(Situation: asked about you · answer as Elisa, in the first person, \"I can …\": {} · list only these, in that order, briefly; \
-        claim nothing else)", can_list(vision))
+    format!("(Situation: asked about you · answer as Elisa, in the first person, \"I can …\": {list} · list only these, in that order, briefly; \
+        claim nothing else)")
 }
 
 /// What Elisa can do on this model (vision from the detected caps)
@@ -104,9 +106,10 @@ pub const ABILITY_TOOL_MIN: f32 = 0.6;
 /// most words an ability has ("search the web", "read files on my computer"): more is a task with its details
 const ABILITY_WORDS: usize = 7;
 
-/// One language's frames of `data/ability_answers.txt`: each (the frame with `{x}`, the answer when Elisa can, when she
-/// cannot), the pronoun swaps and the politeness tail words.
-struct AbilityLang { frames: Vec<(String, String, String)>, swap: Vec<(String, String)>, tail: Vec<String> }
+/// One language's frames of `data/ability_answers.txt`: its code ("en", "vi"), each frame (with `{x}`, the answer when
+/// Elisa can, when she cannot), the pronoun swaps, the politeness tail words, and its named wordings (`names`: a
+/// kind's words for the "what can you do?" list, the list frame `can_do`, the `and` word).
+struct AbilityLang { code: String, frames: Vec<(String, String, String)>, swap: Vec<(String, String)>, tail: Vec<String>, names: Vec<(String, String)> }
 /// One kind of ability: its name, the tools that give it, its example wordings.
 struct AbilityKind { name: String, tools: Vec<String>, examples: Vec<String> }
 
@@ -131,7 +134,7 @@ fn ability_data() -> &'static (Vec<AbilityLang>, Vec<AbilityKind>) {
                 let name = it.next().unwrap_or("").to_string();
                 // (a two-letter header is a language's frames; any other, a kind of ability with its tools)
                 in_lang = name.chars().count() == 2 && name.chars().all(|c| c.is_ascii_lowercase());
-                if in_lang { langs.push(AbilityLang { frames: Vec::new(), swap: Vec::new(), tail: Vec::new() }); }
+                if in_lang { langs.push(AbilityLang { code: name.clone(), frames: Vec::new(), swap: Vec::new(), tail: Vec::new(), names: Vec::new() }); }
                 else { kinds.push(AbilityKind { name, tools: it.map(str::to_string).collect(), examples: Vec::new() }); }
                 continue;
             }
@@ -146,7 +149,8 @@ fn ability_data() -> &'static (Vec<AbilityLang>, Vec<AbilityKind>) {
                     let (yes, no) = v.split_once('|').unwrap_or((v, v));
                     lang.frames.push((frame.to_string(), yes.trim().to_string(), no.trim().to_string()));
                 }
-                _ => {}
+                // (a named wording: a kind's words for the list, the `can_do` frame, the `and` word)
+                k => lang.names.push((k.to_string(), v.trim().to_string())),
             }
         }
         (langs, kinds)
@@ -314,6 +318,101 @@ pub fn ability_answer(ask: &str, reply: &str, tools: &[(String, String)], vision
     if ability_reply_fits(reply, &x, can, lang) { return None; }
     let (_, yes, no) = &lang.frames[i];
     Some((if can { yes } else { no }).replace("{x}", &swap_pronouns(&x, &lang.swap)))
+}
+
+// ----- the general question: what can you do? -----
+
+/// Whether `kind` is one Elisa has here: the `vision` kind by the model's detected sight, any other by a tool of its
+/// kind among `tools` (name, description).
+fn has_kind(kind: &AbilityKind, tools: &[(String, String)], vision: bool) -> bool {
+    if kind.name == "vision" { vision } else { kind.tools.iter().any(|t| tools.iter().any(|(n, _)| n == t)) }
+}
+
+/// The language section of `data/ability_answers.txt` for `ask`: "vi" for a Vietnamese message, else "en".
+fn ability_lang_for(ask: &str) -> Option<&'static AbilityLang> {
+    let code = if crate::reply_lang::detect(ask) == Some(crate::reply_lang::Lang::Vi) { "vi" } else { "en" };
+    ability_data().0.iter().find(|l| l.code == code)
+}
+
+/// most plugin tools of no kind named in the list
+const CAN_DO_PLUGIN_MAX: usize = 3;
+
+/// What Elisa can do here in the words of `lang` (`data/ability_answers.txt`): its `always_first` wordings (chat),
+/// then each kind of ability she has here by its wording (a kind is hers by its tools among `tools`; `vision` by the
+/// model's detected sight), then what plugin tools of no kind do (`tool_gist` of their descriptions, CAN_DO_PLUGIN_MAX
+/// at most), then its `always_last` wordings (attached documents, the clock: Elisa's own on every model); joined with
+/// its `and` word. Nothing fixed: a model with no vision never gets "look at pictures", a setup with no web tools
+/// never "search the web". None when the language names nothing.
+fn can_do_list(lang: &AbilityLang, tools: &[(String, String)], vision: bool) -> Option<String> {
+    let name = |k: &str| lang.names.iter().find(|(n, _)| n == k).map(|(_, w)| w.clone());
+    let keys = |k: &str| name(k).unwrap_or_default().split('|').map(str::trim).filter(|x| !x.is_empty()).filter_map(name).collect::<Vec<String>>();
+    let kinds = &ability_data().1;
+    let mut items: Vec<String> = keys("always_first");
+    items.extend(kinds.iter().filter(|k| k.name != "other" && has_kind(k, tools, vision)).filter_map(|k| name(&k.name)));
+    let known: Vec<&str> = kinds.iter().flat_map(|k| k.tools.iter().map(String::as_str)).collect();
+    items.extend(tools.iter().filter(|(n, d)| !known.contains(&n.as_str()) && !d.trim().is_empty()).map(|(_, d)| tool_gist(d))
+        .filter(|g| g.chars().any(char::is_alphabetic)).take(CAN_DO_PLUGIN_MAX));
+    items.extend(keys("always_last"));
+    items.dedup();
+    let and = name("and").unwrap_or_default();
+    match items.len() {
+        0 => None,
+        1 => Some(items.remove(0)),
+        n => Some(format!("{} {and} {}", items[..n - 1].join(", "), items[n - 1])),
+    }
+}
+
+/// Elisa's own answer to the general question about what she can do ("what can you do?", "bạn làm được gì cho tôi?":
+/// `route::about_elisa`; not a question about one ability, which is `ability_answer`'s), in the ask's language: the
+/// `can_do` frame of `data/ability_answers.txt` with what she has here (`can_do_list`). None when the message asks no
+/// such question or the data has no frame for its language. `routed`: the turn's routing answer to whether the
+/// message is about Elisa (the router's), None to decide by Elisa's own rules (`route::about_elisa`). A question
+/// about who she is ("who are you?": the `who` wordings) is about her too, but not this one.
+pub fn can_do_line(ask: &str, routed: Option<bool>, tools: &[(String, String)], vision: bool) -> Option<String> {
+    let body = crate::context::request_body(ask);
+    let own = crate::context::own_words(body).unwrap_or(body);
+    if !routed.unwrap_or_else(|| crate::route::about_elisa(own)) || ability_asked(own).is_some() || asks_who(own) { return None; }
+    let lang = ability_lang_for(body)?;
+    let frame = lang.names.iter().find(|(n, _)| n == "can_do").map(|(_, w)| w.as_str())?;
+    Some(frame.replace("{list}", &can_do_list(lang, tools, vision)?))
+}
+
+/// Whether `ask` asks who Elisa is rather than what she can do: it holds a `who` wording of any language of
+/// `data/ability_answers.txt` as whole words ("who are you?", "bạn là ai?").
+fn asks_who(ask: &str) -> bool {
+    // (every word, folded: "là" and "ai" count, "bạn" alone is no such question)
+    let all = |t: &str| folded(t).split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let said = format!(" {} ", all(ask));
+    ability_data().0.iter().flat_map(|l| l.names.iter().filter(|(n, _)| n == "who").flat_map(|(_, w)| w.split('|')))
+        .map(all).any(|p| !p.is_empty() && said.contains(&format!(" {p} ")))
+}
+
+/// Whether the model's `reply` to the general question answers it as Elisa would: it names a kind of ability she has
+/// (by a word of that kind's examples or wording that no other kind's have, folded: "web", "files", "lệnh", "ảnh")
+/// and none she lacks ("images" on a model with no vision, "search the web" with no web tools). A greeting back or a
+/// pitch names none.
+pub fn can_do_reply_fits(reply: &str, tools: &[(String, String)], vision: bool) -> bool {
+    let (langs, kinds) = ability_data();
+    // (a pronoun, a politeness word or a function word names no kind: "bạn" in "xem ảnh bạn gửi" is not sight; a word
+    // the data writes with its marks is content still when its folded form is a function word, "ảnh" beside "anh")
+    let plain: std::collections::HashSet<String> = langs.iter()
+        .flat_map(|l| l.swap.iter().flat_map(|(a, b)| [a.as_str(), b.as_str()]).chain(l.tail.iter().map(String::as_str)).flat_map(ability_words)).collect();
+    let marked: std::collections::HashSet<String> = kinds.iter().flat_map(|k| k.examples.iter().map(String::as_str))
+        .chain(langs.iter().flat_map(|l| l.names.iter().map(|(_, w)| w.as_str())))
+        .flat_map(|t| t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_ascii()).map(folded).collect::<Vec<_>>()).collect();
+    let content = |w: &String| !plain.contains(w) && (marked.contains(w) || !crate::reply_lang::function_word(w));
+    let named = |name: &str| -> Vec<String> { langs.iter().flat_map(|l| l.names.iter().filter(|(n, _)| n.as_str() == name).flat_map(|(_, w)| ability_words(w))).collect() };
+    let kind_words = |k: &AbilityKind| -> Vec<String> { k.examples.iter().flat_map(|e| ability_words(e)).chain(named(&k.name)).filter(content).collect() };
+    // (the wordings of what she does on every model, chat, the clock, attached documents, are no kind's own either)
+    let general: Vec<String> = langs.iter().flat_map(|l| l.names.iter().filter(|(n, _)| !kinds.iter().any(|k| k.name == *n)).flat_map(|(_, w)| ability_words(w))).collect();
+    let said = ability_words(reply);
+    let mut present = false;
+    for k in kinds.iter().filter(|k| k.name != "other") {
+        let others: std::collections::HashSet<String> = kinds.iter().filter(|o| o.name != k.name).flat_map(kind_words).chain(general.iter().cloned()).collect();
+        if !kind_words(k).iter().any(|w| !others.contains(w) && said.contains(w)) { continue; }
+        if has_kind(k, tools, vision) { present = true } else { return false }
+    }
+    present
 }
 
 pub const ABOUT: &str = "(Situation: asked about you · you can: chat and answer questions, search the web for news and facts, read PDFs, spreadsheets and images, reason step by step and calculate, say what time it is anywhere, and help with code · list only these, in that order, briefly; claim nothing else)";
@@ -712,6 +811,40 @@ mod tests {
         }
         let l = about_model("granite4.2:3b", false, true, true, 16384);
         assert!(l.starts_with(PREFIX) && l.contains("granite4.2:3b") && l.contains("vision: no") && l.contains("context 16384 tokens"), "{l}");
+    }
+
+    #[test]
+    fn the_general_question_gets_elisas_own_list_from_her_tools_in_both_languages() {
+        let files_shell: Vec<(String, String)> = [("read", "Read a file, line-numbered."), ("write", "Create or overwrite a whole file."), ("bash", "Run a zsh command in cwd.")]
+            .iter().map(|(n, d)| (n.to_string(), d.to_string())).collect();
+        let en = can_do_line("what can you do?", None, &files_shell, false).unwrap();
+        assert!(en.starts_with("I can chat") && en.contains("files in this folder") && en.contains("run commands") && en.contains("what time") && !en.contains("web") && !en.contains("pictures"), "{en}");
+        let vi = can_do_line("bạn làm được gì cho mình?", None, &files_shell, true).unwrap();
+        assert!(vi.starts_with("Mình có thể trò chuyện") && vi.contains("file") && vi.contains("chạy lệnh") && vi.contains("xem ảnh") && !vi.contains("mạng"), "{vi}");
+        // (a plugin tool of no kind is listed by what it does; the one-ability question and any other ask get nothing)
+        let with_plugin: Vec<(String, String)> = files_shell.iter().cloned().chain([("mcp_cal_today".to_string(), "List today's calendar events; returns the titles.".to_string())]).collect();
+        assert!(can_do_line("what can you do?", None, &with_plugin, false).is_some_and(|l| l.contains("calendar")));
+        assert_eq!(can_do_line("can you search the web?", None, &files_shell, false), None);
+        assert_eq!(can_do_line("tell me a short joke", None, &files_shell, false), None);
+        // (a question about who she is gets no list; the router's answer decides when it gave one)
+        assert_eq!(can_do_line("who are you?", None, &files_shell, false), None);
+        assert_eq!(can_do_line("bạn là ai vậy?", None, &files_shell, false), None);
+        assert!(can_do_line("what sorts of jobs do you handle?", Some(true), &files_shell, false).is_some());
+        assert_eq!(can_do_line("what can you do?", Some(false), &files_shell, false), None);
+        // (the model's reply fits when it names what she has and nothing she lacks)
+        assert!(can_do_reply_fits("I can chat, read and write files here, and run commands.", &files_shell, false));
+        assert!(!can_do_reply_fits("Hello! How can I assist you today?", &files_shell, false) && !can_do_reply_fits("Chào bạn! Bạn muốn làm gì tiếp theo?", &files_shell, false));
+        assert!(!can_do_reply_fits("I can search the web and look at images for you.", &files_shell, false), "web and sight she lacks");
+        assert!(can_do_reply_fits("Mình có thể đọc file và chạy lệnh trên máy bạn.", &files_shell, false));
+        assert!(can_do_reply_fits("Mình có thể trò chuyện với bạn và chạy lệnh giúp bạn nhé.", &files_shell, false), "pronouns name no kind");
+        assert!(!can_do_reply_fits("Mình có thể xem ảnh bạn gửi và đọc file.", &files_shell, false), "sight she lacks");
+        // (the situation note to the model lists the same: never web search without web tools)
+        let note = about(false, &files_shell);
+        assert!(note.starts_with(PREFIX) && note.contains("files in this folder") && !note.contains("search the web"), "{note}");
+        if elisa_mem::embed::model_dir().is_none() { return; }
+        // (the general wordings by meaning are about Elisa; an ask for help with something is not)
+        for m in ["bạn có thể giúp gì cho tôi?", "what kinds of things can you help me with?", "ban co the giup toi nhung gi?"] { assert!(crate::route::about_elisa(m), "{m}"); }
+        assert!(!crate::route::about_elisa("can you help me with something?"));
     }
 
     #[test]

@@ -253,7 +253,7 @@ pub fn parse_searxng(v: &Value) -> Vec<Hit> {
     v["results"].as_array().map(|rs| rs.iter().filter_map(|r| Some(Hit {
         title: r["title"].as_str()?.trim().to_string(),
         url: r["url"].as_str()?.to_string(),
-        snippet: dated_snippet(day_of(&r["publishedDate"]), one_line(r["content"].as_str().unwrap_or(""))),
+        snippet: dated_snippet(day_of(&r["publishedDate"]), text_of(r["content"].as_str().unwrap_or(""))),
     })).collect()).unwrap_or_default()
 }
 
@@ -481,19 +481,37 @@ pub fn query_terms(text: &str) -> String {
 
 fn one_line(s: &str) -> String { s.split_whitespace().collect::<Vec<_>>().join(" ") }
 
-/// the HTML entities pages use most, and numeric ones
+/// The HTML entities of markup text decoded, every one: numeric ("&#169;", "&#x41;") and the named ones of HTML5
+/// ("&amp;", "&nbsp;", "&ocirc;", "&agrave;", "&hellip;": `quick_xml::escape::resolve_html5_entity`, the whole table),
+/// in one pass ("&amp;lt;" is "&lt;"). A "&" that starts no entity, an unknown name or a code of nothing stay as
+/// written ("Rust & more", "&foo;", "&#0;"); a no-break space is a space.
 pub fn entities(s: &str) -> String {
     if !s.contains('&') { return s.to_string(); }
-    static NUM: OnceLock<Regex> = OnceLock::new();
-    let named = s.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
-        .replace("&#39;", "'").replace("&apos;", "'").replace("&ndash;", "–").replace("&mdash;", "—").replace("&hellip;", "…")
-        .replace("&rsquo;", "’").replace("&lsquo;", "‘").replace("&rdquo;", "”").replace("&ldquo;", "“");
-    let n = NUM.get_or_init(|| Regex::new(r"&#(x[0-9a-fA-F]+|[0-9]+);").unwrap()).replace_all(&named, |c: &regex::Captures| {
-        let v = &c[1];
-        let code = if let Some(h) = v.strip_prefix('x') { u32::from_str_radix(h, 16).ok() } else { v.parse().ok() };
-        code.and_then(char::from_u32).map_or(String::new(), String::from)
-    });
-    n.replace("&amp;", "&")
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let body = &rest[1..];
+        let end = body.find(';').filter(|&e| (1..=32).contains(&e) && body[..e].chars().all(|c| c.is_ascii_alphanumeric() || c == '#'));
+        let decoded = end.and_then(|e| {
+            let name = &body[..e];
+            let text = match name.strip_prefix('#') {
+                Some(num) => {
+                    let code = match num.strip_prefix(['x', 'X']) { Some(h) => u32::from_str_radix(h, 16).ok(), None => num.parse().ok() };
+                    code.filter(|c| *c != 0).and_then(char::from_u32).map(String::from)
+                }
+                None => quick_xml::escape::resolve_html5_entity(name).map(str::to_string),
+            };
+            text.map(|t| (t.replace('\u{a0}', " "), e + 2))
+        });
+        match decoded {
+            Some((t, len)) => { out.push_str(&t); rest = &rest[len..]; }
+            None => { out.push('&'); rest = &rest[1..]; }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// percent-encoding for a query value
@@ -574,8 +592,8 @@ mod tests {
 
     #[test]
     fn searxng_results_are_read() {
-        let v = serde_json::json!({"results": [{"title": " A ", "url": "https://a.org", "content": "one\n two"}, {"url": "https://no-title"}]});
-        assert_eq!(parse_searxng(&v), vec![Hit { title: "A".into(), url: "https://a.org".into(), snippet: "one two".into() }]);
+        let v = serde_json::json!({"results": [{"title": " A ", "url": "https://a.org", "content": "one\n two &amp; <b>three</b>"}, {"url": "https://no-title"}]});
+        assert_eq!(parse_searxng(&v), vec![Hit { title: "A".into(), url: "https://a.org".into(), snippet: "one two & three".into() }]);
     }
 
     #[test]
@@ -638,6 +656,12 @@ mod tests {
         assert!(!x.contains("evil") && !x.contains("p{}"), "{x}");
         // blocks are lines, at most one blank line between them
         assert!(x.contains("Head\n\nOne two") && !x.contains("\n\n\n") && x.contains("- a\n- b") && x.contains("x © A"), "{x}");
+        // every named entity of HTML5, not a short list: a Vietnamese page's letters, quotes and dashes; an English
+        // page's; a bare "&", an unknown name or a code of nothing stay as written; one pass
+        assert_eq!(entities("&ocirc;ng Huang, 63 tuổi v&agrave; b&agrave; Powell đ&atilde; bị quay video t&igrave;nh cảm th&acirc;n mật tại kh&aacute;ch sạn &#272;&#7841;i Nam"), "ông Huang, 63 tuổi và bà Powell đã bị quay video tình cảm thân mật tại khách sạn Đại Nam");
+        assert_eq!(entities("&ldquo;Rust &amp; more&rdquo; &ndash; caf&eacute; &euro;5&hellip; &copy; 2026"), "“Rust & more” – café €5… © 2026");
+        assert_eq!(entities("Rust & more &foo; &#0; &amp;lt; a&nbsp;b &#x1F600;"), "Rust & more &foo; &#0; &lt; a b 😀");
+        assert_eq!(entities("no entity here"), "no entity here");
     }
 
     #[test]

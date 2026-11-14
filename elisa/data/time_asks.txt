@@ -108,3 +108,10 @@ dịch giúp mình câu 'tôi mệt rồi' sang tiếng Anh
 how do you say 'good morning' in Vietnamese?
 translate 'I'm hungry' into Vietnamese
 'toi met roi' tieng anh noi sao?
+# an ask what Elisa can help with ("cho" is in time examples too): about her, no time asked
+bạn có thể giúp gì cho mình?
+ban co the giup gi cho minh?
+bạn giúp được gì cho tôi không?
+cho mình hỏi bạn làm được những gì?
+what can you help me with?
+how can you help me today?

@@ -2017,7 +2017,7 @@ fn outside_always_allow_of_a_tool_does_not_cover_outside_writes() {
 }
 
 #[test]
-fn outside_yes_flag_denies_outside_writes_and_bash_but_not_inside() {
+fn outside_yes_flag_without_a_person_denies_outside_writes_and_bash_but_not_inside() {
     let (_base, proj, other) = outside_dirs("out-yes");
     let script = || vec![
         Sse::new(10, 0).tool_input("w1", "write", json!({"path": "in.txt", "content": "a"})).end("tool_use", 5),
@@ -2036,7 +2036,7 @@ fn outside_yes_flag_denies_outside_writes_and_bash_but_not_inside() {
     assert!(!other.join("out.txt").exists() && other.join("secret.txt").exists(), "outside write + bash denied");
     let reqs = f.messages();
     let (c, err) = last_tool_result(&reqs[2]);
-    assert!(err && c.starts_with("denied: write outside the project folder") && c.contains("--yes"), "{c}");
+    assert!(err && c.starts_with("denied: write outside the project folder") && c.contains("non-interactive") && c.contains("outside = \"allow\""), "{c}");
     let (c, err) = last_tool_result(&reqs[3]);
     assert!(err && c.starts_with("denied: run (may write) outside the project folder"), "{c}");
     let (c, err) = last_tool_result(&reqs[4]);
@@ -2100,6 +2100,90 @@ fn jsonl_outside_approve_event_carries_paths_and_session_answer() {
     assert!(last_tool_result(&reqs[1]).0.contains("top secret"));
     assert!(last_tool_result(&reqs[2]).1, "grep denied");
     s.quit();
+}
+
+/// Under approve-all (`--yes`, /yolo) a write outside the project asks through the box and waits for the answer, as in
+/// every other mode: yes runs it, no denies it. Inside calls never ask. The same in the terminal.
+#[test]
+fn approve_all_asks_and_waits_for_an_outside_write() {
+    let (_base, proj, other) = outside_dirs("out-yolo-ask");
+    let f = Fake::start(vec![
+        Sse::new(10, 0).tool_input("w1", "write", json!({"path": "in.txt", "content": "a"})).end("tool_use", 5),
+        Sse::new(10, 0).tool_input("w2", "write", json!({"path": "../other/out.txt", "content": "b"})).end("tool_use", 5),
+        text_reply("Done."),
+        Sse::new(10, 0).tool_input("w3", "write", json!({"path": "../other/no.txt", "content": "c"})).end("tool_use", 5),
+        text_reply("Not written."),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &proj, "memory = false\n", &["--yes"], &[]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "go"}));
+    let evs = s.until("approve");
+    assert_eq!(evs.iter().filter(|e| e["type"] == "approve").count(), 1, "the inside write never asks: {evs:?}");
+    assert!(proj.join("in.txt").exists(), "the inside write ran under approve-all");
+    let a = evs.last().unwrap();
+    let want = other.join("out.txt").display().to_string();
+    assert_eq!((a["tool"].as_str(), a["outside"].as_bool(), a["access"].as_str()), (Some("write"), Some(true), Some("write")), "{a}");
+    assert_eq!(a["paths"], json!([want]));
+    // the call waits for the answer
+    assert!(!other.join("out.txt").exists(), "nothing runs before the answer");
+    s.cmd(json!({"type": "approve", "answer": "yes"}));
+    s.until("turn_done");
+    assert_eq!(std::fs::read_to_string(other.join("out.txt")).unwrap(), "b");
+    s.cmd(json!({"type": "send", "text": "one more file there"}));
+    let a = s.until("approve").last().unwrap().clone();
+    assert_eq!((a["tool"].as_str(), a["outside"].as_bool()), (Some("write"), Some(true)), "{a}");
+    s.cmd(json!({"type": "approve", "answer": "no"}));
+    s.until("turn_done");
+    assert!(!other.join("no.txt").exists());
+    let (c, err) = last_tool_result(&f.messages()[4]);
+    assert!(err && c.starts_with("denied by user (write outside the project folder"), "{c}");
+    s.quit();
+
+    // the terminal: the same prompt under --yes, a yes runs it
+    let (_base, proj, other) = outside_dirs("out-yolo-term");
+    let f = Fake::start(vec![
+        Sse::new(10, 0).tool_input("w1", "write", json!({"path": "in.txt", "content": "a"})).end("tool_use", 5),
+        Sse::new(10, 0).tool_input("w2", "write", json!({"path": "../other/out.txt", "content": "b"})).end("tool_use", 5),
+        text_reply("Done."),
+    ]);
+    let o = run_elisa(&["--yes", "--base-url", &f.url()], &proj, Some("go\ny\n"));
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert_eq!(o.stderr.matches(ASK_OUT).count(), 1, "only the outside write asks: {}", o.stderr);
+    assert_eq!(o.stderr.matches("allow? [y]es").count(), 0, "the inside write does not: {}", o.stderr);
+    assert!(proj.join("in.txt").exists());
+    assert_eq!(std::fs::read_to_string(other.join("out.txt")).unwrap(), "b");
+}
+
+/// "Allow these paths for this session" (the box's "always") under approve-all covers every later call on those
+/// paths with no second ask: the model's write, and the file Elisa makes herself (`own_make`, her own step).
+#[test]
+fn an_always_grant_outside_covers_later_writes_and_elisas_own_steps() {
+    let (_base, proj, other) = outside_dirs("out-yolo-always");
+    let page = other.join("snake.html");
+    let f = Fake::start(vec![
+        Sse::new(10, 0).tool_input("b1", "bash", json!({"command": format!("ls {}", other.display())})).end("tool_use", 5),
+        text_reply("Listed."),
+        Sse::new(10, 0).tool_input("w1", "write", json!({"path": other.join("a.txt").display().to_string(), "content": "a"})).end("tool_use", 5),
+        text_reply("Written."),
+        text_reply("```html\n<!doctype html>\n<html>\n<body><canvas id=\"board\"></canvas></body>\n</html>\n```"),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &proj, "memory = false\n", &["--yes"], &[]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "what is in the folder next to this one"}));
+    let a = s.until("approve").last().unwrap().clone();
+    assert_eq!((a["tool"].as_str(), a["outside"].as_bool(), a["paths"].clone()), (Some("bash"), Some(true), json!([other.display().to_string()])), "{a}");
+    s.cmd(json!({"type": "approve", "answer": "always"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "put a file there"}));
+    s.until("turn_done");
+    assert_eq!(std::fs::read_to_string(other.join("a.txt")).unwrap(), "a");
+    s.cmd(json!({"type": "send", "text": format!("make a small snake game page at {}", page.display())}));
+    s.until("turn_done");
+    let made = std::fs::read_to_string(&page).unwrap_or_else(|_| panic!("{} not made: {:?}", page.display(), kinds(&s.seen)));
+    assert!(made.contains("<canvas id=\"board\">") && !made.contains("```"), "{made}");
+    let all = s.quit();
+    assert_eq!(all.iter().filter(|e| e["type"] == "approve").count(), 1, "one ask for the whole session: {:?}", kinds(&all));
+    assert_eq!(f.left(), 0);
 }
 
 #[test]
@@ -5672,6 +5756,51 @@ fn a_live_figure_said_as_now_without_a_day_still_gets_the_page_read() {
     assert!(o.stdout.contains("139 million") && !o.stdout.contains("not today"), "{}\n{}", o.stdout, o.stderr);
 }
 
+/// A question whether a state still holds about what the conversation just searched ("has Dana Rivers resigned from
+/// Acme yet?" right after a search about her) is about the present: Elisa searches again herself before the model
+/// answers, in English and in Vietnamese; the same kind of question about something never searched runs no search.
+#[test]
+fn a_state_question_about_what_was_just_searched_gets_a_fresh_search() {
+    // (the model's replies are scripted in the user's language, so no re-ask follows them)
+    for (first, follow, other, reply, no_reply) in [
+        ("latest news about Acme CEO Dana Rivers", "has Dana Rivers resigned from Acme yet?", "is the backup finished yet?",
+            "Dana Rivers has stepped down as Acme's chief executive, Acme said on Thursday.", "I have no backup running here."),
+        ("tình hình CEO Dana Rivers của Acme hiện tại", "bà Dana Rivers đã từ chức khỏi Acme chưa?", "bản sao lưu xong chưa?",
+            "Bà Dana Rivers đã rời chức tổng giám đốc Acme, theo thông báo của Acme hôm thứ Năm.", "Tôi không chạy bản sao lưu nào ở đây."),
+    ] {
+        let d = tmpdir("state-follow-up");
+        std::fs::create_dir_all(d.join(".elisa/sessions")).unwrap();
+        let results = format!("<untrusted source=\"web_search {first}\">\nresults for \"{first}\":\n1. Acme names Dana Rivers chief executive\n   https://news.example/acme-rivers\n   Dana Rivers took over as Acme's chief executive in March.\n</untrusted>");
+        let h = json!([
+            {"role": "user", "content": [{"type": "text", "text": first}]},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "elisa_1_0", "name": "web_search", "input": {"query": first, "recent": false}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "elisa_1_0", "content": results}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Dana Rivers has been Acme's chief executive since March."}]}
+        ]);
+        std::fs::write(d.join(".elisa/sessions/100.json"), h.to_string()).unwrap();
+        let body = r#"{"results":[{"title":"Acme CEO Dana Rivers steps down","url":"https://news.example/acme-rivers-steps-down","content":"Acme said on Thursday that Dana Rivers has stepped down as chief executive."}]}"#;
+        let (searx, got) = fake_searx_with(body);
+        let f = Fake::start(vec![text_reply(reply)]);
+        let cfg = format!("memory = false\nroute = \"auto\"\nweb = \"searxng\"\nsearxng_url = \"{searx}\"\n");
+        let o = run_elisa_cfg(&["-p", follow, "--continue", "--yes", "--base-url", &f.url()], &d, None, &[("ELISA_DEBUG", "1".into())], &cfg);
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        assert!(got.recv_timeout(Duration::from_secs(5)).is_ok(), "Elisa searched again for {follow:?}:\n{}", o.stderr);
+        // (the request carries the seeded turn's search and Elisa's new one, for the follow-up's words)
+        let searches = called(&f.messages()[0], "web_search");
+        assert!(searches.len() == 2 && searches[1]["query"].as_str().is_some_and(|q| q.contains("Rivers")), "{follow:?}: {searches:?}\n{}", o.stderr);
+        assert!(o.stderr.contains("Elisa searches again"), "{}", o.stderr);
+        // the same kind of question about something never searched: no search
+        let (searx, got) = fake_searx_with(body);
+        let g = Fake::start(vec![text_reply(no_reply)]);
+        let cfg = format!("memory = false\nroute = \"auto\"\nweb = \"searxng\"\nsearxng_url = \"{searx}\"\n");
+        let o = run_elisa_cfg(&["-p", other, "--continue", "--yes", "--base-url", &g.url()], &d, None, &[("ELISA_DEBUG", "1".into())], &cfg);
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        assert!(got.recv_timeout(Duration::from_secs(2)).is_err(), "no search for {other:?}:\n{}", o.stderr);
+        // (only the two earlier searches of the history, none for these words)
+        assert!(called(&g.messages()[0], "web_search").len() == 2 && !o.stderr.contains("Elisa searches again"), "{other:?}\n{}", o.stderr);
+    }
+}
+
 /// A reply the output limit cut short is held to the results like a finished one: a list of dated prices of which
 /// only the first is in the results (the rest invented, ending mid-sentence at max_tokens) does not stand — Elisa
 /// gives the figure from the results with its site, in the same single model request.
@@ -6044,6 +6173,47 @@ fn a_fragment_streamed_before_the_server_aborted_is_taken_back() {
     assert!(err["text"].as_str().unwrap_or("").contains("token repeat limit"), "{evs:?}");
 }
 
+/// Pieces of earlier lines glued into a reply ("noI made index.html. no matches" from granite3.2-vision:2b after a
+/// continuation: a stray word, Elisa's own line of the turn before, a tool's line) answer nothing: asked once more
+/// alone, and still so, Elisa's plain line stands, never the glued pieces.
+#[test]
+fn pieces_of_earlier_lines_glued_into_a_reply_get_elisas_own_line() {
+    let dir = tmpdir("jsonl-glued-pieces");
+    let fact = "Hanoi is the capital of Vietnam.";
+    let glued = "Sure.Hanoi is the capital of Vietnam.";
+    let f = Fake::start(vec![text_reply(fact), text_reply(glued), text_reply(glued)]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "tell me one thing about Hanoi"}));
+    assert_eq!(final_text(&s.until("turn_done")).trim(), fact);
+    s.cmd(json!({"type": "send", "text": "write a python function that doubles a number"}));
+    let evs = s.until("turn_done");
+    s.quit();
+    let shown = final_text(&evs);
+    assert!(!shown.contains("Hanoi") && shown.chars().filter(|c| c.is_alphabetic()).count() >= 10, "Elisa's own line, not the pieces: {shown}\n{evs:?}");
+    assert_eq!(f.messages().len(), 3, "asked once more alone");
+}
+
+/// The general question about what Elisa can do ("bạn làm được gì cho tôi?" from a beta session on minicpm-v:8b): a
+/// greeting back answers nothing, so Elisa's own list of what she has here stands, in the user's language, never the
+/// no-answer line; a reply that names what she has stands.
+#[test]
+fn what_can_you_do_gets_elisas_own_list_from_her_tools_in_both_languages() {
+    let d = tmpdir("gate-can-do");
+    let f = Fake::start(vec![text_reply("Hello! How can I assist you today?")]);
+    let o = run_elisa(&["-p", "what can you do for me?", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stdout.contains("files") && !o.stdout.contains("Hello") && !o.stdout.contains("pictures") && !o.stdout.contains("couldn't"), "her own list: {}\n{}", o.stdout, o.stderr);
+    let f = Fake::start(vec![text_reply("Chào bạn! Bạn muốn làm gì tiếp theo?")]);
+    let o = run_elisa(&["-p", "bạn làm được gì cho mình?", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stdout.contains("file") && !o.stdout.contains("tiếp theo") && !o.stdout.contains("ảnh") && !o.stdout.contains("chưa"), "her own list: {}\n{}", o.stdout, o.stderr);
+    let f = Fake::start(vec![text_reply("I can chat with you, read and write files in this folder, and run commands.")]);
+    let o = run_elisa(&["-p", "what can you do for me?", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stdout.contains("run commands"), "a fitting reply stands: {}\n{}", o.stdout, o.stderr);
+}
+
 /// A window too small for the results (`max_ctx` under the tiny bound): the search results go in the turn cut to
 /// what fits, so the one sentence with the figure, last in the list, is cut away from the history (the model never
 /// sees it), and the turn is folded before its checks; Elisa keeps her own results whole (`own_results`), so her
@@ -6211,6 +6381,75 @@ fn a_worse_language_retry_gives_way_to_the_first_answer() {
     assert_eq!(f.left(), 0, "{notes:?}");
 }
 
+/// A grounded reply whose only fault was its language, then a language retry that keeps the file's facts but adds
+/// things the file never says (sentences with none of its names or numbers): the retry never stands; the first
+/// answer, said in the user's language, ends the turn. When that too adds things, the first answer as it came (here
+/// in English, so Elisa's own plain answer from the results).
+#[test]
+fn a_language_retry_that_adds_claims_gives_way_to_the_grounded_first_reply() {
+    let first = "plan.txt says:\n```\nRoom: B12\nOwner: Mina Tran\n```\nThe meeting room is B12.";
+    let invented = "Nội dung plan.txt:\n- Buổi họp diễn ra vào sáng thứ Hai, chưa rõ giờ cụ thể.\nPhòng họp là Room B12, Owner là Mina Tran. Cuộc họp có lẽ là một sự kiện chính thức của công ty.\nMọi người nên đến sớm mười phút.";
+    for (said_again, want, note) in [
+        ("Theo plan.txt, phòng họp là B12, người phụ trách là Mina Tran.", Some("Theo plan.txt, phòng họp là B12, người phụ trách là Mina Tran."), "said in the user's language"),
+        // (the first answer as it came is in English: Elisa's own plain answer from the results ends the turn)
+        (invented, None, "it stands as it came"),
+    ] {
+        let dir = tmpdir("lang-retry-adds-claims");
+        std::fs::write(dir.join("plan.txt"), "Room: B12\nOwner: Mina Tran\n").unwrap();
+        let f = Fake::start(vec![
+            Sse::new(800, 0).tool_input("t1", "read", json!({"path": "plan.txt"})).end("tool_use", 10),
+            text_reply(first), text_reply(invented), text_reply(said_again),
+        ]);
+        let mut s = Serve::start_full(&f.url(), &dir, "memory = false\n", &[], &[("ELISA_DEBUG", "1")]);
+        s.until("ready");
+        s.cmd(json!({"type": "send", "text": "trong plan.txt phòng họp là phòng nào vậy?"}));
+        let mut text = String::new();
+        let mut notes: Vec<String> = Vec::new();
+        for e in s.until("turn_done") {
+            match e["type"].as_str() {
+                Some("delta") => text.push_str(e["text"].as_str().unwrap_or("")),
+                Some("reply_retracted") => text.clear(),
+                Some("info") => notes.push(e["text"].as_str().unwrap_or("").to_string()),
+                _ => {}
+            }
+        }
+        s.quit();
+        assert!(!text.contains("thứ Hai") && !text.contains("chính thức"), "the retry's added claims were shown: {text:?}\n{notes:?}");
+        match want { Some(w) => assert_eq!(text.trim(), w, "{notes:?}"), None => assert!(text.contains("B12"), "{text:?}\n{notes:?}") }
+        assert!(notes.iter().any(|n| n.contains("the retry was worse") && n.contains(note)), "{notes:?}");
+        assert_eq!(f.left(), 0, "{notes:?}");
+    }
+}
+
+/// Sentences taken out of a reply's list items (copies of its answer) leave no empty item ("1.", "2.") and no lead-in
+/// with nothing under it ("Here are the details from plan.txt:").
+#[test]
+fn copied_list_items_leave_no_empty_marks_and_no_hollow_lead_in() {
+    let dir = tmpdir("hollow-items");
+    std::fs::write(dir.join("plan.txt"), "Room: B12\nOwner: Mina Tran\n").unwrap();
+    let f = Fake::start(vec![
+        Sse::new(800, 0).tool_input("t1", "read", json!({"path": "plan.txt"})).end("tool_use", 10),
+        text_reply("The meeting room in plan.txt is B12, and Mina Tran owns the meeting.\n\nHere are the details from plan.txt:\n\n1. The meeting room in plan.txt is B12, and Mina Tran owns the meeting.\n2. The meeting room in plan.txt is B12, and Mina Tran owns the meeting."),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\n", &[], &[("ELISA_DEBUG", "1")]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "what does plan.txt say about the meeting?"}));
+    let mut text = String::new();
+    let mut notes: Vec<String> = Vec::new();
+    for e in s.until("turn_done") {
+        match e["type"].as_str() {
+            Some("delta") => text.push_str(e["text"].as_str().unwrap_or("")),
+            Some("reply_retracted") => text.clear(),
+            Some("info") => notes.push(e["text"].as_str().unwrap_or("").to_string()),
+            _ => {}
+        }
+    }
+    s.quit();
+    assert_eq!(text.trim(), "The meeting room in plan.txt is B12, and Mina Tran owns the meeting.", "{notes:?}");
+    assert!(!text.lines().any(|l| matches!(l.trim(), "1." | "2." | "-")) && !text.trim_end().ends_with(':'), "{text:?}");
+    assert_eq!(f.left(), 0, "{notes:?}");
+}
+
 /// The words asked alone after a garbled reply, with the language note after them: a short answer in the language the
 /// ask names ("I'm hungry" to "'tôi đói rồi' tiếng Anh là gì?") is no garble — the note names a language, and that is
 /// not the ask's.
@@ -6328,4 +6567,363 @@ fn a_held_page_answer_leads_after_a_needless_search_too() {
     assert!(text.trim().starts_with(&format!("https://example.com/ (Example Domain) says: {quote}")), "{text:?}\n{notes:?}");
     assert!(notes.iter().any(|n| n.contains("her line from the page leads")), "{notes:?}");
     assert_eq!(f.left(), 0, "{notes:?}");
+}
+
+/// An ask to make a file answered with a promise and no write: the promise is not the answer. Elisa asks the model
+/// once more, in a plain request with no tools, for the file alone, saves its code block herself and says so.
+#[test]
+fn a_promise_to_make_a_file_gets_the_file_made() {
+    for (ask, promise, file, said) in [
+        ("make me a tiny counter page in html", "Sure, I can make that page for you.", "counter.html", "I made counter.html."),
+        ("bạn viết giúp mình một trang web đơn giản bằng html nhé", "Vâng, mình có thể viết trang web đó.", "index.html", "Mình đã tạo file index.html."),
+    ] {
+        let d = tmpdir("make-promise");
+        let code = "```html\n<!doctype html>\n<html>\n<body><p id=\"n\">0</p></body>\n</html>\n```";
+        let f = Fake::start(vec![text_reply(promise), text_reply(code)]);
+        let o = run_elisa(&["-p", ask, "--yes", "--base-url", &f.url()], &d, None);
+        assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+        let saved = std::fs::read_to_string(d.join(file)).unwrap_or_else(|_| panic!("{file} not made: {}\n{}", o.stdout, o.stderr));
+        assert!(saved.contains("<p id=\"n\">0</p>") && !saved.contains("```"), "{saved}");
+        assert!(o.stdout.contains(said) && !o.stdout.contains(promise), "{}", o.stdout);
+        // exactly one extra model call, with no tools
+        let reqs = f.messages();
+        assert_eq!((reqs.len(), f.left()), (2, 0));
+        assert!(!has_tools(&reqs[1]) || reqs[1]["tools"].as_array().is_some_and(|t| t.is_empty()), "{}", reqs[1]);
+    }
+}
+
+/// A reply with the file's code in a block and no write: Elisa saves the block; an ask only to see the code: nothing
+/// saved. Both with no extra model call.
+#[test]
+fn code_in_the_reply_is_saved_unless_only_shown() {
+    let code = "Here it is:\n```python\nimport sys\nprint('hi')\nprint(len(sys.argv))\n```";
+    let d = tmpdir("make-code");
+    let f = Fake::start(vec![text_reply(code)]);
+    let o = run_elisa(&["-p", "write a python script that greets me", "--yes", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    let saved = std::fs::read_to_string(d.join("main.py")).unwrap_or_else(|_| panic!("main.py not made: {}\n{}", o.stdout, o.stderr));
+    assert!(saved.contains("print('hi')"), "{saved}");
+    assert!(o.stdout.contains("I made main.py."), "{}", o.stdout);
+    assert_eq!((f.messages().len(), f.left()), (1, 0));
+
+    let d = tmpdir("make-show");
+    let f = Fake::start(vec![text_reply(code)]);
+    let o = run_elisa(&["-p", "show me the code of a small python greeting script", "--yes", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert!(!d.join("main.py").exists(), "an ask to see code saves nothing");
+    assert!(o.stdout.contains("print('hi')"), "{}", o.stdout);
+    assert_eq!((f.messages().len(), f.left()), (1, 0));
+}
+
+/// No code twice (the promise, then words again on the plain request): Elisa's own line that no file was made,
+/// never the promise; in the ask's language.
+#[test]
+fn no_code_twice_says_no_file_was_made() {
+    for (ask, promise, words, said) in [
+        ("make me a tiny counter page in html", "Sure, I can make that page for you.", "A counter page shows a number and a button.", "no file was made"),
+        ("bạn viết giúp mình một trang web đơn giản bằng html nhé", "Vâng, mình có thể viết trang web đó.", "Trang web đơn giản có một tiêu đề và một đoạn chữ.", "chưa có file nào được tạo"),
+    ] {
+        let d = tmpdir("make-none");
+        let f = Fake::start(vec![text_reply(promise), text_reply(words)]);
+        let o = run_elisa(&["-p", ask, "--yes", "--base-url", &f.url()], &d, None);
+        assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+        assert!(o.stdout.contains(said) && !o.stdout.contains(promise), "{}", o.stdout);
+        assert!(std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).all(|e| e.file_name().to_string_lossy().starts_with(['.', '_'])), "nothing made");
+        assert_eq!((f.messages().len(), f.left()), (2, 0), "{}\n{}\n{:#?}", o.stdout, o.stderr, f.messages().iter().map(|r| r["messages"].as_array().unwrap().last().unwrap()["content"].to_string().chars().take(200).collect::<String>()).collect::<Vec<_>>());
+    }
+}
+
+/// A piece of code asked for ("a python function that …") answered with a code block: shown, nothing written. A whole
+/// thing asked for as a file answered the same way: saved from the reply, no extra call.
+#[test]
+fn a_code_piece_is_shown_and_a_whole_file_is_saved() {
+    let d = tmpdir("make-part");
+    let f = Fake::start(vec![text_reply("Here:\n```python\ndef add(a, b):\n    total = a + b\n    return total\n```")]);
+    let o = run_elisa(&["-p", "write a python function that adds two numbers", "--yes", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert!(o.stdout.contains("return total"), "the code shown: {}", o.stdout);
+    assert!(std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).all(|e| e.file_name().to_string_lossy().starts_with(['.', '_'])), "nothing written");
+    assert_eq!((f.messages().len(), f.left()), (1, 0));
+
+    let d = tmpdir("make-whole");
+    let f = Fake::start(vec![text_reply("Here it is:\n```html\n<!doctype html>\n<html>\n<body><canvas id=\"c\"></canvas></body>\n</html>\n```")]);
+    let o = run_elisa(&["-p", "make a snake game as an html file", "--yes", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    let saved = std::fs::read_to_string(d.join("snake.html")).unwrap_or_else(|_| panic!("snake.html not made: {}\n{}", o.stdout, o.stderr));
+    assert!(saved.contains("<canvas id=\"c\">"), "{saved}");
+    assert_eq!((f.messages().len(), f.left()), (1, 0));
+}
+
+/// After Elisa made a file, a question for its name ("done? what's the file name?", "xong chưa? cho mình tên file
+/// HTML nhé") is answered from her own record of the session's writes: the file named, whatever the model says, and
+/// no search of the files' text for the type word.
+#[test]
+fn the_name_of_a_file_elisa_made_comes_from_her_record() {
+    for (make, ask, wrong, said) in [
+        ("make me a quiz page as an html file", "done? what's the file name?", "No HTML file was found.", "The file I made in this chat: quiz.html."),
+        ("làm cho mình một quiz page dạng file html nhé", "xong chưa? cho mình tên file HTML nhé", "Chưa tìm thấy file HTML nào.", "File mình đã tạo trong cuộc trò chuyện này: quiz.html."),
+    ] {
+        let d = tmpdir("made-name");
+        let page = "```html\n<!doctype html>\n<html>\n<body><h1>Quiz</h1></body>\n</html>\n```";
+        let f = Fake::start(vec![text_reply(page), text_reply(wrong)]);
+        let o = run_elisa(&["--yes", "--base-url", &f.url()], &d, Some(&format!("{make}\n{ask}\n")));
+        assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+        assert!(d.join("quiz.html").exists(), "{}\n{}", o.stdout, o.stderr);
+        // (the model's reply is taken back: Elisa's line comes after it, as the turn's answer)
+        assert!(o.stdout.rfind(said) > o.stdout.rfind(wrong), "{}", o.stdout);
+        let reqs = f.messages();
+        assert!(reqs.iter().all(|r| !r.to_string().contains("\"grep\",\"input\"")), "no search ran");
+        assert_eq!(f.left(), 0);
+    }
+}
+
+/// A reply with the page and its CSS and JavaScript in blocks of their own, to an ask for an HTML file: one HTML file
+/// with the others inline, never the side block alone. A reply with only a side block: the plain request asks for one
+/// complete HTML file, with the user's earlier message the ask points back to ("trò chơi ấy").
+#[test]
+fn an_html_ask_makes_one_html_file_with_its_parts_inline() {
+    let d = tmpdir("make-inline");
+    let reply = "Here:\n```html\n<!doctype html>\n<html>\n<head><title>Dice</title></head>\n<body><p id=\"d\"></p></body>\n</html>\n```\n```css\nbody {\n  margin: 0;\n  color: teal;\n}\n```\n```javascript\nconst d = document.getElementById('d');\nd.textContent = 1 + Math.floor(Math.random() * 6);\nconsole.log(d.textContent);\n```";
+    let f = Fake::start(vec![text_reply(reply)]);
+    let o = run_elisa(&["-p", "build a dice roller page as an html file with css styling", "--yes", "--base-url", &f.url()], &d, None);
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    let saved = std::fs::read_to_string(d.join("roller.html")).unwrap_or_else(|_| panic!("roller.html not made: {}\n{}", o.stdout, o.stderr));
+    assert!(saved.contains("<style>") && saved.contains("color: teal") && saved.contains("<script>") && saved.contains("Math.random"), "{saved}");
+    assert!(saved.find("<style>").unwrap() < saved.find("</head>").unwrap() && saved.find("<script>").unwrap() < saved.find("</body>").unwrap(), "{saved}");
+    assert!(!d.join("main.css").exists());
+    assert_eq!((f.messages().len(), f.left()), (1, 0));
+
+    // only a CSS block: the plain request, with the earlier message, for one complete HTML file
+    let d = tmpdir("make-side");
+    let side = "```css\nbody {\n  margin: 0;\n  color: teal;\n}\n```";
+    let page = "```html\n<!doctype html>\n<html>\n<body><canvas id=\"g\"></canvas></body>\n</html>\n```";
+    let f = Fake::start(vec![text_reply("Được thôi, nghe vui đấy."), text_reply(side), text_reply(page)]);
+    let o = run_elisa(&["--yes", "--base-url", &f.url()], &d, Some("mình muốn một trò chơi rắn săn mồi\nbạn code trò chơi ấy thành file HTML + CSS nhé\n"));
+    assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+    assert!(!d.join("main.css").exists(), "never the side block alone");
+    assert!(std::fs::read_to_string(d.join("index.html")).is_ok_and(|t| t.contains("<canvas id=\"g\">")), "{}\n{}", o.stdout, o.stderr);
+    let reqs = f.messages();
+    assert_eq!((reqs.len(), f.left()), (3, 0));
+    let plain = reqs.iter().filter(|r| r["messages"].as_array().is_some_and(|m| m.len() == 1) && r.to_string().contains("The user asks now:")).map(|r| r["messages"][0]["content"][0]["text"].as_str().unwrap_or("").to_string()).next_back().unwrap_or_default();
+    assert!(plain.contains("mình muốn một trò chơi rắn săn mồi") && plain.contains("html file"), "{plain}\n{:#?}", reqs.iter().map(|r| (r["messages"].as_array().map(|m| m.len()), r["messages"].as_array().and_then(|m| m.last()).map(|m| m["content"].to_string().chars().take(300).collect::<String>()))).collect::<Vec<_>>());
+}
+
+/// The user's own shape of the question, "xong chưa? Xong thì share tôi file HTML nhé" / "done yet? then send me the
+/// HTML file": a status or hand-over word with the file's kind, answered from Elisa's record (no [name] word needed);
+/// a bare "done?" right after she made a file too; with no file made, her plain line that none was, never a search.
+#[test]
+fn a_done_or_share_question_names_the_file_elisa_made() {
+    let page = "```html\n<!doctype html>\n<html>\n<body><h1>Board</h1></body>\n</html>\n```";
+    for (make, ask, wrong, said) in [
+        ("make me a score board page as an html file", "done yet? then send me the HTML file", "I can't find any HTML file.", "The file I made in this chat: board.html."),
+        ("làm cho mình một score board page dạng file html nhé", "xong chưa? Xong thì share tôi file HTML nhé", "Chưa tìm thấy file HTML nào.", "File mình đã tạo trong cuộc trò chuyện này: board.html."),
+        ("make me a score board page as an html file", "done?", "Not yet, still working on it.", "The file I made in this chat: board.html."),
+    ] {
+        let d = tmpdir("made-share");
+        let f = Fake::start(vec![text_reply(page), text_reply(wrong)]);
+        let o = run_elisa(&["--yes", "--base-url", &f.url()], &d, Some(&format!("{make}\n{ask}\n")));
+        assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+        assert!(d.join("board.html").exists(), "{}\n{}", o.stdout, o.stderr);
+        assert!(o.stdout.rfind(said) > o.stdout.rfind(wrong), "{}", o.stdout);
+        assert!(f.messages().iter().all(|r| !r.to_string().contains("\"grep\",\"input\"")), "no search ran");
+        assert_eq!(f.left(), 0);
+    }
+    // nothing made: said plainly
+    for (ask, wrong, said) in [
+        ("done yet? then send me the HTML file", "Here is the HTML file you asked for.", "I haven't made any file in this chat yet."),
+        ("xong chưa? Xong thì share tôi file HTML nhé", "Đây là file HTML của bạn.", "Mình chưa tạo file nào trong cuộc trò chuyện này."),
+    ] {
+        let d = tmpdir("made-none-share");
+        let f = Fake::start(vec![text_reply(wrong)]);
+        let o = run_elisa(&["-p", ask, "--yes", "--base-url", &f.url()], &d, None);
+        assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+        assert!(o.stdout.contains(said), "{}", o.stdout);
+        assert!(f.messages().iter().all(|r| !r.to_string().contains("\"grep\",\"input\"")), "no search ran");
+    }
+}
+
+/// An ask that got no code, then "done yet?": the file is made then (one plain request), never a reply implying work
+/// under way.
+/// A thinking model whose reply to "write that game as an html file" is its reasoning and words no language writes,
+/// no code: asked once more without the conversation, the message's "that game" goes with the user's message before
+/// it; the plain request for
+/// the code starts with that earlier message, marked, and what the first reply planned (its reasoning, never the
+/// context-free retry's); the file takes the name the plan gave it.
+#[test]
+fn a_thinking_only_reply_keeps_the_thing_asked_before() {
+    let usage = || json!({"prompt_tokens": 400, "completion_tokens": 6});
+    let page = "```html\n<!doctype html>\n<html>\n<body><canvas id=\"court\"></canvas></body>\n</html>\n```";
+    for (first, ask, yes, plan, junk, other, retry, file, named) in [
+        ("could you build a pong game?", "write that game as an html file please", "Yes, I can build it.",
+            "We will make the pong game on a canvas.\nOne HTML file (e.g. pong-court.html) holds it all.", "html html html html page page", "Let me make a whack-a-mole game.",
+            "Here is the page as HTML.", "pong-court.html", "pong game"),
+        ("bạn làm được trò chơi xếp gạch không?", "viết trò chơi ấy thành file HTML nhé", "Được, mình làm được trò chơi đó.",
+            "Chúng ta sẽ làm trò chơi xếp gạch bằng canvas.\nMột file HTML (ví dụ: xep-gach.html) chứa mọi thứ.", "trò trò trò trò chơi chơi", "Ta làm trò chơi đập chuột đơn giản.",
+            "Đây là trang bằng HTML.", "xep-gach.html", "trò chơi xếp gạch"),
+    ] {
+        let d = tmpdir("make-think");
+        let f = Fake::start(vec![
+            oa_reply(&[json!({"content": yes})], "stop", usage()),
+            oa_reply(&[json!({"role": "assistant", "reasoning_content": plan}), json!({"content": junk})], "stop", usage()),
+            oa_reply(&[json!({"role": "assistant", "reasoning_content": other}), json!({"content": retry})], "stop", usage()),
+            oa_reply(&[json!({"content": page})], "stop", usage()),
+        ]);
+        let home = d.join("_home/.config/elisa");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("providers.toml"), format!("active = \"l\"\n[providers.l]\ntype = \"openai\"\nbase_url = \"{}/v1\"\nmodel = \"local\"\nmax_ctx = 16384\n", f.url())).unwrap();
+        let o = run_elisa_env(&["--yes", "--no-checks"], &d, Some(&format!("{first}\n{ask}\n/exit\n")), &[("ELISA_DEBUG", "1".into())]);
+        assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+        let reqs: Vec<String> = f.log().iter().filter(|r| r.path == "/v1/chat/completions").map(|r| r.json()["messages"].to_string()).collect();
+        let shown = || format!("{}\n{}\n{reqs:#?}", o.stdout, o.stderr);
+        // asked alone: the earlier message goes with it
+        let alone = reqs.iter().find(|r| r.contains("which this one refers to")).unwrap_or_else(|| panic!("no retry with the earlier message: {}", shown()));
+        assert!(alone.contains(first) && alone.contains(ask), "{}", shown());
+        // the plain request: the earlier message first, marked; the first reply's plan; never the retry's
+        let plain = reqs.iter().find(|r| r.contains("The user asks now:")).unwrap_or_else(|| panic!("no plain request: {}", shown()));
+        let (at_first, at_ask) = (plain.find(first).unwrap_or(usize::MAX), plain.find(ask).unwrap_or(0));
+        assert!(plain.contains("The thing to make is the one the user named earlier") && at_first < at_ask, "{}", shown());
+        assert!(plain.contains(file) && plain.contains(named) && !plain.contains(other), "{}", shown());
+        let saved = std::fs::read_to_string(d.join(file)).unwrap_or_else(|_| panic!("{file} not made: {}", shown()));
+        assert!(saved.contains("<canvas id=\"court\">"), "{saved}");
+        assert_eq!(f.left(), 0, "{}", shown());
+    }
+}
+
+#[test]
+fn a_done_question_after_no_code_makes_the_file() {
+    let page = "```html\n<!doctype html>\n<html>\n<body><h1>Board</h1></body>\n</html>\n```";
+    for (make, promise, words, ask, later, said) in [
+        ("make me a score board page as an html file", "Sure, I can make that page for you.", "A score board shows the points.", "done yet?", "Almost there, still working on it.", "I made board.html."),
+        ("làm cho mình một score board page dạng file html nhé", "Vâng, mình có thể làm trang đó.", "Bảng điểm hiển thị số điểm.", "xong chưa?", "Sắp xong rồi, mình đang làm.", "Mình đã tạo file board.html."),
+    ] {
+        let d = tmpdir("made-later");
+        let f = Fake::start(vec![text_reply(promise), text_reply(words), text_reply(later), text_reply(page)]);
+        let o = run_elisa(&["--yes", "--base-url", &f.url()], &d, Some(&format!("{make}\n{ask}\n")));
+        assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+        assert!(d.join("board.html").exists(), "{}\n{}", o.stdout, o.stderr);
+        assert!(o.stdout.rfind(said) > o.stdout.rfind(later), "{}", o.stdout);
+        assert_eq!((f.messages().len(), f.left()), (4, 0));
+    }
+}
+
+/// A plain English ask with none of the common English words Elisa lists ("make me … as an html file", "explain …
+/// like a teacher"), in a chat that was in Vietnamese: the model is told to reply in English, and a Vietnamese reply
+/// to it is asked again, so the reply follows the message, not the earlier turns.
+#[test]
+fn a_plain_english_ask_in_a_vietnamese_chat_gets_an_english_reply() {
+    let dir = tmpdir("jsonl-plain-english");
+    let f = Fake::start(vec![
+        text_reply("Chào bạn! Mình khỏe, cảm ơn bạn!"),
+        text_reply("Quang hợp là cách cây xanh dùng ánh sáng mặt trời để tự tạo ra thức ăn."),
+        text_reply("Photosynthesis is how green plants use sunlight to make their own food."),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "Xin chào, bạn khỏe không?"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "explain photosynthesis simply, like a teacher"}));
+    assert_eq!(final_text(&s.until("turn_done")).trim(), "Photosynthesis is how green plants use sunlight to make their own food.");
+    s.quit();
+    let reqs = f.messages();
+    assert_eq!(reqs.len(), 3, "{reqs:?}");
+    assert!(reqs[1]["messages"].to_string().contains("Reply in English"), "the ask carries the language note: {}", reqs[1]);
+    assert!(reqs[2]["messages"].to_string().contains("Reply in English"), "the retry names the language: {}", reqs[2]);
+    // (the other way: a Vietnamese ask in a chat that was in English gets a Vietnamese reply)
+    let dir = tmpdir("jsonl-plain-vi");
+    let f = Fake::start(vec![
+        text_reply("Hi! I'm doing well, thanks!"),
+        text_reply("Photosynthesis is how green plants use sunlight to make their own food."),
+        text_reply("Quang hợp là cách cây xanh dùng ánh sáng mặt trời để tự tạo ra thức ăn."),
+    ]);
+    let mut s = Serve::start_full(&f.url(), &dir, "memory = false\nmax_ctx = 8192\n", &["--type", "anthropic"], &[]);
+    s.until("ready");
+    s.cmd(json!({"type": "send", "text": "Hello, how are you today?"}));
+    s.until("turn_done");
+    s.cmd(json!({"type": "send", "text": "giải thích quang hợp thật dễ hiểu, như một cô giáo"}));
+    assert_eq!(final_text(&s.until("turn_done")).trim(), "Quang hợp là cách cây xanh dùng ánh sáng mặt trời để tự tạo ra thức ăn.");
+    s.quit();
+    assert_eq!(f.messages().len(), 3);
+}
+
+/// A write of the model's that made a file that was not there, told in Elisa's own words, says made, never edited; a
+/// write over a file that was there says edited. In the ask's language.
+#[test]
+fn a_write_that_made_the_file_is_told_as_made_not_edited() {
+    for (ask, made, edited) in [
+        ("make me a small quiz page as an html file", "Created quiz.html", "Edited quiz.html"),
+        ("làm cho mình một trang đố vui nhỏ bằng html nhé", "Đã tạo quiz.html", "Đã sửa quiz.html"),
+    ] {
+        let write = || Sse::new(100, 0).tool_input("w1", "write", json!({"path": "quiz.html", "content": "<!doctype html>\n<html><body><p>Quiz</p></body></html>\n"})).end("tool_use", 5);
+        for there in [false, true] {
+            let d = tmpdir("made-not-edited");
+            if there { std::fs::write(d.join("quiz.html"), "<p>old</p>\n").unwrap(); }
+            let f = Fake::start(vec![write(), text_reply(""), text_reply(""), text_reply("")]);
+            let o = run_elisa(&["-p", ask, "--yes", "--base-url", &f.url()], &d, None);
+            assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+            let (want, not) = if there { (edited, made) } else { (made, edited) };
+            assert!(o.stdout.contains(want) && !o.stdout.contains(not), "there={there}: {}", o.stdout);
+        }
+    }
+}
+
+/// The sentence that gives what a read returned stays, whatever word opens it: "Giờ đây, file todo.txt có hai mục: …"
+/// / "Right here, todo.txt has two items: …" names no one, so the file's lines are not taken out of the answer.
+#[test]
+fn the_sentence_that_gives_the_results_stays_whatever_word_opens_it() {
+    for (ask, reply) in [
+        ("todo.txt giờ có gì?", "Giờ đây, file todo.txt có hai mục: 'buy bread' và 'send report'. Bạn muốn làm gì tiếp với file này?"),
+        ("what does todo.txt have right now?", "Right here, todo.txt has two items: 'buy bread' and 'send report'. Anything else?"),
+    ] {
+        let d = tmpdir("results-stay");
+        std::fs::write(d.join("todo.txt"), "- buy bread\n- send report\n").unwrap();
+        let read = Sse::new(100, 0).tool_input("r1", "read", json!({"path": "todo.txt"})).end("tool_use", 5);
+        let f = Fake::start(vec![read, text_reply(reply), text_reply(reply), text_reply(reply)]);
+        let o = run_elisa(&["-p", ask, "--yes", "--base-url", &f.url()], &d, None);
+        assert_eq!(o.code, 0, "stderr: {}", o.stderr);
+        assert!(o.stdout.contains("send report") && o.stdout.contains("buy bread") && o.stdout.contains(reply.split(':').next().unwrap()), "{}\n{}", o.stdout, o.stderr);
+    }
+}
+
+/// The general question about what Elisa can do, answered with a list of what she does: Elisa's cleaning puts her
+/// clock line in place of a reply on a turn that asks the time, and must never take that list out with it, so only
+/// the clock is left. The answer to what she can do stands (the model's list here, which names what she has), with
+/// the clock line in front when the message asks the time in its own words; in English and in Vietnamese.
+#[test]
+fn a_cleaning_never_leaves_only_the_clock_in_place_of_what_elisa_can_do() {
+    for (ask, reply, clock) in [
+        ("bạn làm được gì cho mình? mấy giờ rồi?", "Chào bạn! Mình có thể giúp bạn nhiều việc:\n- Trò chuyện và trả lời câu hỏi của bạn.\n- Tìm thông tin trên mạng và đọc trang web.\n- Đọc, ghi và tìm file trong thư mục này.\n- Chạy lệnh ở đây.", "Bây giờ là"),
+        ("what can you do? and what time is it?", "Hi! I can help with lots of things:\n- Chat and answer your questions.\n- Search the web and read web pages.\n- Read, write and search files in this folder.\n- Run commands here.", "It's"),
+    ] {
+        let d = tmpdir("can-do-clock");
+        let f = Fake::start(vec![text_reply(reply), text_reply(reply), text_reply(reply)]);
+        let o = run_elisa_cfg(&["-p", ask, "--base-url", &f.url()], &d, None, &[("ELISA_DEBUG", "1".into())], "route = \"auto\"\nmemory = false\n");
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        let out = o.stdout.trim();
+        let list = reply.lines().nth(2).unwrap().trim_start_matches("- ");
+        assert!(out.starts_with(clock) && out.contains(list), "{ask:?}: the clock and the list both: {out}\n{}", o.stderr);
+    }
+}
+
+/// A plain English message after Vietnamese turns, answered in Vietnamese with English glosses in brackets ("**Chạy
+/// lệnh** (Run commands): Tôi có thể…"): the glosses do not make the reply English, so it is asked once more in the
+/// user's language and the English answer is shown.
+#[test]
+fn english_glosses_in_brackets_do_not_pass_a_vietnamese_reply_to_an_english_ask() {
+    let d = tmpdir("gloss-lang");
+    std::fs::create_dir_all(d.join(".elisa/sessions")).unwrap();
+    let h = json!([
+        {"role": "user", "content": [{"type": "text", "text": "thủ đô của Pháp là gì?"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Thủ đô của Pháp là Paris."}]}
+    ]);
+    std::fs::write(d.join(".elisa/sessions/100.json"), h.to_string()).unwrap();
+    let glossed = "Dưới đây là một số điều chính:\n\n**Chat và trả lời câu hỏi** (Chat and answer questions): Tôi có thể trò chuyện với bạn và trả lời các câu hỏi của bạn.\n**Chạy lệnh** (Run commands): Tôi có thể thực hiện các lệnh cơ bản trong môi trường này.";
+    let english = "I can chat and answer your questions, and run commands here.";
+    let f = Fake::start(vec![text_reply(glossed), text_reply(english)]);
+    let o = run_elisa_cfg(&["-p", "what can you help me with?", "--continue", "--base-url", &f.url()], &d, None, &[("ELISA_DEBUG", "1".into())], "route = \"auto\"\n");
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stderr.contains("not in the language of the user's message"), "a language retry ran: {}", o.stderr);
+    assert!(o.stdout.contains(english) && !o.stdout.contains("Tôi có thể"), "{}\n{}", o.stdout, o.stderr);
+    assert_eq!(f.messages().len(), 2);
+    // (the earlier Vietnamese turn went with the request)
+    assert!(f.messages()[0]["messages"].to_string().contains("thủ đô của Pháp"), "{}", o.stderr);
 }

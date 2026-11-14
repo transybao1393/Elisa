@@ -17,8 +17,9 @@ tool whose path resolves outside (`..` and symlinks resolved first; the project'
 command that names an absolute path outside, `~` / `$HOME`, an unknown `$VAR/…`, a `..` that escapes, or a `cd` out of
 the folder (a best-effort parse that errs toward asking). The prompt shows the tool, read / write / run, and the exact
 resolved paths, with **allow once**, **allow these paths for this session** (that path and everything under it, never
-saved) or **deny**. The `.elisa/allow` "always" list never covers outside calls, and `--yes` / `/yolo` deny outside
-writes and bash (reads still ask; with `-p` and no terminal they are denied). Config `outside` (default `ask`):
+saved) or **deny**. The `.elisa/allow` "always" list never covers outside calls, and `--yes` / `/yolo` do not either:
+an outside read, write or bash command still shows the prompt and waits for the answer (with `-p` and no terminal there
+is nobody to ask, so it is denied). Config `outside` (default `ask`):
 `read-ok` lets outside reads run without asking, `deny` refuses everything outside without asking, `allow` drops the
 outside prompt (the normal rules apply, so `--yes` then allows outside writes). A project's `.elisa/config.toml` can
 only make `outside` stricter than the user config (a looser value there is ignored with a startup note). `/allow` shows the mode and this session's grants.

@@ -10,8 +10,28 @@
 # Kinds: a section per kind of ability with example wordings (all-MiniLM-L6-v2, English and Vietnamese): an ability
 # nearest a kind's example, near enough, nearer than any `[other]` example and sharing a word with that example, is
 # that kind; one nearest `[other]` (chat: writing, explaining, translating) is left to the model's reply.
+# The general question ("what can you do?", "bạn làm được gì cho tôi?": `situation::can_do_line`) gets her own list in
+# the user's language: the `can_do` frame with `{list}`: the `always_first` wordings (chat), then the wording named for
+# each kind she has here (a kind is hers by its tools; `vision` by the model's detected sight), then what plugin tools
+# of no kind do, then the `always_last` wordings (attached documents, the clock: hers on every model), joined with the
+# `and` word. A kind she lacks is never listed, so nothing here is a fixed claim. The same list goes to the model in
+# the situation note of such a turn (`situation::about`).
+# `who` lists the wordings of a question about who she is, not what she can do ("who are you?"): such a question
+# never gets the list. Matched folded, so the wordings without marks need no line of their own.
 # Fix a missed or wrong wording by adding an example or a frame here, not in code.
 [en]
+can_do = I can {list}.
+and = and
+always_first = chat
+always_last = attach | time
+chat = chat and answer questions
+attach = read PDFs and spreadsheets you attach
+time = say what time it is anywhere
+web = search the web and read web pages
+files = read, write and search files in this folder
+shell = run commands here
+vision = look at pictures you send
+who = who are you | your name | about yourself | who made you | who built you
 can you {x} = Yes, I can {x}. | No, I can't {x} here.
 can u {x} = Yes, I can {x}. | No, I can't {x} here.
 could you {x} = Yes, I can {x}. | No, I can't {x} here.
@@ -23,6 +43,18 @@ do you {x} = Yes, I {x}. | No, I don't {x} here.
 swap = my > your | mine > yours | me > you | myself > yourself | i > you | your > my | yours > mine | you > me | yourself > myself
 tail = please | pls | plz | too | as well
 [vi]
+can_do = Mình có thể {list}.
+and = và
+always_first = chat
+always_last = attach | time
+chat = trò chuyện và trả lời câu hỏi
+attach = đọc PDF và bảng tính bạn gửi kèm
+time = cho bạn biết giờ ở bất cứ đâu
+web = tìm trên mạng và đọc trang web
+files = đọc, ghi và tìm file trong thư mục này
+shell = chạy lệnh trên máy
+vision = xem ảnh bạn gửi
+who = bạn là ai | tên bạn | tên của bạn | bạn tên gì | ai tạo ra bạn
 bạn có thể {x} được không = Có, mình có thể {x}. | Không, mình không {x} được.
 bạn có thể {x} không = Có, mình có thể {x}. | Không, mình không thể {x}.
 bạn có thể {x} chứ = Có, mình có thể {x}. | Không, mình không thể {x}.

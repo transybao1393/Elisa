@@ -8,7 +8,7 @@ In a project directory:
 
 ```sh
 elisa                       # interactive; read/glob/grep/outline/read_symbol run without asking, write/edit/edit_symbol/bash ask
-elisa --yes                 # approve everything inside the project (never outside writes, see safety.md)
+elisa --yes                 # approve everything inside the project (outside calls still ask, see safety.md)
 elisa -p "fix the failing test" --yes   # one task, prints the final answer, exit 1 on an API error
 elisa --continue            # reload the last saved session of this directory (its history, documents and cards)
 elisa -p "summarise this" --attach ~/Downloads/report.pdf   # ask about a document (repeat --attach for more)

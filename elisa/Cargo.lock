@@ -373,6 +373,7 @@ dependencies = [
  "goblin",
  "libc",
  "pdf-extract",
+ "quick-xml",
  "ratatui",
  "regex",
  "serde",

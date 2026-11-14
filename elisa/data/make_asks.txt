@@ -1,0 +1,169 @@
+# How an ask names a new file or program to be made ("make me a snake game in HTML", "bạn code trò chơi ấy thành file
+# HTML", "viết một script python in ngày"), read by `repl/turn.rs` `make_ask` / `own_make`: on such a turn where no
+# write ran, Elisa asks the model for the file's content alone and saves it herself. One wording per line, lowercase,
+# matched as whole words; English and Vietnamese, with and without marks. Add a wording here, not in code.
+#   [make]:  words that ask for something to be made
+#   [thing]: words for a whole thing made: a file, a page, a program, a game
+#   [show]:  words that ask only to see it: with one of these and no file named or [file] word, nothing is saved
+#   [file]:  words that say the result is a file
+#   [part]:  words for a piece of code, not a whole file ("a python function that adds two numbers"): with one of these
+#            and no file named or [file] word, the code is shown, never saved
+#   [name]:  words that ask for a file's name or path ("what's the file name?", "cho tôi tên file"): an ask with one
+#            of these and a [file] or language word, after Elisa made or changed files this session, is answered
+#            from her own record of them (`repl/turn.rs` `made_files_ask`), never by searching file text
+#   [give]:  words that ask for the file to be handed over ("share the HTML file", "gửi mình file"), and
+#   [status]: words that ask whether it is done ("done?", "xong chưa"): with a [file], [thing] or language word, or a
+#            [status] word alone right after a turn that made a file, the ask is answered from Elisa's record like a
+#            [name] one; a file asked for that she has not made is made then, when an ask for it is pending
+#   [shell]: words that hand the making to the shell ("use the shell to create …"): the shell's to do, never a write
+#   [lang]:  "language = fence names | ask words | file extension": the extension a file of that language gets
+#   [stem]:  "extension = name": the name of a file made with no name given and no fitting word in the ask
+#            ("index.html"); "* = name" for any other extension
+[make]
+make
+create
+write
+build
+code
+generate
+develop
+program
+tạo
+tao
+viết
+viet
+làm
+lam
+lập trình
+lap trinh
+xây dựng
+xay dung
+thiết kế
+thiet ke
+[thing]
+file
+page
+webpage
+website
+site
+script
+program
+app
+application
+game
+tệp
+tep
+trang
+trang web
+trò chơi
+tro choi
+game
+ứng dụng
+ung dung
+chương trình
+chuong trinh
+[show]
+show
+display
+see
+explain
+print
+xem
+cho xem
+hiển thị
+hien thi
+giải thích
+giai thich
+[file]
+file
+tệp
+tep
+[part]
+function
+snippet
+regex
+regular expression
+query
+command
+one-liner
+example
+hàm
+ham
+đoạn code
+doan code
+câu lệnh
+cau lenh
+ví dụ
+vi du
+biểu thức
+bieu thuc
+[name]
+name
+file name
+filename
+called
+path
+tên
+ten
+tên file
+ten file
+đường dẫn
+duong dan
+[give]
+share
+send
+give me
+hand over
+where is
+where's
+cho tôi
+cho toi
+cho mình
+cho minh
+gửi
+gui
+chia sẻ
+chia se
+ở đâu
+o dau
+[status]
+done
+finished
+ready
+is it done
+xong chưa
+xong chua
+đã xong
+da xong
+làm xong chưa
+lam xong chua
+xong rồi
+xong roi
+xong thì
+xong thi
+[shell]
+shell
+terminal
+command line
+in the console
+dòng lệnh
+dong lenh
+trong terminal
+[lang]
+html = html, htm | html | html
+css = css | css | css
+javascript = javascript, js | javascript, js | js
+typescript = typescript, ts | typescript | ts
+python = python, py, python3 | python | py
+rust = rust, rs | rust | rs
+go = go, golang | golang | go
+java = java | java | java
+c = c | | c
+cpp = cpp, c++ | cpp | cpp
+shell = bash, sh, shell, zsh | bash | sh
+json = json | json | json
+markdown = markdown, md | markdown | md
+sql = sql | sql | sql
+[stem]
+html = index
+* = main

@@ -145,7 +145,19 @@ const THINKING_CAP: usize = 64 * 1024;
 
 pub(crate) fn publish_thinking(t: &str) {
     if let Ok(mut b) = THINKING.lock() { if b.len() + t.len() <= THINKING_CAP { b.push_str(t); } }
+    if let Ok(mut p) = PLAN.lock() { if p.0 && p.1.len() + t.len() <= THINKING_CAP { p.1.push_str(t); } }
 }
+
+/// This turn's plan: the reasoning its replies streamed, from `plan_open` (the turn's start) to `plan_close` (a
+/// request asked without the conversation, which may plan another thing). (open, text)
+static PLAN: Mutex<(bool, String)> = Mutex::new((false, String::new()));
+
+/// a new turn's plan, empty and open
+pub fn plan_open() { if let Ok(mut p) = PLAN.lock() { *p = (true, String::new()); } }
+/// no more reasoning goes into this turn's plan
+pub fn plan_close() { if let Ok(mut p) = PLAN.lock() { p.0 = false; } }
+/// this turn's plan so far, and whether it is still open
+pub fn plan() -> (String, bool) { PLAN.lock().map(|p| (p.1.clone(), p.0)).unwrap_or_default() }
 
 /// the reasoning streamed since the last call (empty when none)
 pub fn take_thinking() -> String { THINKING.lock().map(|mut b| std::mem::take(&mut *b)).unwrap_or_default() }
@@ -550,6 +562,8 @@ impl Client {
     /// usually whole); the second failure is the error.
     pub fn send(&self, req: &Request, cancel: &AtomicBool, on_text: &mut dyn FnMut(&str)) -> Result<Reply, String> {
         if self.model.trim().is_empty() { return Err(NO_MODEL.into()); }
+        // (each request's reasoning starts on a line of its own in the turn's plan)
+        if let Ok(mut p) = PLAN.lock() { if p.0 && !p.1.is_empty() && !p.1.ends_with('\n') { p.1.push('\n'); } }
         let msgs = self.seen(req);
         let req = &Request { messages: msgs.as_deref().unwrap_or(req.messages), ..*req };
         let mut wrote = false;

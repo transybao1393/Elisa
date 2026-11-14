@@ -41,6 +41,9 @@ goblin = { version = "=0.10.7", default-features = false, features = ["std", "el
 # MCP tool-list pins (src/pins.rs) and the audit log's hash chain (src/audit.rs): RustCrypto, MIT OR Apache-2.0,
 # pinned (already in the lock graph via lopdf); licence in ../THIRD_PARTY_NOTICES.md
 sha2 = "=0.10.9"
+# HTML entities in fetched pages and result snippets (src/web.rs `entities`): quick-xml (MIT) is already in the lock
+# graph; only its HTML5 named-entity table is used (`escape-html`), no XML parsing
+quick-xml = { version = "=0.42.0", default-features = false, features = ["escape-html"] }
 
 # One feature per grammar (all on by default). The parse tables are most of the binary growth (release, arm64):
 # swift ~4.1 MB, typescript+tsx ~2.8 MB, sql ~2.4 MB, bash ~1.4 MB, rust ~1.1 MB, python ~0.5 MB, javascript ~0.4 MB.

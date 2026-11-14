@@ -86,9 +86,12 @@ fn foreign_runs(text: &str, own: &HashSet<u32>) -> Vec<(usize, usize)> {
 /// shouted words from nowhere (`shouted_run`), the same item listed over and over (`repeated_item`), a sentence cut
 /// off at a linking word (`cut_off_end`) or a Vietnamese word cut short (`cut_off_token`).
 pub fn garbled(reply: &str, ask: &str) -> bool {
-    reply.split(word_break).any(mixed_word) || !foreign_runs(reply, &scripts(ask)).is_empty() || stuck_word(reply) || foreign_parts(reply, ask)
-        || (crate::route::vietnamese(ask) && reply.split(word_break).any(not_a_syllable))
-        || (wants_vietnamese(ask) && reply.split(word_break).any(impossible_syllable)) || translation_missing(reply, ask) || shouted_run(reply, ask)
+    // (the reply's prose alone, `prose`: code in a fenced block, code spans and links have no language's shape, so an
+    // identifier such as "điểmSố" in a game's script is no word run together)
+    let p = prose(reply);
+    p.split(word_break).any(mixed_word) || !foreign_runs(&p, &scripts(ask)).is_empty() || stuck_word(&p) || foreign_parts(reply, ask)
+        || (crate::route::vietnamese(ask) && p.split(word_break).any(not_a_syllable))
+        || (wants_vietnamese(ask) && p.split(word_break).any(impossible_syllable)) || translation_missing(reply, ask) || shouted_run(reply, ask)
         || repeated_item(reply) || cut_off_end(reply) || cut_off_token(reply, ask)
 }
 
@@ -633,6 +636,20 @@ pub fn copies_run(reply: &str, source: &str) -> bool {
     !g.is_empty() && grams(reply).iter().any(|x| g.contains(x))
 }
 
+/// Whether a list mark is all `t` is ("1.", "2)", "-", "*", "•"): an item with nothing in it.
+pub fn list_mark_only(t: &str) -> bool {
+    let t = t.trim();
+    if t.is_empty() { return false; }
+    let num = t.strip_suffix(['.', ')']).is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+    num || matches!(t, "-" | "*" | "+" | "•")
+}
+
+/// Whether `line`, once sentences of it were taken out, is gone whole: nothing left of it, or only its list mark
+/// ("1." of "1. Meeting code: …"), which alone would show an empty item.
+fn gone_whole(kept: &str, line: &str) -> bool {
+    !line.trim().is_empty() && (kept.trim().is_empty() || (kept.trim() != line.trim() && list_mark_only(kept)))
+}
+
 /// A text's sentences, split after '.', '!' or '?' followed by a space (the rest of a line is its last sentence).
 fn sentences(line: &str) -> Vec<&str> {
     let mut out = Vec::new();
@@ -808,7 +825,7 @@ impl Echo {
         let mut out: Vec<String> = Vec::new();
         for line in reply.lines() {
             let kept: String = sentences(line).into_iter().filter(|s| !hit(s)).collect();
-            if kept.trim().is_empty() && !line.trim().is_empty() { continue; }
+            if gone_whole(&kept, line) { continue; }
             // (one blank line where the copied lines stood between blank lines)
             if kept.trim().is_empty() && out.last().is_some_and(|l| l.is_empty()) { continue; }
             out.push(kept.trim().to_string());
@@ -844,10 +861,17 @@ fn prose(reply: &str) -> String {
     let mut out = String::new();
     let mut fence = false;
     for l in reply.lines() {
-        if l.trim_start().starts_with("```") { fence = !fence; continue; }
-        if fence { continue; }
+        // (a fence opens or closes wherever its "```" stands, not only at a line's start: "<index.html> ```html
+        // <!DOCTYPE html>…" is code from the fence on, and a line of a block is none of the prose)
+        let fenced = l.contains("```");
+        let mut kept = String::new();
+        for (i, seg) in l.split("```").enumerate() {
+            if i > 0 { fence = !fence; }
+            if !fence { kept.push_str(seg); }
+        }
+        if (fenced || fence) && kept.trim().is_empty() { continue; }
         let mut tick = false;
-        let line: String = l.chars().filter(|&c| { if c == '`' { tick = !tick; } !tick && c != '`' }).collect();
+        let line: String = kept.chars().filter(|&c| { if c == '`' { tick = !tick; } !tick && c != '`' }).collect();
         let line = line.split(' ').filter(|w| !w.contains("://")).collect::<Vec<_>>().join(" ");
         out.push_str(&line);
         out.push('\n');
@@ -982,7 +1006,10 @@ pub fn lang_mismatch(ask: &str, reply: &str) -> bool {
     // an English message (even "hey", "ok thx") answered wholly in another script ("2026年11月11日，欢迎！…"), in another
     // Latin-script language ("Hola Linh, encantada de conocerte en Hanói.") or wholly in Vietnamese ("Không có gì! Bạn
     // cần gì nữa không?": the reply's language follows the message, a closer's too), unless it asks for another language
-    if crate::reply_lang::detect(ask) == Some(crate::reply_lang::Lang::En) && !asks_other_language(ask) && (other_than_english(&p) || vietnamese_only(&parts)) { return true; }
+    // (its words in brackets beside its own are glosses, "**Chạy lệnh** (Run commands): Tôi có thể…": the reply's
+    // language is the words round them, `without_glosses`)
+    let unglossed: Vec<String> = without_glosses(&p).lines().flat_map(sentences).flat_map(clauses).collect();
+    if crate::reply_lang::detect(ask) == Some(crate::reply_lang::Lang::En) && !asks_other_language(ask) && (other_than_english(&p) || vietnamese_only(&parts) || vietnamese_only(&unglossed)) { return true; }
     // (the message's own words: a command or a file name in it is in no language, `language_part`)
     let a = profile(&language_part(ask));
     if a.letters < 4 { return false; }
@@ -1113,7 +1140,7 @@ pub fn without_sentences(reply: &str, drop: &[String]) -> String {
     for line in reply.lines() {
         // (a claim may be a piece of a sentence: a file name's dot splits it)
         let kept: String = sentences(line).into_iter().filter(|s| { let k = key(s); !gone.iter().any(|g| k.contains(g.as_str())) }).collect();
-        if kept.trim().is_empty() && !line.trim().is_empty() { continue; }
+        if gone_whole(&kept, line) { continue; }
         out.push(kept.trim_end().to_string());
     }
     out.join("\n").trim().to_string()
@@ -2298,6 +2325,41 @@ pub fn copies_earlier_line(reply: &str, ask: &str, earlier: &str) -> bool {
     earlier.lines().map(|l| words(without_list_mark(unnumbered(l)))).any(|l| l == r)
 }
 
+/// letters a run of a reply left over beside the earlier lines it glues may have and still be a stray ("no", "Sure")
+const GLUED_STRAY_CHARS: usize = 4;
+/// letters an earlier line needs to be a piece a reply can be glued from ("no matches"; not "ok" or "I see")
+const GLUED_PIECE_CHARS: usize = 6;
+
+/// Whether `reply` is pieces of earlier lines glued together ("noI made index.html. no matches": a continuation's
+/// stray word, then Elisa's own line of the turn before, then a tool's line from the turn before that), with nothing
+/// of its own: judged on letters alone (the glue loses a space, "noI"), each piece a whole line of `earlier` (what
+/// tools returned, what the user sent, Elisa's prompt notes and her earlier replies) of EARLIER_LINE_WORDS words and
+/// GLUED_PIECE_CHARS letters at least, and each run left over between the pieces a stray of GLUED_STRAY_CHARS letters
+/// at most or no content (`content`). Never to an ask the reply shares a word with, one asking for words to be said
+/// back (`repeat_asks`), a question about what came before (`refer_back` with a "?": "what did you say before?" — a
+/// "that" in "a function that adds two numbers" points at nothing), or small talk (a closer may be said again).
+pub fn glued_earlier_lines(reply: &str, ask: &str, earlier: &str) -> bool {
+    fn compact(t: &str) -> String { t.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect() }
+    let body = crate::context::request_body(ask);
+    let r = words(reply);
+    if r.len() < EARLIER_LINE_WORDS || has_term(body, "repeat_asks") || (has_term(body, "refer_back") && body.contains('?')) || crate::route::small_talk(body) { return false; }
+    let a: HashSet<String> = words(body).into_iter().collect();
+    if r.iter().any(|x| a.contains(x)) { return false; }
+    let text = compact(reply);
+    let pieces: Vec<String> = earlier.lines().map(|l| without_list_mark(unnumbered(l)).trim())
+        .filter(|l| words(l).len() >= EARLIER_LINE_WORDS).map(compact).filter(|p| p.chars().count() >= GLUED_PIECE_CHARS).collect();
+    // (the longest piece at each place, else the letter is left over)
+    let (mut at, mut used, mut stray, mut strays) = (0, 0, String::new(), Vec::new());
+    while at < text.len() {
+        match pieces.iter().filter(|p| text[at..].starts_with(p.as_str())).map(|p| p.len()).max() {
+            Some(n) => { at += n; used += 1; if !stray.is_empty() { strays.push(std::mem::take(&mut stray)); } }
+            None => { let c = text[at..].chars().next().unwrap_or(' '); stray.push(c); at += c.len_utf8(); }
+        }
+    }
+    if !stray.is_empty() { strays.push(stray); }
+    used >= 1 && strays.iter().all(|s| s.chars().count() <= GLUED_STRAY_CHARS || content(s).is_empty())
+}
+
 /// Whether `t` holds a word that stands for something said before ("it", "that", "this", "nó", "đó": `points_back`
 /// in `data/reply_terms.txt`) rather than being text of its own ("write it to x.txt" gives no text to write; "save
 /// that plan to plan.md" saves an earlier reply).
@@ -2619,9 +2681,11 @@ pub fn credited_to_source(text: &str, source: &str, vi: bool) -> Option<String> 
 /// `reply` without the sentences in which the speaker names itself with a name from the user's facts (`known`: what
 /// the model was given, where the user's facts are; `own`: the assistant's own names): "Hello! Bo here. How can I
 /// help?" (Bo the user's dog) is "Hello! How can I help?". A self-claim is a capitalised name after `self_before`
-/// ("I'm Bo", "Tôi là Bo") or before `self_after` ("Bo here") in `data/meta_words.txt`. None: it has none.
+/// ("I'm Bo", "Tôi là Bo") or before `self_after` ("Bo here") in `data/meta_words.txt`; a name is a word `known`
+/// writes with a capital other than to open a sentence, and never in lower case (`known_names`: "Giờ" opening "Giờ
+/// đây, file todo.txt có hai mục…" is the user's own lower-case "giờ", no name). None: it has none.
 pub fn without_false_self(reply: &str, own: &[String], known: &str) -> Option<String> {
-    let known_w: HashSet<String> = words(known).into_iter().collect();
+    let known_w = known_names(known);
     let own_w: HashSet<String> = own.iter().flat_map(|n| words(n)).collect();
     let claims = |s: &str| {
         let raw: Vec<&str> = s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
@@ -2634,6 +2698,20 @@ pub fn without_false_self(reply: &str, own: &[String], known: &str) -> Option<St
             || after.iter().any(|p| w.get(i + 1..i + 1 + p.len()).is_some_and(|x| x == p.as_slice()))))
     };
     sentences_kept(reply, |s| !claims(s))
+}
+
+/// The names in `known` (lower-cased): the words it writes with a capital other than as the first word of a sentence
+/// or a line ("Bo" in "my dog is Bo"), and never in lower case. A word opening a sentence has the language's capital,
+/// not a name's ("Giờ đây, …"); one the user also writes in lower case is a common word.
+fn known_names(known: &str) -> HashSet<String> {
+    let mut caps: HashSet<String> = HashSet::new();
+    let mut lower: HashSet<String> = HashSet::new();
+    for s in known.lines().flat_map(sentences) {
+        for (i, x) in s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).enumerate() {
+            if !x.chars().next().is_some_and(char::is_uppercase) { lower.insert(x.to_lowercase()); } else if i > 0 { caps.insert(x.to_lowercase()); }
+        }
+    }
+    caps.difference(&lower).cloned().collect()
 }
 
 /// The "said to the user > said by the user" pairs of `data/meta_words.txt` (`to_me`), each side as its words.
@@ -2834,6 +2912,16 @@ pub fn cut_ids_completed(reply: &str, given: &str) -> Option<String> {
     changed.then(|| out.join(" "))
 }
 
+/// Whether the cleaning of a reply (`raw`, the model's words) left only lines it never wrote (`clean`: Elisa's own
+/// held line, her clock line put in its place): every sentence of `clean` with a letter is missing from `raw`, and
+/// `raw` had words of its own. Then the model's answer was taken out whole, not tidied.
+pub fn own_lines_only(clean: &str, raw: &str) -> bool {
+    let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let raw_s = squash(raw);
+    let own: Vec<String> = clean.lines().flat_map(sentences).map(squash).filter(|s| s.chars().any(char::is_alphabetic)).collect();
+    !own.is_empty() && raw.chars().any(char::is_alphabetic) && own.iter().all(|s| !raw_s.contains(s.trim_end_matches(['.', '!', '?'])))
+}
+
 /// `clean` (a reply after Elisa's cleaning, which may put her own line first) with the model's own words (`raw`) left
 /// out when they answer nothing beside her line: a lone yes/no ("Bây giờ là 05:41. No" → "Bây giờ là 05:41."), or
 /// junk (`own_line_alone`). `clean` as it is otherwise.
@@ -2857,7 +2945,8 @@ const CYCLE_MAX_WORDS: usize = 8;
 /// and three cycles at least after a lead-in ("Để thay đổi …, bạn có thể sử dụng một phần khách hàng hoặc một phần
 /// khách hàng hoặc …").
 pub fn word_cycle(reply: &str) -> bool {
-    let w = words(reply);
+    // (the prose alone: a script's repeated lines are code, not a cycle)
+    let w = words(&prose(reply));
     if w.len() < CYCLE_MIN_WORDS { return false; }
     (1..=CYCLE_MAX_WORDS).any(|k| {
         let n = w.len() - k;
@@ -3180,6 +3269,24 @@ fn fact_tokens(reply: &str, results: &str, said: &str) -> Vec<String> {
 /// The facts of the results `reply` holds (`fact_tokens`, whatever the user typed): the names and numbers of a
 /// results turn's answer, "South" and "340" of a sheet; a retry that says fewer of them lost some.
 pub fn result_facts(reply: &str, results: &str) -> Vec<String> { fact_tokens(reply, results, "") }
+
+/// words a sentence or list item needs to count as a claim (`claims_without_facts`)
+const CLAIM_MIN_WORDS: usize = 4;
+
+/// How many sentences or list items of `reply` say something with none of the results' facts in it (`fact_tokens`:
+/// the names, codes and numbers `results` holds): CLAIM_MIN_WORDS words or more and not one such fact. A name or a
+/// number keeps its form in any language, so a reply said again in another language keeps about as many as it had;
+/// a retry with more of them than the reply before it added things the results never said ("Gặp gỡ vào thứ Hai,
+/// không biết thời gian cụ thể." beside a file that names no such day). A code block's lines are quoted, never
+/// counted.
+pub fn claims_without_facts(reply: &str, results: &str) -> usize {
+    let facts = fact_tokens(reply, results, "");
+    let mut fenced = false;
+    reply.lines().filter(|l| { if l.trim_start().starts_with("```") { fenced = !fenced; return false; } !fenced })
+        .flat_map(sentences)
+        .filter(|s| words(s).len() >= CLAIM_MIN_WORDS && !facts.iter().any(|f| s.contains(f.as_str())))
+        .count()
+}
 
 /// Elisa's own closing line (`route::small_talk_line`) in place of a reply to a plain closer (`plain_closer`: "ok
 /// thx", "cảm ơn nhé") that pitches (`pitches`: "Tôi là Elisa, một … Tôi có thể giúp bạn với…") or runs past
@@ -3540,6 +3647,18 @@ fn other_than_english(reply: &str) -> bool {
     let marked = reply.chars().any(|c| c.is_alphabetic() && !c.is_ascii());
     marked && w.len() >= OTHER_LATIN_WORDS && !names && !crate::reply_lang::has_english_word(reply)
         && crate::reply_lang::detect(reply) != Some(crate::reply_lang::Lang::Vi) && !crate::route::vietnamese(reply)
+}
+
+/// `t` without the spans in round brackets on a line that has words of its own outside them ("**Chạy lệnh** (Run
+/// commands): Tôi có thể…" → "**Chạy lệnh** : Tôi có thể…"): a gloss or an aside in brackets says what the words
+/// round it say, in another language or not, so the line's language is theirs. A line that is all brackets stays.
+fn without_glosses(t: &str) -> String {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"\([^()\n]*\)").unwrap());
+    t.lines().map(|l| {
+        let out = re.replace_all(l, " ");
+        if out.chars().any(char::is_alphabetic) { out.split_whitespace().collect::<Vec<_>>().join(" ") } else { l.to_string() }
+    }).collect::<Vec<_>>().join("\n")
 }
 
 /// Whether a reply's sentences and clauses (`parts`, from `clauses`) are wholly Vietnamese: every part of
@@ -4073,7 +4192,7 @@ pub fn strip_echoed_ask(reply: &str, ask: &str) -> String {
             let echoed = crate::route::strip_echoed_ask(s, ask).trim().is_empty();
             !(echoed && a.iter().all(|w| words(s).contains(w)))
         }).collect();
-        if kept.trim().is_empty() && !line.trim().is_empty() { continue; }
+        if gone_whole(&kept, line) { continue; }
         out.push(kept.trim().to_string());
     }
     out.join("\n").trim().to_string()
@@ -4287,7 +4406,7 @@ pub fn without_repeated_copies(reply: &str) -> String {
             if w.len() >= 2 { seen.push(w); }
             kept.push_str(snt);
         }
-        if kept.trim().is_empty() && !line.trim().is_empty() { continue; }
+        if gone_whole(&kept, line) { continue; }
         out.push(kept.trim_end().to_string());
     }
     if changed || clauses_cut { out.join("\n").trim().to_string() } else { reply.to_string() }
@@ -5476,6 +5595,15 @@ pub fn gives_line(text: &str, line: &str) -> bool {
     if digits.is_empty() && alpha.is_empty() { let have = words_of(text); return words(v).iter().all(|w| have.contains(w)); }
     let t = content(text);
     digits.iter().all(|d| t.contains(*d)) && (alpha.is_empty() || alpha.iter().any(|a| t.contains(*a)))
+}
+
+/// Whether cutting a reply from `before` to `after` dropped a line of this turn's `results` that the reply gave
+/// (`gives_line`: "- send report" of a read, given as "'buy bread' và 'send report'"). A cleanup that would leave the
+/// answer out keeps the sentence instead. A read's line numbers ("2\t- send report") are not the line.
+pub fn loses_given(before: &str, after: &str, results: &str) -> bool {
+    results.lines().map(|l| l.split_once('\t').filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).map_or(l, |(_, t)| t))
+        .filter(|l| !content(line_value(l)).is_empty())
+        .any(|l| gives_line(before, l) && !gives_line(after, l))
 }
 
 /// The lines of a held file whose label (the words before ':' or '=') shares a word of three letters or more with the
@@ -6732,6 +6860,17 @@ mod tests {
         assert_eq!(without_false_self("Hi, I'm Bo! What's up?", &own, facts), Some("What's up?".into()));
         assert_eq!(without_false_self("Chào bạn! Tôi là Bo.", &own, facts), Some("Chào bạn!".into()));
         assert_eq!(without_false_self("Hi, I'm Elisa. Bo is a good dog.", &own, facts), None);
+        // (a common word opening a sentence before "đây" / "here" is no name: the user wrote it in lower case, and the
+        // sentence holding the file's lines was taken out for it)
+        assert_eq!(without_false_self("Giờ đây, file todo.txt có hai mục: 'buy bread' và 'send report'. Bạn muốn làm gì tiếp?", &own, "todo.txt giờ có gì?"), None);
+        assert_eq!(without_false_self("Right here, the file has two lines: buy bread and send report.", &own, "what is right in the file now?"), None);
+        assert_eq!(without_false_self("Hello! Bo here.", &own, "Bo is my dog, and Bo is good."), Some("Hello!".into()), "a name written with its capital mid-sentence");
+        assert_eq!(without_false_self("Hello! Milk here.", &own, "Milk is what I need. Get milk."), None, "a word the user also writes in lower case");
+        // (a cut that would drop a result line the reply gave is not made: the sentence is the answer)
+        let res = "1\t- buy bread\n2\t- send report";
+        assert!(loses_given("Giờ đây, file có hai mục: 'buy bread' và 'send report'. Bạn muốn làm gì tiếp?", "Bạn muốn làm gì tiếp?", res));
+        assert!(!loses_given("The file has buy bread and send report. Bo here.", "The file has buy bread and send report.", res));
+        assert!(!loses_given("Hello! Bo here. How can I help?", "Hello! How can I help?", res), "nothing of the results was given");
         assert_eq!(greeting_reply_fixed("Did you know that pigeons are considered lucky in some cultures?", "hey", false, &[]).as_deref(), Some("Hi! What would you like to do next?"));
         assert_eq!(greeting_reply_fixed("Tạm biệt, chào buổi sáng!", "chào bạn", false, &[]).as_deref(), Some("Chào bạn! Bạn muốn làm gì tiếp theo?"));
         assert_eq!(greeting_reply_fixed("Hey there! 😊", "hey", false, &[]), None);
@@ -6897,6 +7036,18 @@ mod tests {
         assert!(!copies_earlier_line("Meeting code: ORCHID-42", "what does the first line say?", earlier));
         assert!(!copies_earlier_line("ORCHID-42", "tell me a short joke", earlier));
         assert!(!copies_earlier_line("Why did the chicken cross the road?", "tell me a short joke", earlier));
+        // pieces of earlier lines glued, a stray word among them, with nothing of the reply's own; in both languages
+        let glued = "no matches\nI made page.html.\nMeeting code: ORCHID-42\nkhông có kết quả\nMình đã tạo trang.html.";
+        assert!(glued_earlier_lines("noI made page.html. no matches", "write a python function that multiplies two numbers", glued));
+        assert!(glued_earlier_lines("Sure.Meeting code: ORCHID-42", "tell me a short joke", glued));
+        assert!(glued_earlier_lines("khôngMình đã tạo trang.html. không có kết quả", "viết hàm python nhân hai số", glued));
+        // (words of its own beside a piece, a word the ask holds, an ask about what came before, small talk: not)
+        assert!(!glued_earlier_lines("I made page.html. The function is below.", "write a python function that multiplies two numbers", glued));
+        assert!(!glued_earlier_lines("noI made page.html. no matches", "is page.html done?", glued));
+        assert!(!glued_earlier_lines("I made page.html. no matches", "what did you say before?", glued));
+        assert!(!glued_earlier_lines("Sure.Meeting code: ORCHID-42", "repeat the first line for me", glued));
+        assert!(!glued_earlier_lines("I made page.html. no matches", "thanks a lot!", glued));
+        assert!(!glued_earlier_lines("def multiply(a, b):\n    return a * b", "write a python function that multiplies two numbers", glued));
         // one word to a question that wants more
         assert!(one_word_non_answer(" Image", "what kind of data does it work with?"));
         assert!(one_word_non_answer(" No", "what about one about cats?"));
@@ -7106,6 +7257,18 @@ mod tests {
         // Vietnamese quoted inside an English sentence is the user's own content
         assert!(!lang_mismatch("what does the file say?", "The file says: xin chào thế giới"));
         assert!(!lang_mismatch("how do you say thanks in Vietnamese?", "Cảm ơn bạn."));
+    }
+
+    #[test]
+    fn english_glosses_in_brackets_leave_a_vietnamese_reply_vietnamese() {
+        // a Vietnamese reply to an English ask, its items glossed in English in brackets: still Vietnamese
+        let r = "Dưới đây là một số điều chính:\n\n**Chat và trả lời câu hỏi** (Chat and answer questions): Tôi có thể trò chuyện với bạn và trả lời các câu hỏi của bạn.\n**Chạy lệnh** (Run commands): Tôi có thể thực hiện các lệnh cơ bản trong môi trường này.";
+        assert!(lang_mismatch("what can you help me with?", r));
+        // an English reply glossing a Vietnamese word in brackets, or quoting it, is English
+        assert!(!lang_mismatch("how do I greet someone?", "Say hello (xin chào) with a smile, and thank them (cảm ơn) when you leave."));
+        assert!(!lang_mismatch("what does the file say?", "The file says: xin chào thế giới (hello world)"));
+        // a reply wholly in brackets is no gloss: judged as it is
+        assert!(!lang_mismatch("what can you help me with?", "(I can chat, search the web and read files.)"));
     }
 
     #[test]
@@ -7541,6 +7704,40 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_english_ask_in_a_vietnamese_chat_is_answered_in_english() {
+        // (an English ask with none of the common English words listed, "make me … as an html file", in a chat that
+        // was in Vietnamese: its language was not known, so a Vietnamese reply to it passed and the reply followed the
+        // earlier turns, not the message)
+        let ask = "make me a small quiz page as an html file";
+        assert!(lang_mismatch(ask, "Đây là trang đố vui đơn giản của bạn, mình đã làm xong rồi nhé."));
+        assert!(lang_mismatch(ask, "Đây là file HTML cho trò chơi đố vui đơn giản: quiz.html."), "a file name in it is in no language");
+        assert!(!lang_mismatch(ask, "Here is a small quiz page for you."));
+        // (unaccented Vietnamese round an English loanword is Vietnamese still: its Vietnamese reply stands)
+        assert!(!lang_mismatch("lam cho minh mot trang quiz nho bang html", "Đây là trang đố vui của bạn."));
+    }
+
+    #[test]
+    fn code_in_a_fenced_block_is_never_judged_as_noise() {
+        // (a reply with a short lead-in and a whole game's HTML was "garbled" by an identifier of its script, "điểmSố",
+        // two tones run together: the context-free retry then made the wrong game)
+        let html = "```html\n<!DOCTYPE html>\n<html lang=\"vi\">\n<head><meta charset=\"utf-8\"><title>Rắn Săn Mồi</title>\n<style>body{margin:0;background:#222}canvas{display:block;margin:0 auto}#điểmSố{color:#fff;font:16px sans-serif}</style></head>\n<body><div id=\"điểmSố\">Điểm: 0</div><canvas id=\"c\" width=\"400\" height=\"400\"></canvas>\n<script>\nconst c=document.getElementById('c'),ctx=c.getContext('2d');let snake=[{x:5,y:5}],dir={x:1,y:0},food={x:10,y:10},điểmSố=0;\nfunction tick(){const h={x:snake[0].x+dir.x,y:snake[0].y+dir.y};snake.unshift(h);if(h.x===food.x&&h.y===food.y){điểmSố++;document.getElementById('điểmSố').innerText='Điểm: '+điểmSố;food={x:Math.floor(Math.random()*20),y:Math.floor(Math.random()*20)};}else{snake.pop();}\nctx.fillStyle='#222';ctx.fillRect(0,0,400,400);ctx.fillStyle='#0f0';snake.forEach(s=>ctx.fillRect(s.x*20,s.y*20,18,18));ctx.fillStyle='#f00';ctx.fillRect(food.x*20,food.y*20,18,18);}\ndocument.addEventListener('keydown',e=>{if(e.key==='ArrowUp')dir={x:0,y:-1};if(e.key==='ArrowDown')dir={x:0,y:1};if(e.key==='ArrowLeft')dir={x:-1,y:0};if(e.key==='ArrowRight')dir={x:1,y:0};});\nsetInterval(tick,120);\n</script></body></html>\n```";
+        let vi_ask = "bạn code trò chơi ấy thành file HTML + CSS nhé";
+        let en_ask = "make the snake game one html file with some css";
+        assert!(!garbled(&format!("# Trò chơi Rắn Săn Mồi\nDưới đây là mã HTML/CSS hoàn chỉnh cho trò chơi với giao diện đẹp hơn:\n{html}"), vi_ask), "vi");
+        assert!(!garbled(&format!("Here is the complete HTML, CSS and JavaScript for the snake game, in one file:\n{html}"), en_ask), "en");
+        assert!(!word_cycle(&format!("Here it is:\n{html}")) && !looped(&format!("Here it is:\n{html}")));
+        // (the same token in the prose is noise still)
+        assert!(garbled("Điểm của bạn là điểmSố rồi.", vi_ask));
+        // (a fence that opens after a file's name on the same line, "<index.html> ```html …", is a fence: the code is
+        // none of the prose, so a reply that is only the block is in no wrong language)
+        let inline = "<index.html> ```html <!DOCTYPE html>\n<html lang=\"vi\"><body><p>Xin chào</p></body></html>\n```";
+        assert_eq!(prose(inline).trim(), "<index.html>");
+        assert!(!lang_mismatch("xong chưa? xong thì cho tôi tên file HTML nhé", inline));
+        assert!(!garbled(inline, "xong chưa? xong thì cho tôi tên file HTML nhé"));
+        assert_eq!(prose("Done: ```js\nlet a = 1;\n``` and that is all.").split_whitespace().collect::<Vec<_>>().join(" "), "Done: and that is all.");
+    }
+
+    #[test]
     fn a_step_elisa_tells_herself_is_worded_in_the_users_language() {
         assert_eq!(step_line("look", "", "Looking through your project files", "notes.txt\ntodo.txt", false, true).as_deref(), Some("Đã xem qua các tệp trong dự án"));
         assert_eq!(step_line("look", "", "Looking through your project files", "notes.txt\ntodo.txt", false, false).as_deref(), Some("Looked through your project files"));
@@ -7548,6 +7745,12 @@ mod tests {
         assert_eq!(step_line("read", "todo.txt", "Reading todo.txt", "denied by user", true, true).as_deref(), Some("Đã bỏ qua bước với todo.txt (bạn đã nói không)"));
         assert_eq!(step_line("read", "todo.txt", "Reading todo.txt", "no such file", true, false).as_deref(), Some("Reading todo.txt didn't work"));
         assert_eq!(step_line("plugin:time", "", "Checking the time", "…", false, true).as_deref(), Some("Đã dùng time"));
+        // (a write that made the file is a `create` step, one over a file that was there an `edit`: `turn.rs` tells them
+        // apart by the ledger, never by the words of the step's result)
+        assert_eq!(step_line("create", "quiz.html", "Creating quiz.html", "wrote 12 lines to quiz.html", false, true).as_deref(), Some("Đã tạo quiz.html"));
+        assert_eq!(step_line("create", "quiz.html", "Creating quiz.html", "wrote 12 lines to quiz.html", false, false).as_deref(), Some("Created quiz.html"));
+        assert_eq!(step_line("edit", "quiz.html", "Rewriting quiz.html", "wrote 12 lines to quiz.html", false, true).as_deref(), Some("Đã sửa quiz.html"));
+        assert_eq!(step_line("edit", "quiz.html", "Rewriting quiz.html", "wrote 12 lines to quiz.html", false, false).as_deref(), Some("Edited quiz.html"));
         // no target to name, a step not run again, an unknown group: the activity row's own words
         assert_eq!(step_line("read", "", "Reading", "x", false, true), None);
         assert_eq!(step_line("read", "todo.txt", "Reading todo.txt", "[elisa: not run again]", true, true), None);

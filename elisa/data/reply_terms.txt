@@ -112,6 +112,9 @@ denies_sight: cannot see any picture | can t see any picture | cannot see any ph
 hedge_lead: i think that | i think | i believe that | i believe | i guess | i suppose | i assume | if i m not mistaken | probably | perhaps | maybe | it seems that | it seems | it looks like | apparently
 claims_human: i m a human | i am a human | i m human | i am human | i m a real human | i am a real human | i m a human being | i am a human being | as a human being | i m a person | i am a person | i m a real person | i am a real person | i m not a robot | i am not a robot | i m not a bot | i am not a bot | i m not a machine | i am not a machine | i m not a computer | i am not a computer | not a computer program | i m not an artificial intelligence | i am not an artificial intelligence
 just_reply: just reply | only reply | reply only | simply reply | just say | only say | just answer | reply with just | reply just | answer only
+# common English words that are Vietnamese words too when typed without marks ("a", "an", "me", "as"): they tell a
+# message is English only beside words no Vietnamese syllable can be ("make", "html", "file": `reply_lang::plain_english`)
+plain_english: a | an | as | me | do | to | no | on | at | by | so | if | us | we | he | she | its | has | have | had | not | but | from | make | made | get | got | like | want | need | some | any | all | one | new | out | into | than | then | them | they | there | their | here | just | only | also | more | most | much | many | each | other | over | again | after | before | should | must | am | been | were | these | those | him | her | his | whom | whose | up | down | off | let | give | show | put | add | use | run | open | save | find | list | help | check | fix
 repeat_asks: repeat | say back | echo | copy | quote | read back | read out
 states: is | was | are | were | stands at | stood at | reached | totals | totalled | totaled | of about | of around
 part_of: percent of | per cent of | share of | portion of
@@ -189,7 +192,7 @@ consent: đồng ý | dong y | cho phép | cho phep | chấp thuận | chap thua
 long_asks: loại gì | loai gi | kiểu gì | kieu gi | thế còn | the con | còn về | con ve | tại sao | tai sao | vì sao | vi sao | như thế nào | nhu the nao | kể cho | ke cho | giải thích | giai thich | mô tả | mo ta
 picture_scene: trong ảnh | trong anh | trong hình | trong hinh | bức ảnh cho thấy | buc anh cho thay | hình ảnh cho thấy | hinh anh cho thay | hình ảnh này hiển thị | hinh anh nay hien thi | hình ảnh hiển thị | hinh anh hien thi | bức ảnh này | buc anh nay | ảnh này cho thấy | anh nay cho thay | trong hình ảnh | trong hinh anh | đang mặc | dang mac
 refer_back: dòng | dong | đầu | cuối | cuoi | nó | đó | này | tệp | tep | trên | tren | lại | đọc | mã | tên
-points_back: nó | đó | này | cái đó | cái này | cái đấy | điều đó | điều này | cai do | cai nay | cai day | dieu do | dieu nay
+points_back: nó | đó | này | ấy | cái đó | cái này | cái đấy | cái ấy | điều đó | điều này | cai do | cai nay | cai day | dieu do | dieu nay
 not_found: không tìm thấy lệnh | khong tim thay lenh | không tìm thấy | khong tim thay
 run_failed: lỗi | loi | thất bại | that bai | không tìm thấy | khong tim thay | không có sẵn | khong co san | chưa cài | chua cai | không cài | khong cai | không chạy được | khong chay duoc | không thể | khong the | bị chặn | bi chan | mã thoát | ma thoat
 pronoun_start: nó | họ | điều này | điều đó
